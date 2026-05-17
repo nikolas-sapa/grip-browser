@@ -39,7 +39,7 @@ class CDPEngine:
 
     async def send(self, method: str, params: dict[str, Any] | None = None) -> Any:
         msg_id = self._next_id()
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[msg_id] = fut
         payload = json.dumps({"id": msg_id, "method": method, "params": params or {}})
         await self._ws.send(payload)
