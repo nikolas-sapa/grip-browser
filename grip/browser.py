@@ -15,17 +15,23 @@ if TYPE_CHECKING:
 async def fetch_tab_ws_url(port: int) -> str:
     import urllib.request
     import time
+
+    def _do_fetch() -> list:
+        with urllib.request.urlopen(
+            f"http://localhost:{port}/json", timeout=2
+        ) as resp:
+            return json.loads(resp.read())
+
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(f"http://localhost:{port}/json") as resp:
-                tabs = json.loads(resp.read())
-                for tab in tabs:
-                    if tab.get("type") == "page":
-                        return tab["webSocketDebuggerUrl"]
+            tabs = await asyncio.to_thread(_do_fetch)
+            for tab in tabs:
+                if tab.get("type") == "page":
+                    return tab["webSocketDebuggerUrl"]
         except Exception:
             pass
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.2)
     raise RuntimeError(f"No Chrome tab found on port {port}")
 
 

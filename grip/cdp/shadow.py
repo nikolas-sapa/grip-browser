@@ -60,7 +60,7 @@ DISCOVER_ELEMENTS_JS = """
 """
 
 CLICK_ELEMENT_JS = """
-(function(index) {
+function(index) {
   const elements = [];
   const INTERACTIVE_TAGS = new Set([
     'a','button','input','select','textarea','details','summary'
@@ -93,11 +93,11 @@ CLICK_ELEMENT_JS = """
     return true;
   }
   return false;
-})(index);
+}
 """
 
 TYPE_ELEMENT_JS = """
-(function(index, text) {
+function(index, text) {
   const elements = [];
   const INPUT_TAGS = new Set(['input','textarea']);
 
@@ -128,7 +128,7 @@ TYPE_ELEMENT_JS = """
     return true;
   }
   return false;
-})(index, text);
+}
 """
 
 PAGE_TEXT_JS = """

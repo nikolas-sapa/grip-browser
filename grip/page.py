@@ -86,7 +86,7 @@ class Page:
         if index is None:
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
-        js = CLICK_ELEMENT_JS.replace("index", str(index))
+        js = f"({CLICK_ELEMENT_JS})({index})"
         result = await self._engine.send(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
@@ -109,9 +109,7 @@ class Page:
         if index is None:
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
-        js = TYPE_ELEMENT_JS.replace("index", str(index)).replace(
-            "text", json.dumps(text)
-        )
+        js = f"({TYPE_ELEMENT_JS})({index}, {json.dumps(text)})"
         await self._engine.send(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
