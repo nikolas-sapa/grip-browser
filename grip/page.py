@@ -1,6 +1,8 @@
 from __future__ import annotations
+import base64
 import json
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from grip.cdp.engine import CDPEngine
@@ -16,6 +18,20 @@ from grip.errors.types import GripError
 from grip.security.injection import InjectionDetector
 from grip.security.sanitizer import HiddenElementFilter, RawElement
 from grip.trace import Trace, TraceEntry
+
+
+@dataclass
+class Screenshot:
+    data: bytes
+    tokens_estimated: int
+
+    @property
+    def b64(self) -> str:
+        return base64.b64encode(self.data).decode()
+
+    def save(self, path: str) -> None:
+        with open(path, "wb") as f:
+            f.write(self.data)
 
 
 class Page:
@@ -141,6 +157,34 @@ class Page:
     async def observe(self, question: str) -> str:
         snap = await self.snapshot()
         return self._summarizer.format(snap)
+
+    async def screenshot(self, quality: int = 75) -> Screenshot:
+        """
+        Capture a JPEG screenshot. quality=75 gives ~800 vision tokens vs ~3000 for PNG.
+
+        Usage with Claude vision:
+            shot = await page.screenshot()
+            # shot.b64  — base64 string ready for the API
+            # shot.data — raw bytes
+            # shot.save("page.jpg")
+        """
+        t0 = time.monotonic()
+        result = await self._engine.send(
+            "Page.captureScreenshot",
+            {"format": "jpeg", "quality": quality, "captureBeyondViewport": False},
+        )
+        img_bytes = base64.b64decode(result.get("data", ""))
+        tokens = len(img_bytes) // 150
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="screenshot",
+            input={"quality": quality},
+            output={"bytes": len(img_bytes), "tokens_estimated": tokens},
+            tokens_consumed=tokens,
+            duration_ms=duration_ms,
+        ))
+        return Screenshot(data=img_bytes, tokens_estimated=tokens)
 
     def _find_element_index(self, description: str) -> int | None:
         if not self._current_snapshot:

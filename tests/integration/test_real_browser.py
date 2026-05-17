@@ -45,3 +45,22 @@ async def test_observe():
         result = await page.observe("What is on this page?")
         print(f"\nObserve result:\n{result}")
         assert len(result) > 10
+
+
+@pytest.mark.asyncio
+async def test_screenshot():
+    from grip.page import Screenshot
+    async with Browser(headless=True) as browser:
+        page = await browser.open("https://example.com")
+        shot = await page.screenshot(quality=75)
+
+        assert isinstance(shot, Screenshot)
+        assert len(shot.data) > 1000          # real image, not empty
+        assert shot.data[:2] == b"\xff\xd8"   # JPEG magic bytes
+        assert len(shot.b64) > 0
+        assert shot.tokens_estimated > 0
+
+        print(f"\nScreenshot: {len(shot.data):,} bytes, ~{shot.tokens_estimated} tokens")
+        print(f"DOM snapshot was ~50 tokens — screenshot is {shot.tokens_estimated / 50:.0f}x more")
+        shot.save("/tmp/grip_test.jpg")
+        print("Saved to /tmp/grip_test.jpg")
