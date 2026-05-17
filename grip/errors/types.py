@@ -29,8 +29,12 @@ class BrowserError:
     confidence: float
     recovery: list[RecoveryAction] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"confidence must be in [0.0, 1.0], got {self.confidence}")
+
 
 class GripError(Exception):
     def __init__(self, error: BrowserError) -> None:
         self.error = error
-        super().__init__(f"{error.type.name}: {error.message}")
+        super().__init__(f"{error.type.name}: {error.message}")  # .name = SCREAMING_SNAKE for log readability

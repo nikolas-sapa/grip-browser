@@ -43,3 +43,14 @@ def test_all_recovery_actions_exist():
         "escalate_to_human", "exponential_backoff", "vision_fallback",
     }
     assert expected == actions
+
+
+def test_browser_error_rejects_invalid_confidence():
+    import pytest
+    with pytest.raises(ValueError, match="confidence"):
+        BrowserError(
+            type=ErrorType.ELEMENT_STALE,
+            message="test",
+            confidence=1.5,
+            recovery=[],
+        )
