@@ -1,0 +1,209 @@
+from __future__ import annotations
+import json
+import time
+from typing import Any
+
+from grip.cdp.engine import CDPEngine
+from grip.cdp.shadow import (
+    DISCOVER_ELEMENTS_JS, CLICK_ELEMENT_JS,
+    TYPE_ELEMENT_JS, PAGE_TEXT_JS,
+)
+from grip.compression.cache import ElementCache
+from grip.compression.diff import SnapshotDiff
+from grip.compression.summarizer import PageSnapshot, Summarizer
+from grip.errors.classifier import ErrorClassifier
+from grip.errors.types import GripError
+from grip.security.injection import InjectionDetector
+from grip.security.sanitizer import HiddenElementFilter, RawElement
+from grip.trace import Trace, TraceEntry
+
+
+class Page:
+    def __init__(self, engine: CDPEngine, trace: Trace, target_id: str = "") -> None:
+        self._engine = engine
+        self._trace = trace
+        self._target_id = target_id
+        self._version = 0
+        self._current_snapshot: PageSnapshot | None = None
+        self._summarizer = Summarizer()
+        self._cache = ElementCache()
+        self._diff = SnapshotDiff()
+        self._filter = HiddenElementFilter()
+        self._injector = InjectionDetector()
+        self._classifier = ErrorClassifier()
+        self._initialized = False
+
+    async def _ensure_initialized(self) -> None:
+        if not self._initialized:
+            await self._engine.send("Runtime.enable")
+            await self._engine.send("Page.enable")
+            self._initialized = True
+
+    async def snapshot(self) -> PageSnapshot:
+        await self._ensure_initialized()
+        t0 = time.monotonic()
+        try:
+            raw_elements = await self._discover_elements()
+            page_text = await self._get_page_text()
+            title, url = await self._get_page_info()
+        except Exception as e:
+            err = self._classifier.classify_cdp_error(str(e))
+            raise GripError(err) from e
+
+        scan = self._injector.scan(page_text)
+        safe_text = scan.safe_text
+
+        self._version += 1
+        snapshot = self._summarizer.build(
+            version=self._version,
+            url=url,
+            title=title,
+            raw_elements=raw_elements,
+            page_text=safe_text,
+        )
+        changed = self._diff.has_changed(snapshot)
+        snapshot.changed_from_previous = changed
+        self._diff.record(snapshot)
+        self._cache.store_many(snapshot.elements)
+        self._current_snapshot = snapshot
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="snapshot",
+            input={},
+            output={"version": snapshot.version, "elements": len(snapshot.elements)},
+            tokens_consumed=snapshot.tokens_estimated,
+            duration_ms=duration_ms,
+        ))
+        return snapshot
+
+    async def click(self, description: str) -> None:
+        if not self._current_snapshot:
+            await self.snapshot()
+        t0 = time.monotonic()
+        index = self._find_element_index(description)
+        if index is None:
+            err = self._classifier.classify_semantic_miss(description)
+            raise GripError(err)
+        js = CLICK_ELEMENT_JS.replace("index", str(index))
+        result = await self._engine.send(
+            "Runtime.evaluate", {"expression": js, "returnByValue": True}
+        )
+        success = result.get("result", {}).get("value", False)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="click",
+            input={"description": description, "index": index},
+            output={"success": success},
+            tokens_consumed=0,
+            duration_ms=duration_ms,
+        ))
+
+    async def type(self, description: str, text: str) -> None:
+        if not self._current_snapshot:
+            await self.snapshot()
+        t0 = time.monotonic()
+        index = self._find_input_index(description)
+        if index is None:
+            err = self._classifier.classify_semantic_miss(description)
+            raise GripError(err)
+        js = TYPE_ELEMENT_JS.replace("index", str(index)).replace(
+            "text", json.dumps(text)
+        )
+        await self._engine.send(
+            "Runtime.evaluate", {"expression": js, "returnByValue": True}
+        )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="type",
+            input={"description": description, "text": text, "index": index},
+            output={"success": True},
+            tokens_consumed=0,
+            duration_ms=duration_ms,
+        ))
+
+    async def press(self, key: str) -> None:
+        await self._engine.send(
+            "Input.dispatchKeyEvent",
+            {"type": "keyDown", "key": key},
+        )
+        await self._engine.send(
+            "Input.dispatchKeyEvent",
+            {"type": "keyUp", "key": key},
+        )
+
+    async def extract(self, schema: dict[str, str]) -> dict[str, Any]:
+        if not self._current_snapshot:
+            await self.snapshot()
+        return {key: None for key in schema}
+
+    async def observe(self, question: str) -> str:
+        snap = await self.snapshot()
+        return self._summarizer.format(snap)
+
+    def _find_element_index(self, description: str) -> int | None:
+        if not self._current_snapshot:
+            return None
+        desc_lower = description.lower()
+        for el in self._current_snapshot.elements:
+            if desc_lower in el.text.lower() or desc_lower in el.role.lower():
+                return el.index
+        return None
+
+    def _find_input_index(self, description: str) -> int | None:
+        if not self._current_snapshot:
+            return None
+        desc_lower = description.lower()
+        for el in self._current_snapshot.elements:
+            if el.tag in ("input", "textarea") or el.role == "textbox":
+                if (
+                    desc_lower in el.text.lower()
+                    or desc_lower in (el.placeholder or "").lower()
+                    or desc_lower in el.role.lower()
+                ):
+                    return el.index
+        return None
+
+    async def _discover_elements(self) -> list[RawElement]:
+        result = await self._engine.send(
+            "Runtime.evaluate",
+            {"expression": DISCOVER_ELEMENTS_JS, "returnByValue": True},
+        )
+        raw_data = result.get("result", {}).get("value")
+        if isinstance(raw_data, str):
+            raw_data = json.loads(raw_data)
+        if not raw_data:
+            return []
+        return [
+            RawElement(
+                tag=d.get("tag", ""),
+                role=d.get("role", ""),
+                text=d.get("text", ""),
+                placeholder=d.get("placeholder"),
+                in_shadow_dom=d.get("inShadowDom", False),
+                cx=d.get("cx", 0),
+                cy=d.get("cy", 0),
+                computed_display=d.get("computedDisplay", "block"),
+                computed_visibility=d.get("computedVisibility", "visible"),
+                computed_opacity=d.get("computedOpacity", "1"),
+                aria_hidden=d.get("ariaHidden", False),
+                width=d.get("width", 1),
+                height=d.get("height", 1),
+            )
+            for d in raw_data
+        ]
+
+    async def _get_page_text(self) -> str:
+        result = await self._engine.send(
+            "Runtime.evaluate",
+            {"expression": PAGE_TEXT_JS, "returnByValue": True},
+        )
+        return result.get("result", {}).get("value", "")
+
+    async def _get_page_info(self) -> tuple[str, str]:
+        result = await self._engine.send("Target.getTargetInfo", {})
+        info = result.get("targetInfo", {})
+        return info.get("title", ""), info.get("url", "")
