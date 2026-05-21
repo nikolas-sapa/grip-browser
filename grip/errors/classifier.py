@@ -1,8 +1,9 @@
 from __future__ import annotations
 from grip.errors.types import BrowserError, ErrorType, RecoveryAction
 
+_CAPTCHA_TITLE_PATTERNS = ["captcha", "prove you're human", "verify you are human", "i am not a robot"]
 _BLOCK_TITLE_PATTERNS = [
-    "cloudflare", "access denied", "captcha", "ddos-guard",
+    "cloudflare", "access denied", "ddos-guard",
     "attention required", "blocked", "security check",
 ]
 _AUTH_URL_PATTERNS = ["/login", "/signin", "/sign-in", "/auth", "/account/login"]
@@ -54,7 +55,23 @@ class ErrorClassifier:
                 recovery=[RecoveryAction.RETRY, RecoveryAction.EXPONENTIAL_BACKOFF],
             )
 
-        if any(p in title_lower for p in _BLOCK_TITLE_PATTERNS) or status_code in (403, 429):
+        if any(p in title_lower for p in _CAPTCHA_TITLE_PATTERNS):
+            return BrowserError(
+                type=ErrorType.CAPTCHA_REQUIRED,
+                message=f"CAPTCHA challenge detected: {title!r}",
+                confidence=0.93,
+                recovery=[RecoveryAction.ESCALATE_TO_HUMAN, RecoveryAction.VISION_FALLBACK],
+            )
+
+        if status_code == 429:
+            return BrowserError(
+                type=ErrorType.RATE_LIMITED,
+                message=f"Rate limited (429): {title!r}",
+                confidence=0.97,
+                recovery=[RecoveryAction.EXPONENTIAL_BACKOFF, RecoveryAction.RETRY],
+            )
+
+        if any(p in title_lower for p in _BLOCK_TITLE_PATTERNS) or status_code == 403:
             return BrowserError(
                 type=ErrorType.ANTI_BOT_BLOCK,
                 message=f"Anti-bot block detected: {title!r}",
@@ -79,6 +96,14 @@ class ErrorClassifier:
             type=ErrorType.NAVIGATION_FAILED,
             message=f"Unexpected page state: {title!r} ({status_code})",
             confidence=0.6,
+            recovery=[RecoveryAction.RETRY],
+        )
+
+    def classify_zero_results(self, context: str = "") -> BrowserError:
+        return BrowserError(
+            type=ErrorType.ZERO_RESULTS,
+            message=f"Page loaded but returned no matching content{': ' + context if context else ''}",
+            confidence=0.80,
             recovery=[RecoveryAction.RETRY],
         )
 

@@ -150,9 +150,10 @@ class Page:
         )
 
     async def extract(self, schema: dict[str, str]) -> dict[str, Any]:
-        if not self._current_snapshot:
-            await self.snapshot()
-        return {key: None for key in schema}
+        snap = await self.snapshot()
+        # Returns raw page text per key — pass to an LLM for semantic parsing.
+        # Use browser.run(goal, llm=...) for automatic structured extraction.
+        return {key: snap.text_content for key in schema}
 
     async def observe(self, question: str) -> str:
         snap = await self.snapshot()

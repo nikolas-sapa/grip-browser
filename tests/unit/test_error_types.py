@@ -30,8 +30,10 @@ def test_grip_error_wraps_browser_error():
 def test_all_error_types_exist():
     types = {e.value for e in ErrorType}
     expected = {
-        "element_stale", "element_not_found", "anti_bot_block",
-        "auth_required", "network_timeout", "navigation_failed", "canvas_element",
+        "element_stale", "element_not_found",
+        "anti_bot_block", "captcha_required", "rate_limited",
+        "auth_required", "zero_results",
+        "network_timeout", "navigation_failed", "canvas_element",
     }
     assert expected == types
 

@@ -27,6 +27,35 @@ def test_classifies_cloudflare_block():
     assert RecoveryAction.ROTATE_IDENTITY in err.recovery
 
 
+def test_classifies_captcha():
+    c = ErrorClassifier()
+    err = c.classify_page_state(
+        title="Verify you are human | Cloudflare",
+        url="https://example.com",
+        status_code=403,
+    )
+    assert err.type == ErrorType.CAPTCHA_REQUIRED
+    assert RecoveryAction.ESCALATE_TO_HUMAN in err.recovery
+
+
+def test_classifies_rate_limited():
+    c = ErrorClassifier()
+    err = c.classify_page_state(
+        title="Too Many Requests",
+        url="https://api.example.com/search",
+        status_code=429,
+    )
+    assert err.type == ErrorType.RATE_LIMITED
+    assert RecoveryAction.EXPONENTIAL_BACKOFF in err.recovery
+
+
+def test_classifies_zero_results():
+    c = ErrorClassifier()
+    err = c.classify_zero_results("no products matched the query")
+    assert err.type == ErrorType.ZERO_RESULTS
+    assert RecoveryAction.RETRY in err.recovery
+
+
 def test_classifies_auth_required():
     c = ErrorClassifier()
     err = c.classify_page_state(

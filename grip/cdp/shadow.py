@@ -20,6 +20,7 @@ DISCOVER_ELEMENTS_JS = """
     let node = walker.currentNode;
     while (node) {
       const el = node;
+      if (!el.tagName) { node = walker.nextNode(); continue; }
       const tag = el.tagName.toLowerCase();
       const role = el.getAttribute('role') || el.getAttribute('aria-role') || '';
       const ariaHidden = el.getAttribute('aria-hidden') === 'true';
@@ -75,6 +76,7 @@ function(index) {
     let node = walker.currentNode;
     while (node) {
       const el = node;
+      if (!el.tagName) { node = walker.nextNode(); continue; }
       const tag = el.tagName.toLowerCase();
       const role = el.getAttribute('role') || '';
       if (INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role)) {
@@ -106,6 +108,7 @@ function(index, text) {
     let node = walker.currentNode;
     while (node) {
       const el = node;
+      if (!el.tagName) { node = walker.nextNode(); continue; }
       const tag = el.tagName.toLowerCase();
       if (INPUT_TAGS.has(tag) || el.isContentEditable) {
         const style = window.getComputedStyle(el);

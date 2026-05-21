@@ -62,7 +62,7 @@ class Browser:
             self._engine = CDPEngine()
             await self._engine.connect(ws_url)
 
-        if not url.startswith("http"):
+        if not url.startswith(("http", "about:", "data:", "file:", "blob:")):
             url = "https://" + url
 
         await self._engine.send("Page.navigate", {"url": url})
