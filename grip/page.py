@@ -69,6 +69,15 @@ class Page:
         scan = self._injector.scan(page_text)
         safe_text = scan.safe_text
 
+        from grip.errors.types import ErrorType as ET
+        page_error = None
+        _detected = self._classifier.classify_page_state(title, url, 0)
+        if _detected.type in (
+            ET.ANTI_BOT_BLOCK, ET.CAPTCHA_REQUIRED,
+            ET.RATE_LIMITED, ET.AUTH_REQUIRED,
+        ):
+            page_error = _detected
+
         self._version += 1
         snapshot = self._summarizer.build(
             version=self._version,
@@ -77,6 +86,7 @@ class Page:
             raw_elements=raw_elements,
             page_text=safe_text,
         )
+        snapshot.page_error = page_error
         changed = self._diff.has_changed(snapshot)
         snapshot.changed_from_previous = changed
         self._diff.record(snapshot)

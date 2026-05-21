@@ -1,7 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from grip.security.sanitizer import RawElement
+
+if TYPE_CHECKING:
+    from grip.errors.types import BrowserError
 
 try:
     import tiktoken
@@ -34,6 +38,7 @@ class Element:
     in_shadow_dom: bool
     cx: int
     cy: int
+    ref: str = ""
 
 
 @dataclass
@@ -45,6 +50,7 @@ class PageSnapshot:
     text_content: str
     tokens_estimated: int
     changed_from_previous: bool = True
+    page_error: "BrowserError | None" = None
 
 
 class Summarizer:
