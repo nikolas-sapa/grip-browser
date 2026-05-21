@@ -75,7 +75,7 @@ class Browser:
 
     async def __aenter__(self) -> "Browser":
         self._launcher = ChromeLauncher()
-        port = self._launcher.launch(headless=self._headless)
+        port = self._launcher.launch(headless=self._headless, proxy=self._proxy)
         ws_url = await fetch_tab_ws_url(port)
         self._engine = CDPEngine()
         await self._engine.connect(ws_url)
@@ -87,7 +87,7 @@ class Browser:
     async def open(self, url: str, **kwargs: str) -> Page:
         if not self._engine:
             self._launcher = ChromeLauncher()
-            port = self._launcher.launch(headless=self._headless)
+            port = self._launcher.launch(headless=self._headless, proxy=self._proxy)
             ws_url = await fetch_tab_ws_url(port)
             self._engine = CDPEngine()
             await self._engine.connect(ws_url)

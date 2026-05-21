@@ -41,7 +41,7 @@ class ChromeLauncher:
         self._process: subprocess.Popen | None = None
         self._user_data_dir: str | None = None
 
-    def launch(self, headless: bool = True) -> int:
+    def launch(self, headless: bool = True, proxy: str | None = None) -> int:
         self._user_data_dir = tempfile.mkdtemp(prefix="grip_chrome_")
         args = [
             self.executable,
@@ -53,6 +53,8 @@ class ChromeLauncher:
         ]
         if headless:
             args.append("--headless=new")
+        if proxy:
+            args.append(f"--proxy-server={proxy}")
         self._process = subprocess.Popen(
             args,
             stdout=subprocess.DEVNULL,
