@@ -11,6 +11,7 @@ from grip.cdp.shadow import (
     TYPE_ELEMENT_JS, PAGE_TEXT_JS,
 )
 from grip.compression.cache import ElementCache
+from grip.compression.refs import RefRegistry
 from grip.compression.diff import SnapshotDiff
 from grip.compression.summarizer import PageSnapshot, Summarizer
 from grip.errors.classifier import ErrorClassifier
@@ -48,6 +49,8 @@ class Page:
         self._injector = InjectionDetector()
         self._classifier = ErrorClassifier()
         self._initialized = False
+        self._refs = RefRegistry()
+        self._current_url: str = ""
 
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
@@ -65,6 +68,10 @@ class Page:
         except Exception as e:
             err = self._classifier.classify_cdp_error(str(e))
             raise GripError(err) from e
+
+        if self._current_url and url != self._current_url:
+            self._refs.reset()
+        self._current_url = url
 
         scan = self._injector.scan(page_text)
         safe_text = scan.safe_text
@@ -86,6 +93,8 @@ class Page:
             page_text=safe_text,
         )
         snapshot.page_error = page_error
+        for el in snapshot.elements:
+            el.ref = self._refs.assign(el.tag, el.text)
         changed = self._diff.has_changed(snapshot)
         snapshot.changed_from_previous = changed
         self._diff.record(snapshot)
@@ -199,6 +208,11 @@ class Page:
     def _find_element_index(self, description: str) -> int | None:
         if not self._current_snapshot:
             return None
+        # Exact ref match (e.g., "e5")
+        for el in self._current_snapshot.elements:
+            if el.ref == description:
+                return el.index
+        # Fuzzy text/role match
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
             if desc_lower in el.text.lower() or desc_lower in el.role.lower():
@@ -208,6 +222,11 @@ class Page:
     def _find_input_index(self, description: str) -> int | None:
         if not self._current_snapshot:
             return None
+        # Exact ref match
+        for el in self._current_snapshot.elements:
+            if el.ref == description and el.tag in ("input", "textarea"):
+                return el.index
+        # Fuzzy match
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
             if el.tag in ("input", "textarea") or el.role == "textbox":

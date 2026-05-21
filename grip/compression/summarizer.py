@@ -102,7 +102,8 @@ class Summarizer:
             for el in elements:
                 abbrev = _TAG_ABBREV.get(el.tag, el.tag[:3])
                 desc = el.text or el.placeholder or el.role
-                lines.append(f"  [{abbrev}:{el.index}] {desc!r}")
+                ref = el.ref or str(el.index)
+                lines.append(f"  [{abbrev}:{ref}] {desc!r}")
         if text:
             lines.append("CONTENT:")
             lines.append(f"  {text[:2000]}")
