@@ -130,12 +130,16 @@ class Browser:
             self._launcher = None
 
     async def save_session(self, path: str) -> None:
+        if not self._engine:
+            raise RuntimeError("Browser is not connected. Use open() or async with first.")
         result = await self._engine.send("Network.getCookies", {})
         cookies = result.get("cookies", [])
         with open(path, "w") as f:
             json.dump(cookies, f, indent=2)
 
     async def load_session(self, path: str) -> None:
+        if not self._engine:
+            raise RuntimeError("Browser is not connected. Use open() or async with first.")
         try:
             with open(path) as f:
                 cookies = json.load(f)
