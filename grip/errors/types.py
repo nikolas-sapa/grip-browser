@@ -14,6 +14,7 @@ class ErrorType(Enum):
     NETWORK_TIMEOUT = "network_timeout"
     NAVIGATION_FAILED = "navigation_failed"
     CANVAS_ELEMENT = "canvas_element"
+    SAFE_MODE_VIOLATION = "safe_mode_violation"
 
 
 class RecoveryAction(Enum):

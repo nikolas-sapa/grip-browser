@@ -36,10 +36,11 @@ class Screenshot:
 
 
 class Page:
-    def __init__(self, engine: CDPEngine, trace: Trace, target_id: str = "") -> None:
+    def __init__(self, engine: CDPEngine, trace: Trace, target_id: str = "", safe: bool = False) -> None:
         self._engine = engine
         self._trace = trace
         self._target_id = target_id
+        self._safe = safe
         self._version = 0
         self._current_snapshot: PageSnapshot | None = None
         self._summarizer = Summarizer()
@@ -51,6 +52,15 @@ class Page:
         self._initialized = False
         self._refs = RefRegistry()
         self._current_url: str = ""
+
+    def _assert_not_safe(self, action: str) -> None:
+        if self._safe:
+            raise GripError(BrowserError(
+                type=ErrorType.SAFE_MODE_VIOLATION,
+                message=f"{action}() is not allowed in safe mode",
+                confidence=1.0,
+                recovery=[],
+            ))
 
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
@@ -116,6 +126,7 @@ class Page:
         return snapshot
 
     async def click(self, description: str) -> None:
+        self._assert_not_safe("click")
         if not self._current_snapshot:
             await self.snapshot()
         t0 = time.monotonic()
@@ -139,6 +150,7 @@ class Page:
         ))
 
     async def type(self, description: str, text: str) -> None:
+        self._assert_not_safe("type")
         if not self._current_snapshot:
             await self.snapshot()
         t0 = time.monotonic()
@@ -161,6 +173,7 @@ class Page:
         ))
 
     async def press(self, key: str) -> None:
+        self._assert_not_safe("press")
         await self._engine.send(
             "Input.dispatchKeyEvent",
             {"type": "keyDown", "key": key},

@@ -34,6 +34,7 @@ def test_all_error_types_exist():
         "anti_bot_block", "captcha_required", "rate_limited",
         "auth_required", "zero_results",
         "network_timeout", "navigation_failed", "canvas_element",
+        "safe_mode_violation",
     }
     assert expected == types
 

@@ -58,9 +58,17 @@ async def fetch_tab_ws_url(port: int) -> str:
 
 
 class Browser:
-    def __init__(self, llm: "LLMAdapter | None" = None, headless: bool = True) -> None:
+    def __init__(
+        self,
+        llm: "LLMAdapter | None" = None,
+        headless: bool = True,
+        safe: bool = False,
+        proxy: str | None = None,
+    ) -> None:
         self._llm = llm
         self._headless = headless
+        self._safe = safe
+        self._proxy = proxy
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self.trace = Trace()
@@ -105,7 +113,7 @@ class Browser:
         finally:
             self._engine.off("Page.loadEventFired", on_load)
 
-        return Page(engine=self._engine, trace=self.trace)
+        return Page(engine=self._engine, trace=self.trace, safe=self._safe)
 
     async def run(self, goal: str, url: str) -> "RunResult":
         from grip.runner import Runner
