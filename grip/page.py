@@ -14,7 +14,7 @@ from grip.compression.cache import ElementCache
 from grip.compression.diff import SnapshotDiff
 from grip.compression.summarizer import PageSnapshot, Summarizer
 from grip.errors.classifier import ErrorClassifier
-from grip.errors.types import GripError
+from grip.errors.types import BrowserError, ErrorType, GripError
 from grip.security.injection import InjectionDetector
 from grip.security.sanitizer import HiddenElementFilter, RawElement
 from grip.trace import Trace, TraceEntry
@@ -69,12 +69,11 @@ class Page:
         scan = self._injector.scan(page_text)
         safe_text = scan.safe_text
 
-        from grip.errors.types import ErrorType as ET
         page_error = None
         _detected = self._classifier.classify_page_state(title, url, 0)
         if _detected.type in (
-            ET.ANTI_BOT_BLOCK, ET.CAPTCHA_REQUIRED,
-            ET.RATE_LIMITED, ET.AUTH_REQUIRED,
+            ErrorType.ANTI_BOT_BLOCK, ErrorType.CAPTCHA_REQUIRED,
+            ErrorType.RATE_LIMITED, ErrorType.AUTH_REQUIRED,
         ):
             page_error = _detected
 
