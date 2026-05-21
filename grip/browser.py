@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import urllib.parse
 from typing import TYPE_CHECKING
 
 from grip.cdp.engine import CDPEngine
@@ -10,6 +11,27 @@ from grip.trace import Trace
 
 if TYPE_CHECKING:
     from grip.adapters.base import LLMAdapter
+
+_MACROS: dict[str, str] = {
+    "@google_search":    "https://www.google.com/search?q={query}",
+    "@youtube_search":   "https://www.youtube.com/results?search_query={query}",
+    "@amazon_search":    "https://www.amazon.com/s?k={query}",
+    "@github_search":    "https://github.com/search?q={query}",
+    "@reddit_search":    "https://www.reddit.com/search/?q={query}",
+    "@wikipedia_search": "https://en.wikipedia.org/wiki/Special:Search?search={query}",
+    "@twitter_search":   "https://twitter.com/search?q={query}",
+    "@yelp_search":      "https://www.yelp.com/search?find_desc={query}",
+}
+
+
+def _expand_macro(url: str, **kwargs: str) -> str:
+    if not url.startswith("@"):
+        return url
+    template = _MACROS.get(url)
+    if not template:
+        raise ValueError(f"Unknown macro: {url!r}. Available: {sorted(_MACROS)}")
+    query = urllib.parse.quote_plus(kwargs.get("query", ""))
+    return template.format(query=query)
 
 
 async def fetch_tab_ws_url(port: int) -> str:
@@ -54,13 +76,15 @@ class Browser:
     async def __aexit__(self, *args) -> None:
         await self.close()
 
-    async def open(self, url: str) -> Page:
+    async def open(self, url: str, **kwargs: str) -> Page:
         if not self._engine:
             self._launcher = ChromeLauncher()
             port = self._launcher.launch(headless=self._headless)
             ws_url = await fetch_tab_ws_url(port)
             self._engine = CDPEngine()
             await self._engine.connect(ws_url)
+
+        url = _expand_macro(url, **kwargs)
 
         if not url.startswith(("http", "about:", "data:", "file:", "blob:")):
             url = "https://" + url
