@@ -95,6 +95,9 @@ class Page:
         snapshot.page_error = page_error
         for el in snapshot.elements:
             el.ref = self._refs.assign(el.tag, el.text)
+        snapshot.tokens_estimated = self._summarizer.count_tokens(
+            self._summarizer.format(snapshot)
+        )
         changed = self._diff.has_changed(snapshot)
         snapshot.changed_from_previous = changed
         self._diff.record(snapshot)
@@ -224,7 +227,9 @@ class Page:
             return None
         # Exact ref match
         for el in self._current_snapshot.elements:
-            if el.ref == description and el.tag in ("input", "textarea"):
+            if el.ref == description and (
+                el.tag in ("input", "textarea") or el.role == "textbox"
+            ):
                 return el.index
         # Fuzzy match
         desc_lower = description.lower()

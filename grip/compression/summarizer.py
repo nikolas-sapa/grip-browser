@@ -93,6 +93,9 @@ class Summarizer:
             snapshot.url, snapshot.title, snapshot.elements, snapshot.text_content
         )
 
+    def count_tokens(self, text: str) -> int:
+        return _count_tokens(text)
+
     def _build_format_str(
         self, url: str, title: str, elements: list[Element], text: str
     ) -> str:
