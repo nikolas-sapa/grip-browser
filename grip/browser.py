@@ -128,3 +128,15 @@ class Browser:
         if self._launcher:
             self._launcher.terminate()
             self._launcher = None
+
+    async def save_session(self, path: str) -> None:
+        result = await self._engine.send("Network.getCookies", {})
+        cookies = result.get("cookies", [])
+        with open(path, "w") as f:
+            json.dump(cookies, f, indent=2)
+
+    async def load_session(self, path: str) -> None:
+        with open(path) as f:
+            cookies = json.load(f)
+        await self._engine.send("Network.enable", {})
+        await self._engine.send("Network.setCookies", {"cookies": cookies})
