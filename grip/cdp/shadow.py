@@ -22,6 +22,14 @@ DISCOVER_ELEMENTS_JS = """
       const el = node;
       if (!el.tagName) { node = walker.nextNode(); continue; }
       const tag = el.tagName.toLowerCase();
+      if (tag === 'iframe') {
+        const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+        const isTracking = [
+          'googletagmanager', 'google-analytics', 'facebook.net', 'hotjar',
+          'sentry', 'recaptcha', 'doubleclick', 'analytics', 'pixel', 'tracking'
+        ].some(p => src.includes(p));
+        if (isTracking) { node = walker.nextNode(); continue; }
+      }
       const role = el.getAttribute('role') || el.getAttribute('aria-role') || '';
       const ariaHidden = el.getAttribute('aria-hidden') === 'true';
       const style = window.getComputedStyle(el);

@@ -32,3 +32,8 @@ def test_discover_returns_array_structure():
     assert "tag" in DISCOVER_ELEMENTS_JS
     assert "role" in DISCOVER_ELEMENTS_JS
     assert "inShadowDom" in DISCOVER_ELEMENTS_JS
+
+
+def test_discover_js_skips_tracking_iframe():
+    assert "googletagmanager" in DISCOVER_ELEMENTS_JS
+    assert "isTracking" in DISCOVER_ELEMENTS_JS
