@@ -136,7 +136,12 @@ class Browser:
             json.dump(cookies, f, indent=2)
 
     async def load_session(self, path: str) -> None:
-        with open(path) as f:
-            cookies = json.load(f)
+        try:
+            with open(path) as f:
+                cookies = json.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Session file not found: {path}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Session file is not valid JSON: {path}") from e
         await self._engine.send("Network.enable", {})
         await self._engine.send("Network.setCookies", {"cookies": cookies})
