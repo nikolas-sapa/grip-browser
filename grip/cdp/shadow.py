@@ -24,10 +24,13 @@ DISCOVER_ELEMENTS_JS = """
       const tag = el.tagName.toLowerCase();
       if (tag === 'iframe') {
         const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+        let _iframeHost = '';
+        try { _iframeHost = new URL(src, location.href).hostname; } catch(e) {}
         const isTracking = [
-          'googletagmanager', 'google-analytics', 'facebook.net', 'hotjar',
-          'sentry', 'recaptcha', 'doubleclick', 'analytics', 'pixel', 'tracking'
-        ].some(p => src.includes(p));
+          'googletagmanager.com', 'google-analytics.com', 'facebook.net',
+          'hotjar.com', 'sentry.io', 'recaptcha.net', 'doubleclick.net',
+          'analytics.google.com', 'pixel.facebook.com', 'tr.snapchat.com'
+        ].some(p => _iframeHost.includes(p));
         if (isTracking) { node = walker.nextNode(); continue; }
       }
       const role = el.getAttribute('role') || el.getAttribute('aria-role') || '';

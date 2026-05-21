@@ -35,5 +35,7 @@ def test_discover_returns_array_structure():
 
 
 def test_discover_js_skips_tracking_iframe():
-    assert "googletagmanager" in DISCOVER_ELEMENTS_JS
+    assert "googletagmanager.com" in DISCOVER_ELEMENTS_JS
     assert "isTracking" in DISCOVER_ELEMENTS_JS
+    assert "if (isTracking)" in DISCOVER_ELEMENTS_JS
+    assert "_iframeHost" in DISCOVER_ELEMENTS_JS
