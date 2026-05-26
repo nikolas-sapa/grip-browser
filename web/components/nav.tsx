@@ -26,7 +26,7 @@ export function Nav() {
                  border-b border-white/[0.06] bg-[#09090b]/80 backdrop-blur-md"
     >
       {/* Logo */}
-      <a href="/" className="flex items-center gap-2">
+      <a href="/" aria-label="grip — go to home" className="flex items-center gap-2">
         <span className="text-base font-semibold tracking-tight text-white">
           grip
         </span>
@@ -36,7 +36,7 @@ export function Nav() {
       </a>
 
       {/* Right side */}
-      <div className="flex items-center gap-3">
+      <nav aria-label="Main" className="flex items-center gap-3">
         <a
           href="https://github.com/nikolassapalidis/agentbrowser"
           target="_blank"
@@ -50,12 +50,13 @@ export function Nav() {
         </a>
         <a
           href="#install"
+          aria-label="Install grip via pip"
           className="rounded-full bg-white px-4 py-1.5 text-xs font-medium text-black
                      hover:bg-white/90 transition-colors duration-150"
         >
           pip install
         </a>
-      </div>
+      </nav>
     </motion.header>
   );
 }
