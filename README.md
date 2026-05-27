@@ -1,5 +1,10 @@
 # grip
 
+[![PyPI version](https://img.shields.io/pypi/v/grip-browser?color=black&style=flat-square)](https://pypi.org/project/grip-browser/)
+[![Python](https://img.shields.io/pypi/pyversions/grip-browser?color=black&style=flat-square)](https://pypi.org/project/grip-browser/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-black.svg?style=flat-square)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/84yk8btb9f-prog/grip-browser/test.yml?style=flat-square&label=tests)](https://github.com/84yk8btb9f-prog/grip-browser/actions)
+
 **Token-efficient, CDP-native browser SDK for AI agents.**
 
 Built directly on Chrome DevTools Protocol — no Playwright, no Puppeteer, no wrapper overhead.
