@@ -59,7 +59,7 @@ export function Hero() {
           Get started <ArrowRight size={13} />
         </a>
         <a
-          href="https://github.com/nikolassapalidis/agentbrowser"
+          href="https://github.com/84yk8btb9f-prog/grip-browser"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-5 py-2.5 text-sm text-white/70 hover:bg-white/[0.08] hover:text-white transition-colors"
