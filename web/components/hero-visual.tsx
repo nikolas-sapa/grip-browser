@@ -148,16 +148,6 @@ export function HeroVisual() {
         {/* Snapshot output */}
         <div className="relative px-5 py-5 min-h-[220px] overflow-hidden font-mono text-[12px] leading-relaxed">
 
-          {/* Scan line */}
-          <AnimatePresence>
-            {phase === "scanning" && (
-              <motion.div
-                className="absolute left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent pointer-events-none"
-                style={{ top: `${scanY}%` }}
-              />
-            )}
-          </AnimatePresence>
-
           {/* PAGE header */}
           <div className="mb-3">
             <span className="text-white/20">PAGE: </span>
