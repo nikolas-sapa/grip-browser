@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { TokenCounter } from "./token-counter";
+import { HeroVisual } from "./hero-visual";
 import { ArrowRight, Terminal } from "lucide-react";
 
 const fadeUp = (delay = 0) => ({
@@ -10,19 +10,6 @@ const fadeUp = (delay = 0) => ({
   transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as [number, number, number, number], delay },
 });
 
-const CODE_SNIPPET = `import asyncio
-from grip import Browser
-
-async def main():
-    async with Browser(headless=True) as browser:
-        page = await browser.open("https://news.ycombinator.com")
-        snapshot = await page.snapshot()
-
-        print(snapshot.text_content)      # readable page text
-        print(snapshot.elements)          # interactive elements only
-        print(snapshot.tokens_estimated)  # ~50
-
-asyncio.run(main())`;
 
 export function Hero() {
   return (
@@ -81,25 +68,9 @@ export function Hero() {
         </a>
       </motion.div>
 
-      {/* Token counter */}
-      <motion.div {...fadeUp(0.2)} className="mt-14 w-full max-w-lg">
-        <TokenCounter />
-      </motion.div>
-
-      {/* Code preview */}
-      <motion.div
-        {...fadeUp(0.25)}
-        className="mt-10 w-full max-w-2xl text-left rounded-2xl border border-white/[0.08] bg-[#111113] overflow-hidden"
-      >
-        <div className="flex items-center gap-1.5 px-4 py-3 border-b border-white/[0.06]">
-          <span className="w-2.5 h-2.5 rounded-full bg-white/10" />
-          <span className="w-2.5 h-2.5 rounded-full bg-white/10" />
-          <span className="w-2.5 h-2.5 rounded-full bg-white/10" />
-          <span className="ml-3 text-[11px] text-white/30 font-mono">quick_start.py</span>
-        </div>
-        <pre className="p-5 text-[12px] sm:text-[13px] font-mono text-white/70 overflow-x-auto leading-relaxed">
-          <code>{CODE_SNIPPET}</code>
-        </pre>
+      {/* Hero visual — animated snapshot demo */}
+      <motion.div {...fadeUp(0.2)} className="mt-14 w-full">
+        <HeroVisual />
       </motion.div>
     </section>
   );
