@@ -54,7 +54,6 @@ export function TokenCounter() {
 
       {/* grip card */}
       <div className="flex-1 rounded-2xl border border-white/20 bg-white/[0.05] p-5 text-center relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-b from-white/[0.04] to-transparent pointer-events-none" />
         <p className="text-xs text-white/40 mb-2 font-mono tracking-wide uppercase relative z-10">
           grip snapshot
         </p>

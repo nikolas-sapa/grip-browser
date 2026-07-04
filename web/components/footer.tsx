@@ -5,7 +5,7 @@ export function Footer() {
         <span>grip · MIT License</span>
         <div className="flex gap-6">
           <a
-            href="https://github.com/nikolassapalidis/agentbrowser"
+            href="https://github.com/84yk8btb9f-prog/grip-browser"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-white/50 transition-colors"
@@ -13,12 +13,12 @@ export function Footer() {
             GitHub
           </a>
           <a
-            href="https://github.com/nikolassapalidis/agentbrowser#readme"
+            href="https://github.com/84yk8btb9f-prog/grip-browser#readme"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-white/50 transition-colors"
           >
-            Docs
+            README
           </a>
           <a
             href="https://pypi.org/project/grip-browser"

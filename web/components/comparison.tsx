@@ -6,7 +6,7 @@ import { Check, X, Minus } from "lucide-react";
 type CellValue = true | false | "partial";
 
 const ROWS: { label: string; grip: CellValue; playwright: CellValue; puppeteer: CellValue }[] = [
-  { label: "~50 tokens per snapshot", grip: true, playwright: false, puppeteer: false },
+  { label: "Token-efficient snapshots*", grip: true, playwright: "partial", puppeteer: false },
   { label: "Shadow DOM traversal", grip: true, playwright: "partial", puppeteer: false },
   { label: "Prompt injection guard", grip: true, playwright: false, puppeteer: false },
   { label: "Typed error recovery", grip: true, playwright: false, puppeteer: false },
@@ -79,6 +79,13 @@ export function Comparison() {
           </motion.div>
         ))}
       </div>
+
+      {/* Methodology footnote — Playwright MCP does ship compact snapshots */}
+      <p className="mt-3 text-[11px] text-white/30 leading-relaxed">
+        * Playwright MCP ships accessibility-tree snapshots — far smaller than raw
+        HTML, but typically hundreds to thousands of tokens per page. grip&apos;s
+        semantic snapshot averages ~50.
+      </p>
     </section>
   );
 }

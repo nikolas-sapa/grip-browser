@@ -76,7 +76,7 @@ export function Install() {
 
         <div className="mt-10 flex flex-wrap justify-center gap-3">
           <a
-            href="https://github.com/nikolassapalidis/agentbrowser"
+            href="https://github.com/84yk8btb9f-prog/grip-browser"
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-full border border-white/10 bg-white/[0.04] px-5 py-2.5 text-sm text-white/70 hover:bg-white/[0.08] hover:text-white transition-colors"
@@ -84,12 +84,12 @@ export function Install() {
             View on GitHub
           </a>
           <a
-            href="https://github.com/nikolassapalidis/agentbrowser#readme"
+            href="https://github.com/84yk8btb9f-prog/grip-browser#readme"
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-full bg-white px-5 py-2.5 text-sm font-medium text-black hover:bg-white/90 transition-colors"
           >
-            Read the docs
+            Read the README
           </a>
         </div>
       </motion.div>

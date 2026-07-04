@@ -4,12 +4,23 @@ import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://grip-browser.vercel.app"),
   title: "grip — Token-efficient browser SDK for AI agents",
-  description: "~50 tokens per page snapshot. CDP-native, no Playwright bloat. Built for LLM agents.",
+  description:
+    "50 tokens per page snapshot, not 12,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
   openGraph: {
-    title: "grip",
-    description: "~50 tokens per page snapshot. CDP-native browser SDK for AI agents.",
+    title: "grip — Token-efficient browser SDK for AI agents",
+    description:
+      "50 tokens per page snapshot, not 12,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
+    url: "https://grip-browser.vercel.app",
+    siteName: "grip",
     type: "website",
+  },
+  twitter: {
+    card: "summary",
+    title: "grip — Token-efficient browser SDK for AI agents",
+    description:
+      "50 tokens per page snapshot, not 12,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
   },
 };
 

@@ -14,12 +14,6 @@ const fadeUp = (delay = 0) => ({
 export function Hero() {
   return (
     <section className="relative flex flex-col items-center text-center pt-36 pb-20 px-6 overflow-hidden">
-      {/* Radial ambient glow */}
-      <div
-        className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full pointer-events-none"
-        style={{ background: "radial-gradient(circle, rgba(255,255,255,0.04) 0%, transparent 70%)" }}
-      />
-
       {/* Badge */}
       <motion.div {...fadeUp(0)}>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] text-white/50 font-mono mb-8">
@@ -33,10 +27,10 @@ export function Hero() {
         {...fadeUp(0.05)}
         className="max-w-3xl text-5xl sm:text-6xl lg:text-7xl font-semibold tracking-tight leading-[1.08]"
       >
-        <span className="bg-gradient-to-b from-white to-white/60 bg-clip-text text-transparent">
-          Browser SDK that thinks
+        <span className="text-white">
+          50 tokens per page snapshot.
           <br />
-          in tokens.
+          Not 12,000.
         </span>
       </motion.h1>
 
@@ -45,9 +39,9 @@ export function Hero() {
         {...fadeUp(0.1)}
         className="mt-5 max-w-lg text-base sm:text-lg text-white/40 leading-relaxed"
       >
-        grip gives your AI agent a semantic page snapshot — interactive elements
-        and visible text — in{" "}
-        <span className="text-white/70 font-medium">~50 tokens</span>. Raw HTML costs 12,000.
+        grip is a CDP-native browser SDK for AI agents. It hands your agent a
+        semantic page snapshot — interactive elements and visible text — instead
+        of raw HTML. No Playwright bloat.
       </motion.p>
 
       {/* CTAs */}
@@ -68,8 +62,51 @@ export function Hero() {
         </a>
       </motion.div>
 
+      {/* Proof strip — live badges, real numbers */}
+      <motion.div {...fadeUp(0.2)} className="mt-6 flex flex-wrap items-center justify-center gap-2">
+        <a
+          href="https://pypi.org/project/grip-browser/"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="grip-browser on PyPI"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://img.shields.io/pypi/v/grip-browser?style=flat-square&labelColor=1a1a1a&color=2e2e2e"
+            alt="PyPI version"
+            height={20}
+          />
+        </a>
+        <a
+          href="https://pypi.org/project/grip-browser/"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="grip-browser downloads on PyPI"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://img.shields.io/pypi/dm/grip-browser?style=flat-square&labelColor=1a1a1a&color=2e2e2e"
+            alt="PyPI monthly downloads"
+            height={20}
+          />
+        </a>
+        <a
+          href="https://github.com/nikolas-sapa/grip-browser"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="grip-browser stars on GitHub"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://img.shields.io/github/stars/nikolas-sapa/grip-browser?style=flat-square&labelColor=1a1a1a&color=2e2e2e"
+            alt="GitHub stars"
+            height={20}
+          />
+        </a>
+      </motion.div>
+
       {/* Hero visual — animated snapshot demo */}
-      <motion.div {...fadeUp(0.2)} className="mt-14 w-full">
+      <motion.div {...fadeUp(0.25)} className="mt-14 w-full">
         <HeroVisual />
       </motion.div>
     </section>
