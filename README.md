@@ -15,6 +15,53 @@ pip install grip-browser
 
 ---
 
+## What is Grip?
+
+**Grip is a CDP-native browser SDK for AI agents that turns a web page into a ~50-token semantic snapshot instead of ~12,000 tokens of raw HTML.** It runs on the Chrome DevTools Protocol directly — no Playwright, no Puppeteer, no wrapper binary.
+
+### Why Grip
+
+Agents don't need the DOM. They need to know what's on the page and what they can act on. Grip sends the model only the interactive elements and visible text — structured, indexed, and fuzzy-matchable — so a full agent loop that costs ~200,000 tokens on raw HTML costs ~2,000 with Grip. Same task, ~100x less context burned.
+
+### Grip vs Playwright MCP vs Puppeteer
+
+| | Playwright MCP | Puppeteer | Grip |
+|---|:---:|:---:|:---:|
+| Tokens per snapshot | ~2,000 | ~2,000 | **~50** |
+| Built on | Playwright | Chromium binary API | pure CDP |
+| Shadow DOM traversal | partial | no | full |
+| Fuzzy element match (no selectors) | no | no | yes |
+| Typed error recovery | no | no | yes |
+| Prompt-injection guard | no | no | yes |
+
+Honest caveat: Playwright and Puppeteer are broader general-purpose automation frameworks with huge ecosystems and cross-browser support. Grip is narrower on purpose — it does one thing (feed an LLM the smallest useful view of a page) and does not try to replace them for human-driven E2E testing.
+
+### When to use Grip
+
+- You're building an autonomous or semi-autonomous agent that browses the web and you're paying per token.
+- Your agent loop is blowing its context window on raw HTML or screenshots.
+- You want typed, recoverable errors (`CAPTCHA_REQUIRED`, `RATE_LIMITED`, `ELEMENT_STALE`) instead of parsing exception strings.
+- You need shadow DOM / web-component pages handled without special-casing.
+
+### When not to use Grip
+
+- You need cross-browser (Firefox/WebKit) human E2E test coverage — use Playwright.
+- Your task is a fixed, deterministic scrape with known selectors and no LLM in the loop — a plain scraper is simpler.
+
+### FAQ
+
+**Is Grip a Playwright wrapper?** No. Grip talks to Chrome over the DevTools Protocol directly. There is no Playwright or Puppeteer dependency underneath.
+
+**How does it get to ~50 tokens?** It sends the model only interactive elements (inputs, buttons, links) and visible text, indexed for fuzzy matching — not the full HTML tree, not a screenshot.
+
+**Which LLMs does it work with?** Anthropic and OpenAI adapters ship in the box; any model works via the `LLMAdapter` protocol.
+
+**Does it handle CAPTCHAs / bot blocks?** It detects them and returns a typed error with a suggested recovery action (escalate, backoff, rotate). It does not solve CAPTCHAs for you.
+
+**What do I need installed?** Python 3.11+ and Chrome or Chromium. Grip finds Chrome automatically.
+
+---
+
 ## The problem
 
 Most browser tools give AI agents raw HTML or screenshots. Raw HTML is ~12,000 tokens per page. Screenshots are ~3,000 tokens. Both burn through context windows fast and slow your agent down.
