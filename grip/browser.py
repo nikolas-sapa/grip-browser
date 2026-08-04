@@ -13,14 +13,18 @@ if TYPE_CHECKING:
     from grip.adapters.base import LLMAdapter
 
 _MACROS: dict[str, str] = {
-    "@google_search":    "https://www.google.com/search?q={query}",
-    "@youtube_search":   "https://www.youtube.com/results?search_query={query}",
-    "@amazon_search":    "https://www.amazon.com/s?k={query}",
-    "@github_search":    "https://github.com/search?q={query}",
-    "@reddit_search":    "https://www.reddit.com/search/?q={query}",
-    "@wikipedia_search": "https://en.wikipedia.org/wiki/Special:Search?search={query}",
-    "@twitter_search":   "https://twitter.com/search?q={query}",
-    "@yelp_search":      "https://www.yelp.com/search?find_desc={query}",
+    "@google_search":       "https://www.google.com/search?q={query}",
+    "@youtube_search":      "https://www.youtube.com/results?search_query={query}",
+    "@amazon_search":       "https://www.amazon.com/s?k={query}",
+    "@github_search":       "https://github.com/search?q={query}",
+    "@reddit_search":       "https://www.reddit.com/search/?q={query}",
+    "@wikipedia_search":    "https://en.wikipedia.org/wiki/Special:Search?search={query}",
+    "@twitter_search":      "https://twitter.com/search?q={query}",
+    "@yelp_search":         "https://www.yelp.com/search?find_desc={query}",
+    "@seekingalpha_search": "https://seekingalpha.com/search?q={query}",
+    "@reuters_search":      "https://www.reuters.com/search/news?blob={query}",
+    "@wsj_search":          "https://www.wsj.com/search?query={query}&mod=searchresults_viewallresults",
+    "@reddit_wsb":          "https://www.reddit.com/r/wallstreetbets/search/?q={query}&restrict_sr=1&sort=new",
 }
 
 

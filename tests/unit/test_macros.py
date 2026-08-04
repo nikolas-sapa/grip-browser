@@ -30,3 +30,23 @@ def test_unknown_macro_raises():
 def test_macro_encodes_special_chars():
     url = _expand_macro("@google_search", query="C++ programming")
     assert "C%2B%2B" in url or "C++programming" not in url
+
+
+def test_seekingalpha_search_macro():
+    url = _expand_macro("@seekingalpha_search", query="AAPL earnings")
+    assert url == "https://seekingalpha.com/search?q=AAPL+earnings"
+
+
+def test_reuters_search_macro():
+    url = _expand_macro("@reuters_search", query="TSLA recall")
+    assert url == "https://www.reuters.com/search/news?blob=TSLA+recall"
+
+
+def test_wsj_search_macro():
+    url = _expand_macro("@wsj_search", query="NVDA revenue")
+    assert url == "https://www.wsj.com/search?query=NVDA+revenue&mod=searchresults_viewallresults"
+
+
+def test_reddit_wsb_macro():
+    url = _expand_macro("@reddit_wsb", query="SPY puts")
+    assert url == "https://www.reddit.com/r/wallstreetbets/search/?q=SPY+puts&restrict_sr=1&sort=new"
