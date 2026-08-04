@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new feature or improvement for grip
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve
+      description: What are you unable to do today, or what's awkward about the current API?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like grip to do instead? Example API or usage is welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you're using today, or other approaches you considered.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else relevant — links, related issues, etc.
