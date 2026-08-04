@@ -1,9 +1,10 @@
 # grip
 
-[![PyPI version](https://img.shields.io/pypi/v/grip-browser?color=black&style=flat-square)](https://pypi.org/project/grip-browser/)
-[![Python](https://img.shields.io/pypi/pyversions/grip-browser?color=black&style=flat-square)](https://pypi.org/project/grip-browser/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-black.svg?style=flat-square)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/84yk8btb9f-prog/grip-browser/test.yml?style=flat-square&label=tests)](https://github.com/84yk8btb9f-prog/grip-browser/actions)
+[![PyPI version](https://img.shields.io/pypi/v/grip-browser?style=flat-square&color=0B0B0D&labelColor=0B0B0D)](https://pypi.org/project/grip-browser/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0B0B0D?style=flat-square&labelColor=0B0B0D)](LICENSE)
+[![Python](https://img.shields.io/pypi/pyversions/grip-browser?style=flat-square&color=0B0B0D&labelColor=0B0B0D)](https://pypi.org/project/grip-browser/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-0B0B0D?style=flat-square&labelColor=0B0B0D)](CONTRIBUTING.md)
+[![CI](https://img.shields.io/github/actions/workflow/status/nikolas-sapa/grip-browser/test.yml?style=flat-square&label=tests&color=0B0B0D&labelColor=0B0B0D)](https://github.com/nikolas-sapa/grip-browser/actions)
 
 **Token-efficient, CDP-native browser SDK for AI agents.**
 
@@ -277,6 +278,15 @@ pip install grip-browser[anthropic]
 
 ---
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev
+setup, running tests, and lint/type-check commands. Please also read the
+[Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See
+[SECURITY.md](SECURITY.md) instead of opening a public issue.
+
+---
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
