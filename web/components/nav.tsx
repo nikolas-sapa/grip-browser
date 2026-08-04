@@ -38,7 +38,7 @@ export function Nav() {
       {/* Right side */}
       <nav aria-label="Main" className="flex items-center gap-3">
         <a
-          href="https://github.com/nikolassapalidis/agentbrowser"
+          href="https://github.com/nikolas-sapa/grip-browser"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1.5 rounded-full border border-white/10
