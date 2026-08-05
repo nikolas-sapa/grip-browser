@@ -63,6 +63,7 @@ class Page:
         self._initialized = False
         self._refs = RefRegistry()
         self._current_url: str = ""
+        self._status_code: int = 0
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -82,14 +83,24 @@ class Page:
     async def goto(self, url: str, timeout: float = 30.0) -> None:
         """Navigate this tab and wait for the load event."""
         await self._engine.send("Page.enable")
+        await self._engine.send("Network.enable")
         load_event = asyncio.Event()
 
         def on_load(params: dict) -> None:
             load_event.set()
 
+        def on_response(params: dict) -> None:
+            # Only the main document response carries the status that describes the
+            # fetch. Sub-resources (images, XHR) fire this too and must be ignored.
+            # Redirect chains fire several Document responses; the last one wins.
+            if params.get("type") == "Document":
+                self._status_code = params.get("response", {}).get("status", 0)
+
+        self._status_code = 0
         # Subscribe before navigating — a fast page can fire loadEventFired
         # before the navigate call returns.
         self._engine.on("Page.loadEventFired", on_load)
+        self._engine.on("Network.responseReceived", on_response)
         try:
             await self._engine.send("Page.navigate", {"url": url})
             await asyncio.wait_for(load_event.wait(), timeout=timeout)
@@ -97,6 +108,7 @@ class Page:
             pass  # slow page: hand it back anyway, snapshot() sees whatever loaded
         finally:
             self._engine.off("Page.loadEventFired", on_load)
+            self._engine.off("Network.responseReceived", on_response)
 
     async def close(self) -> None:
         """Close this tab and drop its CDP connection. Idempotent."""
@@ -126,7 +138,7 @@ class Page:
         safe_text = scan.safe_text
 
         page_error = None
-        _detected = self._classifier.classify_page_state(title, url, 0)
+        _detected = self._classifier.classify_page_state(title, url, self._status_code)
         if _detected.type in (
             ErrorType.ANTI_BOT_BLOCK, ErrorType.CAPTCHA_REQUIRED,
             ErrorType.RATE_LIMITED, ErrorType.AUTH_REQUIRED,

@@ -5,6 +5,12 @@ _CAPTCHA_TITLE_PATTERNS = ["captcha", "prove you're human", "verify you are huma
 _BLOCK_TITLE_PATTERNS = [
     "cloudflare", "access denied", "ddos-guard",
     "attention required", "blocked", "security check",
+    # Cloudflare's interstitial is titled "Just a moment..." far more often than
+    # it is titled "Cloudflare", and it is the single most common block on the web.
+    "just a moment",
+    "checking your browser", "one more step", "please wait",
+    "are you a robot", "human verification", "verifying you are human",
+    "pardon our interruption", "request blocked", "forbidden",
 ]
 _AUTH_URL_PATTERNS = ["/login", "/signin", "/sign-in", "/auth", "/account/login"]
 _AUTH_TITLE_PATTERNS = ["sign in", "log in", "login", "sign up", "create account"]
