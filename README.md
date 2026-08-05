@@ -24,7 +24,9 @@ pip install grip-browser
 
 Agents don't need the DOM. They need to know what's on the page and what they can act on. Grip sends the model only the interactive elements and visible text — structured, indexed, and fuzzy-matchable.
 
-Measured across 8 real pages (Wikipedia, GitHub, react.dev, BBC, Hacker News, Python docs, arXiv, example.com): **median 77,588 tokens of raw HTML becomes 2,018 tokens of grip snapshot — a 19x reduction.** Per-page it ranges from 3x on a page that is already tiny to 95x on a heavy SPA. The bigger and more JavaScript-driven the page, the more grip saves.
+Measured across 8 real pages (Wikipedia, GitHub, react.dev, BBC, Hacker News, Python docs, arXiv, example.com): **median 77,588 tokens of raw HTML becomes 2,018 tokens of grip snapshot — a 19x reduction.** Per-page it ranges from 3x on a page that is already tiny to 95x on a heavy SPA.
+
+That 19x is against **raw HTML**, which is the right comparison if your agent would otherwise put the DOM in the prompt. Against naively tag-stripped text — what a retrieval API sends a model — the reduction is about **1.4x**, because most of what grip removes is markup rather than words. Both numbers are measured; use whichever matches what you would otherwise send. Method and data: [`evaluation/`](evaluation/).
 
 ### Grip vs Playwright MCP vs Puppeteer
 
