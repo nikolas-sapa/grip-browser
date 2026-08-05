@@ -66,6 +66,7 @@ class Page:
         self._refs = RefRegistry()
         self._current_url: str = ""
         self._status_code: int = 0
+        self._content_probed_url: str = ""
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -146,7 +147,18 @@ class Page:
         # no content" shape at all — pay for one extra CDP round trip to check it.
         # A short page (e.g. "hello") can never trip the ratio check regardless of
         # what it probes to, so skipping it here changes no outcome.
-        if _detected.type == ErrorType.NAVIGATION_FAILED and len(page_text) >= RAW_TEXT_PROBE_FLOOR:
+        # Once per URL, not once per snapshot. A "no usable content" verdict
+        # describes the *fetch*; re-running it after an agent has been clicking
+        # around answers a question nobody asked, and snapshot() is the hot path —
+        # the probe is a second JS evaluation that roughly doubles its cost
+        # (measured 8.8ms -> 16.1ms) for a signal that cannot change.
+        needs_probe = url != self._content_probed_url
+        if (
+            needs_probe
+            and _detected.type == ErrorType.NAVIGATION_FAILED
+            and len(page_text) >= RAW_TEXT_PROBE_FLOOR
+        ):
+            self._content_probed_url = url
             shape = await self._probe_content_shape()
             if shape is not None:
                 content_blocks, content_chars = shape
