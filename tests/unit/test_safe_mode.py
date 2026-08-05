@@ -46,3 +46,22 @@ async def test_safe_mode_allows_snapshot():
     ]
     snap = await page.snapshot()  # should not raise
     assert snap is not None
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_blocks_interactive_read():
+    """read(interact=True) clicks the page — safe mode must stop it, exactly as it
+    stops click()/type()/press()."""
+    page = _make_safe_page()
+    with pytest.raises(GripError) as exc_info:
+        await page.read(interact=True)
+    assert exc_info.value.error.type == ErrorType.SAFE_MODE_VIOLATION
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_allows_non_interactive_read():
+    engine = MagicMock()
+    engine.send = AsyncMock(return_value={"result": {"value": '{"title":"t","url":"u","blocks":[]}'}})
+    page = Page(engine=engine, trace=Trace(), safe=True)
+    doc = await page.read()
+    assert doc is not None

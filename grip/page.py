@@ -11,6 +11,7 @@ from grip.cdp.engine import CDPEngine
 from grip.cdp.shadow import (
     DISCOVER_ELEMENTS_JS, CLICK_ELEMENT_JS,
     TYPE_ELEMENT_JS, PAGE_TEXT_JS, READ_CONTENT_JS,
+    CLICK_REVEAL_JS, SCROLL_BOTTOM_JS,
 )
 from grip.compression.cache import ElementCache
 from grip.compression.refs import RefRegistry
@@ -177,7 +178,13 @@ class Page:
         ))
         return snapshot
 
-    async def read(self, max_chars: int | None = None) -> Document:
+    async def read(
+        self,
+        max_chars: int | None = None,
+        interact: bool = False,
+        max_interactions: int = 3,
+        interaction_timeout: float = 10.0,
+    ) -> Document:
         """Read the page as prose: ordered, citable blocks with main content
         isolated and navigation chrome dropped.
 
@@ -187,10 +194,24 @@ class Page:
         `max_chars` truncates by dropping whole blocks from the end, so a block is
         never cut mid-sentence. Default is no limit — deciding which parts of a
         page matter is ranking, and ranking belongs to the caller.
+
+        `interact=True` opt-in: before reading, click "show more"/"load more"/
+        expander controls (or scroll for infinite-scroll pages) to surface content
+        that only exists after interaction. Off by default so existing callers see
+        unchanged behaviour. Block ids are assigned below, once, after interaction
+        has finished — a Document is numbered once in its final state, never
+        renumbered, so citations stay stable.
         """
+        if interact:
+            # Revealing content means clicking the page. Safe mode promises no
+            # mutating actions, and this path would otherwise walk straight past
+            # the guard that click()/type()/press() enforce.
+            self._assert_not_safe("read(interact=True)")
         await self._ensure_initialized()
         t0 = time.monotonic()
         try:
+            if interact:
+                await self._interact_to_reveal(max_interactions, interaction_timeout)
             result = await self._engine.send(
                 "Runtime.evaluate",
                 {"expression": READ_CONTENT_JS, "returnByValue": True},
@@ -224,12 +245,67 @@ class Page:
         self._trace.add(TraceEntry(
             timestamp=time.time(),
             action="read",
-            input={"max_chars": max_chars},
+            input={"max_chars": max_chars, "interact": interact},
             output={"blocks": len(blocks), "chars": used},
             tokens_consumed=self._summarizer.count_tokens(doc.text),
             duration_ms=int((time.monotonic() - t0) * 1000),
         ))
         return doc
+
+    async def _interact_to_reveal(self, max_interactions: int, timeout: float) -> None:
+        """Click/scroll to surface hidden content before the caller's read.
+
+        Stops on whichever comes first: depth cap, a block-count plateau (an
+        interaction adds under 10% new blocks), or the timeout. Infinite scroll
+        gets no special casing — it just plateaus like a dead "load more" button
+        once scrolling stops adding blocks.
+        """
+        deadline = time.monotonic() + timeout
+        prev_count = await self._count_blocks()
+        for _ in range(max_interactions):
+            if time.monotonic() >= deadline:
+                break
+            await self._reveal_step()
+            new_count = await self._await_block_growth(prev_count, deadline)
+            plateaued = (new_count - prev_count) < max(1, prev_count * 0.10)
+            prev_count = new_count
+            if plateaued:
+                break
+
+    async def _await_block_growth(self, prev_count: int, deadline: float) -> int:
+        """Poll after a click/scroll instead of a fixed sleep — a real "load
+        more" is a fetch that can land well after any fixed delay would give up
+        on, and a synchronous DOM write shouldn't cost the full poll window."""
+        poll_deadline = min(deadline, time.monotonic() + 1.0)
+        count = await self._count_blocks()
+        while count <= prev_count and time.monotonic() < poll_deadline:
+            await asyncio.sleep(0.1)
+            count = await self._count_blocks()
+        return count
+
+    async def _reveal_step(self) -> bool:
+        """One interaction: click a matching reveal control, or scroll to the
+        bottom if none is found (covers infinite-scroll pages with no button)."""
+        result = await self._engine.send(
+            "Runtime.evaluate",
+            {"expression": CLICK_REVEAL_JS, "returnByValue": True},
+        )
+        clicked = bool(result.get("result", {}).get("value", False))
+        if not clicked:
+            await self._engine.send(
+                "Runtime.evaluate",
+                {"expression": SCROLL_BOTTOM_JS, "returnByValue": True},
+            )
+        return clicked
+
+    async def _count_blocks(self) -> int:
+        result = await self._engine.send(
+            "Runtime.evaluate",
+            {"expression": READ_CONTENT_JS, "returnByValue": True},
+        )
+        raw = result.get("result", {}).get("value") or "{}"
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        return len(data.get("blocks", []))
 
     async def click(self, description: str) -> None:
         self._assert_not_safe("click")
