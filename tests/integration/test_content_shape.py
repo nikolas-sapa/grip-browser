@@ -148,3 +148,28 @@ async def test_prose_in_bare_divs_stays_clean(server):
         snap = await page.snapshot()
         assert page._status_code == 200
         assert snap.page_error is None
+
+
+@pytest.mark.asyncio
+async def test_content_shape_is_probed_once_per_url(server):
+    """snapshot() is the hot path and the probe is a second JS evaluation. The
+    verdict describes the fetch, so it cannot change between snapshots of the same
+    URL — re-running it would cost latency for no new information."""
+    base = server(_ConsentWallHandler)
+    async with Browser(headless=True) as browser:
+        page = await browser.open(base)
+        calls = 0
+        original = page._probe_content_shape
+
+        async def counting():
+            nonlocal calls
+            calls += 1
+            return await original()
+
+        page._probe_content_shape = counting
+        first = await page.snapshot()
+        await page.snapshot()
+        await page.snapshot()
+
+        assert calls == 1, f"probed {calls} times for one URL"
+        assert first.page_error is not None
