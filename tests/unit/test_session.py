@@ -47,7 +47,7 @@ async def test_load_session_sends_set_cookies():
          "path": "/", "expires": -1, "size": 14, "httpOnly": True,
          "secure": True, "session": True, "sameSite": "None"}
     ]
-    browser = _make_browser_with_engine([{}, {}])  # Network.enable, Network.setCookies
+    browser = _make_browser_with_engine([{}])  # Storage.setCookies
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(cookies, f)
         path = f.name
@@ -55,9 +55,8 @@ async def test_load_session_sends_set_cookies():
         await browser.load_session(path)
         calls = browser._engine.send.call_args_list
         methods = [c[0][0] for c in calls]
-        assert "Network.enable" in methods
-        assert "Network.setCookies" in methods
-        set_cookies_call = next(c for c in calls if c[0][0] == "Network.setCookies")
+        assert "Storage.setCookies" in methods
+        set_cookies_call = next(c for c in calls if c[0][0] == "Storage.setCookies")
         assert set_cookies_call[0][1]["cookies"] == cookies
     finally:
         os.unlink(path)

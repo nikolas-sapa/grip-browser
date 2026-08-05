@@ -69,15 +69,24 @@ class ChromeLauncher:
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             if port_file.exists():
-                text = port_file.read_text().strip()
-                return int(text.split("\n")[0])
+                # Chrome creates this file before writing to it, so existence is
+                # not readability — keep polling until the port line is complete.
+                first_line = port_file.read_text().strip().split("\n")[0].strip()
+                if first_line.isdigit():
+                    return int(first_line)
             time.sleep(0.05)
         raise RuntimeError("Timed out waiting for Chrome DevTools port")
 
     def terminate(self) -> None:
         if self._process:
             self._process.terminate()
-            self._process.wait(timeout=5)
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # A Chrome holding many tabs open can miss the 5s window. Never let
+                # teardown raise — that leaks the process and the temp profile.
+                self._process.kill()
+                self._process.wait(timeout=5)
             self._process = None
         if self._user_data_dir:
             import shutil

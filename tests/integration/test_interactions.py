@@ -14,7 +14,7 @@ from grip.errors.types import GripError, ErrorType
 async def open_with_html(browser: Browser, html: str):
     """Navigate to about:blank then inject HTML via document.write()."""
     page = await browser.open("about:blank")
-    await browser._engine.send(
+    await page._engine.send(
         "Runtime.evaluate",
         {
             "expression": f"document.open('text/html','replace');document.write({json.dumps(html)});document.close();",
@@ -70,7 +70,7 @@ async def test_click_real_element():
 
         await page.click("Buy Now")
 
-        result = await browser._engine.send(
+        result = await page._engine.send(
             "Runtime.evaluate",
             {"expression": "document.getElementById('s').textContent", "returnByValue": True},
         )
@@ -100,7 +100,7 @@ async def test_type_real_input():
 
         await page.type("search", "blue sneakers")
 
-        result = await browser._engine.send(
+        result = await page._engine.send(
             "Runtime.evaluate",
             {"expression": "document.getElementById('q').value", "returnByValue": True},
         )
@@ -117,7 +117,7 @@ async def test_type_and_click_sequence():
         await page.type("search", "grip test")
         await page.click("Go")
 
-        result = await browser._engine.send(
+        result = await page._engine.send(
             "Runtime.evaluate",
             {"expression": "document.getElementById('r').textContent", "returnByValue": True},
         )

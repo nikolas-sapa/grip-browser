@@ -124,6 +124,28 @@ async with Browser(headless=True) as browser:
     shot.save("result.jpg")
 ```
 
+## Concurrent pages
+
+Every `open()` gets its own tab and its own CDP connection, so pages are
+independent and can be driven in parallel:
+
+```python
+async with Browser(headless=True) as browser:
+    urls = ["https://example.com", "https://example.org", "https://example.net"]
+    pages = await asyncio.gather(*(browser.open(u) for u in urls))
+    snapshots = await asyncio.gather(*(p.snapshot() for p in pages))
+
+    for snap in snapshots:
+        print(snap.url, snap.tokens_estimated)
+
+    for page in pages:
+        await page.close()          # closes the tab; browser.close() also closes any left open
+```
+
+`page.goto(url)` navigates an existing tab in place. There is no built-in
+concurrency limit — wrap in an `asyncio.Semaphore` if you need one, since the
+safe ceiling depends on your machine rather than on grip.
+
 ## With an LLM (autonomous mode)
 
 ```python

@@ -1,7 +1,9 @@
 from __future__ import annotations
+import asyncio
 import base64
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,11 +38,20 @@ class Screenshot:
 
 
 class Page:
-    def __init__(self, engine: CDPEngine, trace: Trace, target_id: str = "", safe: bool = False) -> None:
+    def __init__(
+        self,
+        engine: CDPEngine,
+        trace: Trace,
+        target_id: str = "",
+        safe: bool = False,
+        closer: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self._engine = engine
         self._trace = trace
         self._target_id = target_id
         self._safe = safe
+        self._closer = closer
+        self._closed = False
         self._version = 0
         self._current_snapshot: PageSnapshot | None = None
         self._summarizer = Summarizer()
@@ -67,6 +78,34 @@ class Page:
             await self._engine.send("Runtime.enable")
             await self._engine.send("Page.enable")
             self._initialized = True
+
+    async def goto(self, url: str, timeout: float = 30.0) -> None:
+        """Navigate this tab and wait for the load event."""
+        await self._engine.send("Page.enable")
+        load_event = asyncio.Event()
+
+        def on_load(params: dict) -> None:
+            load_event.set()
+
+        # Subscribe before navigating — a fast page can fire loadEventFired
+        # before the navigate call returns.
+        self._engine.on("Page.loadEventFired", on_load)
+        try:
+            await self._engine.send("Page.navigate", {"url": url})
+            await asyncio.wait_for(load_event.wait(), timeout=timeout)
+        except TimeoutError:
+            pass  # slow page: hand it back anyway, snapshot() sees whatever loaded
+        finally:
+            self._engine.off("Page.loadEventFired", on_load)
+
+    async def close(self) -> None:
+        """Close this tab and drop its CDP connection. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        await self._engine.disconnect()
+        if self._closer and self._target_id:
+            await self._closer(self._target_id)
 
     async def snapshot(self) -> PageSnapshot:
         await self._ensure_initialized()

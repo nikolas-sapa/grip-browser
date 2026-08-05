@@ -8,7 +8,7 @@ from grip.trace import Trace
 async def test_browser_creates_trace():
     with patch("grip.browser.ChromeLauncher") as MockLauncher, \
          patch("grip.browser.CDPEngine") as MockEngine, \
-         patch("grip.browser.fetch_tab_ws_url", new_callable=AsyncMock) as mock_fetch:
+         patch("grip.browser.fetch_browser_ws_url", new_callable=AsyncMock) as mock_fetch:
         launcher = MagicMock()
         launcher.launch.return_value = 9222
         launcher.terminate = MagicMock()
@@ -20,7 +20,7 @@ async def test_browser_creates_trace():
         engine.send = AsyncMock(return_value={"targetInfos": []})
         MockEngine.return_value = engine
 
-        mock_fetch.return_value = "ws://localhost:9222/devtools/page/abc"
+        mock_fetch.return_value = "ws://localhost:9222/devtools/browser/abc"
 
         browser = Browser()
         assert isinstance(browser.trace, Trace)
@@ -30,7 +30,7 @@ async def test_browser_creates_trace():
 async def test_browser_context_manager():
     with patch("grip.browser.ChromeLauncher") as MockLauncher, \
          patch("grip.browser.CDPEngine") as MockEngine, \
-         patch("grip.browser.fetch_tab_ws_url", new_callable=AsyncMock) as mock_fetch:
+         patch("grip.browser.fetch_browser_ws_url", new_callable=AsyncMock) as mock_fetch:
         launcher = MagicMock()
         launcher.launch.return_value = 9222
         launcher.terminate = MagicMock()
@@ -42,7 +42,7 @@ async def test_browser_context_manager():
         engine.send = AsyncMock(return_value={"targetInfos": []})
         MockEngine.return_value = engine
 
-        mock_fetch.return_value = "ws://localhost:9222/devtools/page/abc"
+        mock_fetch.return_value = "ws://localhost:9222/devtools/browser/abc"
 
         async with Browser() as browser:
             assert browser is not None
