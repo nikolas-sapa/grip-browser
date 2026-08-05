@@ -28,9 +28,9 @@ export function Hero() {
         className="max-w-3xl text-5xl sm:text-6xl lg:text-7xl font-semibold tracking-tight leading-[1.08]"
       >
         <span className="text-white">
-          50 tokens per page snapshot.
+          2,000 tokens per page snapshot.
           <br />
-          Not 12,000.
+          Not 78,000.
         </span>
       </motion.h1>
 

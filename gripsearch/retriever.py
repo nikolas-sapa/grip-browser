@@ -4,10 +4,10 @@ from __future__ import annotations
 import time
 from typing import Self
 
-from graft.discovery import CandidateSource
-from graft.fetch import fetch_all
-from graft.rank import rank
-from graft.types import RetrievalResult
+from gripsearch.discovery import CandidateSource
+from gripsearch.fetch import fetch_all
+from gripsearch.rank import rank
+from gripsearch.types import RetrievalResult
 from grip.browser import Browser
 
 

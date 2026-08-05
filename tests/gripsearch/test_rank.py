@@ -2,9 +2,9 @@
 import pytest
 from grip.reader import Block, Document
 
-from graft.fetch import Fetched
-from graft.rank import rank, _near_duplicate
-from graft.types import Candidate
+from gripsearch.fetch import Fetched
+from gripsearch.rank import rank, _near_duplicate
+from gripsearch.types import Candidate
 
 
 def _doc(url, *texts, title="T"):

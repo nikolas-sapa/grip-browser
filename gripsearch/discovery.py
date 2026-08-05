@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from typing import Protocol, runtime_checkable
 
-from graft.types import Candidate
+from gripsearch.types import Candidate
 
 
 @runtime_checkable

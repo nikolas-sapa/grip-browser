@@ -233,10 +233,10 @@ export function HeroVisual() {
         transition={{ duration: 0.5, delay: 0.8 }}
         className="mt-4 flex items-center justify-center gap-2 text-[11px] font-mono text-white/25"
       >
-        <span className="text-red-400/50 line-through">~12,000 tokens</span>
+        <span className="text-red-400/50 line-through">~78,000 tokens</span>
         <span>with raw HTML</span>
         <span className="text-white/10 mx-1">·</span>
-        <span className="text-emerald-400/60">~50 tokens</span>
+        <span className="text-emerald-400/60">~2,000 tokens</span>
         <span>with grip</span>
       </motion.div>
     </div>

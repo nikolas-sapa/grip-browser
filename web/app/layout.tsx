@@ -7,11 +7,11 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://grip-browser.vercel.app"),
   title: "grip — Token-efficient browser SDK for AI agents",
   description:
-    "50 tokens per page snapshot, not 12,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
+    "2,000 tokens per page snapshot, not 78,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
   openGraph: {
     title: "grip — Token-efficient browser SDK for AI agents",
     description:
-      "50 tokens per page snapshot, not 12,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
+      "2,000 tokens per page snapshot, not 78,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
     url: "https://grip-browser.vercel.app",
     siteName: "grip",
     type: "website",
@@ -20,7 +20,7 @@ export const metadata: Metadata = {
     card: "summary",
     title: "grip — Token-efficient browser SDK for AI agents",
     description:
-      "50 tokens per page snapshot, not 12,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
+      "2,000 tokens per page snapshot, not 78,000. CDP-native browser SDK for AI agents — no Playwright bloat.",
   },
 };
 

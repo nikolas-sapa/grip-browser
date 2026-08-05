@@ -1,12 +1,12 @@
-# graft
+# grip-search
 
 Agent-grade retrieval on top of [grip](../README.md). A question in, ranked cited
 passages out — by driving a real browser against real pages.
 
-**Name is a placeholder.** Confirm before any PyPI release.
+Distribution `grip-search`, import `gripsearch`.
 
 ```python
-from graft import Retriever, BraveSource
+from gripsearch import Retriever, BraveSource
 
 async with Retriever(BraveSource(api_key=...)) as r:
     result = await r.search("how does asyncio.gather handle exceptions")
