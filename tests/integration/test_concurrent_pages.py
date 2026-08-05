@@ -38,17 +38,28 @@ async def test_pages_stay_independent_after_later_opens():
         assert "second" not in snap.text_content
 
 
+async def _target_ids(browser) -> set[str]:
+    result = await browser._engine.send("Target.getTargets", {})
+    return {t["targetId"] for t in result["targetInfos"] if t["type"] == "page"}
+
+
 @pytest.mark.asyncio
 async def test_close_releases_the_tab():
     async with Browser(headless=True) as browser:
         page = await browser.open(_page_url("closeme"))
-        before = await browser._engine.send("Target.getTargets", {})
+        target_id = page._target_id
+        assert target_id in await _target_ids(browser)
+
         await page.close()
         await page.close()  # idempotent
-        after = await browser._engine.send("Target.getTargets", {})
 
-        def pages(result):
-            return [t for t in result["targetInfos"] if t["type"] == "page"]
+        # Target.closeTarget returns once close is *initiated*, so poll rather
+        # than assert on the tab list immediately.
+        for _ in range(50):
+            if target_id not in await _target_ids(browser):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail(f"tab {target_id} still open 5s after close()")
 
-        assert len(pages(after)) == len(pages(before)) - 1
         assert browser._pages == []

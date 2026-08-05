@@ -59,7 +59,7 @@ Honest caveat: Playwright and Puppeteer are broader general-purpose automation f
 
 **Does it handle CAPTCHAs / bot blocks?** It detects them and returns a typed error with a suggested recovery action (escalate, backoff, rotate). It does not solve CAPTCHAs for you.
 
-**What do I need installed?** Python 3.11+ and Chrome or Chromium. Grip finds Chrome automatically.
+**What do I need installed?** Python 3.11+ and Chrome or Chromium. Grip finds Chrome automatically, and falls back to the Chrome for Testing build that Playwright or Puppeteer already downloaded if no system Chrome is present. Set `CHROME_EXECUTABLE` to override.
 
 ---
 

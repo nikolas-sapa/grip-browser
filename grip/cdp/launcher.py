@@ -1,4 +1,5 @@
 from __future__ import annotations
+import glob
 import os
 import subprocess
 import tempfile
@@ -8,10 +9,31 @@ from pathlib import Path
 _CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
     "/usr/bin/google-chrome",
     "/usr/bin/chromium-browser",
     "/usr/bin/chromium",
 ]
+
+# Chrome for Testing as downloaded by Playwright and Puppeteer. Anyone doing browser
+# automation likely already has one of these, so falling back to them beats telling
+# the user to install a second Chrome.
+_CACHED_CHROME_GLOBS = [
+    "~/Library/Caches/ms-playwright/chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    "~/Library/Caches/ms-playwright/chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+    "~/.cache/ms-playwright/chromium-*/chrome-linux/chrome",
+    "~/.cache/puppeteer/chrome/*/chrome-linux64/chrome",
+    "~/.cache/puppeteer/chrome/*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+]
+
+
+def _find_cached_chrome() -> str | None:
+    for pattern in _CACHED_CHROME_GLOBS:
+        # Highest build number wins — these caches keep old versions around.
+        matches = sorted(glob.glob(os.path.expanduser(pattern)))
+        if matches:
+            return matches[-1]
+    return None
 
 
 def find_chrome() -> str | None:
@@ -27,7 +49,7 @@ def find_chrome() -> str | None:
                 return result.stdout.strip()
         except FileNotFoundError:
             pass
-    return None
+    return _find_cached_chrome()
 
 
 class ChromeLauncher:
