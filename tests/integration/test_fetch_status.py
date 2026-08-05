@@ -102,6 +102,32 @@ async def test_thin_legitimate_page_stays_clean(server):
         assert snap.page_error is None
 
 
+class _SoftNotFoundHandler(_Handler):
+    """A client-router-style soft 404: real 200, ordinary body, title says it."""
+
+    def do_GET(self):
+        body = (
+            b"<html><head><title>Page not found | MySite</title></head>"
+            b"<body><p>We couldn't find what you were looking for.</p></body></html>"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.mark.asyncio
+async def test_soft_404_title_surfaces_as_no_content(server):
+    base = server(_SoftNotFoundHandler)
+    async with Browser(headless=True) as browser:
+        page = await browser.open(base)
+        snap = await page.snapshot()
+        assert page._status_code == 200
+        assert snap.page_error is not None
+        assert snap.page_error.type == ErrorType.NO_CONTENT
+
+
 @pytest.mark.asyncio
 async def test_status_is_captured_per_tab_under_concurrency(server):
     """Each tab owns its own status — no leaking between concurrent fetches."""

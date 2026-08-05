@@ -11,6 +11,7 @@ class ErrorType(Enum):
     RATE_LIMITED = "rate_limited"
     AUTH_REQUIRED = "auth_required"
     ZERO_RESULTS = "zero_results"
+    NO_CONTENT = "no_content"
     NETWORK_TIMEOUT = "network_timeout"
     NAVIGATION_FAILED = "navigation_failed"
     CANVAS_ELEMENT = "canvas_element"
