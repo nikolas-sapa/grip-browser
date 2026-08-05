@@ -146,6 +146,38 @@ async with Browser(headless=True) as browser:
 concurrency limit — wrap in an `asyncio.Semaphore` if you need one, since the
 safe ceiling depends on your machine rather than on grip.
 
+## Read mode
+
+`snapshot()` answers "what can I click here". `read()` answers "what does this page
+say" — main content isolated, navigation and footer chrome dropped, and every block
+carrying the heading trail above it so a claim can be cited back to a location.
+
+```python
+async with Browser(headless=True) as browser:
+    page = await browser.open("https://docs.python.org/3/library/asyncio-task.html")
+    doc = await page.read()
+
+    print(doc.outline())          # heading map of the page
+    for block in doc.blocks:
+        print(block.citation, block.text[:60])
+        # [12] Coroutines and tasks › Coroutines   Source code: Lib/asyncio/...
+```
+
+`read(max_chars=N)` truncates by dropping whole blocks, never mid-sentence. The
+default is no limit — deciding which parts of a page matter is ranking, and that
+belongs to the caller.
+
+## Automation tells
+
+Chrome under CDP sets `navigator.webdriver` and puts `HeadlessChrome` in the user
+agent. `Browser(stealth=True)` removes both. It is off by default because grip is a
+general-purpose SDK and silently masking automation would surprise anyone using it
+for ordinary testing.
+
+This is deliberately not an evasion suite — no canvas, WebGL, or timing spoofing.
+Those are a maintained arms race. The remaining tell is your IP, which no browser
+flag fixes.
+
 ## With an LLM (autonomous mode)
 
 ```python

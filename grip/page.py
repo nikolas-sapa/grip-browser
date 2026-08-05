@@ -10,7 +10,7 @@ from typing import Any
 from grip.cdp.engine import CDPEngine
 from grip.cdp.shadow import (
     DISCOVER_ELEMENTS_JS, CLICK_ELEMENT_JS,
-    TYPE_ELEMENT_JS, PAGE_TEXT_JS,
+    TYPE_ELEMENT_JS, PAGE_TEXT_JS, READ_CONTENT_JS,
 )
 from grip.compression.cache import ElementCache
 from grip.compression.refs import RefRegistry
@@ -19,6 +19,7 @@ from grip.compression.summarizer import PageSnapshot, Summarizer
 from grip.errors.classifier import ErrorClassifier
 from grip.errors.types import BrowserError, ErrorType, GripError
 from grip.security.injection import InjectionDetector
+from grip.reader import Block, Document
 from grip.security.sanitizer import HiddenElementFilter, RawElement
 from grip.trace import Trace, TraceEntry
 
@@ -175,6 +176,60 @@ class Page:
             duration_ms=duration_ms,
         ))
         return snapshot
+
+    async def read(self, max_chars: int | None = None) -> Document:
+        """Read the page as prose: ordered, citable blocks with main content
+        isolated and navigation chrome dropped.
+
+        This is the counterpart to `snapshot()`. `snapshot()` answers "what can I
+        click"; `read()` answers "what does this page say".
+
+        `max_chars` truncates by dropping whole blocks from the end, so a block is
+        never cut mid-sentence. Default is no limit — deciding which parts of a
+        page matter is ranking, and ranking belongs to the caller.
+        """
+        await self._ensure_initialized()
+        t0 = time.monotonic()
+        try:
+            result = await self._engine.send(
+                "Runtime.evaluate",
+                {"expression": READ_CONTENT_JS, "returnByValue": True},
+            )
+        except Exception as e:
+            raise GripError(self._classifier.classify_cdp_error(str(e))) from e
+
+        raw = result.get("result", {}).get("value") or "{}"
+        data = json.loads(raw) if isinstance(raw, str) else raw
+
+        blocks: list[Block] = []
+        used = 0
+        for i, b in enumerate(data.get("blocks", [])):
+            text = self._injector.scan(b.get("text", "")).safe_text
+            if max_chars is not None and used + len(text) > max_chars:
+                break
+            used += len(text)
+            blocks.append(
+                Block(
+                    id=i,
+                    kind=b.get("kind", "text"),
+                    text=text,
+                    path=list(b.get("path", [])),
+                    level=b.get("level", 0),
+                )
+            )
+
+        doc = Document(
+            title=data.get("title", ""), url=data.get("url", ""), blocks=blocks
+        )
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="read",
+            input={"max_chars": max_chars},
+            output={"blocks": len(blocks), "chars": used},
+            tokens_consumed=self._summarizer.count_tokens(doc.text),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+        return doc
 
     async def click(self, description: str) -> None:
         self._assert_not_safe("click")

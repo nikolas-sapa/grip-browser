@@ -63,3 +63,33 @@ async def test_close_releases_the_tab():
             pytest.fail(f"tab {target_id} still open 5s after close()")
 
         assert browser._pages == []
+
+
+@pytest.mark.asyncio
+async def test_stealth_is_off_by_default():
+    """grip is a general SDK — masking automation must be an explicit choice."""
+    async with Browser(headless=True) as browser:
+        page = await browser.open("about:blank")
+        r = await page._engine.send(
+            "Runtime.evaluate",
+            {"expression": "navigator.webdriver", "returnByValue": True},
+        )
+        assert r["result"]["value"] is True
+
+
+@pytest.mark.asyncio
+async def test_stealth_removes_the_two_free_tells():
+    async with Browser(headless=True, stealth=True) as browser:
+        page = await browser.open("about:blank")
+        r = await page._engine.send(
+            "Runtime.evaluate",
+            {
+                "expression": "JSON.stringify([navigator.webdriver, navigator.userAgent])",
+                "returnByValue": True,
+            },
+        )
+        import json as _json
+
+        webdriver, ua = _json.loads(r["result"]["value"])
+        assert webdriver is False
+        assert "Headless" not in ua

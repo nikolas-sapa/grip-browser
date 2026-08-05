@@ -72,11 +72,13 @@ class Browser:
         headless: bool = True,
         safe: bool = False,
         proxy: str | None = None,
+        stealth: bool = False,
     ) -> None:
         self._llm = llm
         self._headless = headless
         self._safe = safe
         self._proxy = proxy
+        self._stealth = stealth
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
@@ -94,7 +96,9 @@ class Browser:
         if self._engine:
             return
         self._launcher = ChromeLauncher()
-        self._port = self._launcher.launch(headless=self._headless, proxy=self._proxy)
+        self._port = self._launcher.launch(
+            headless=self._headless, proxy=self._proxy, stealth=self._stealth
+        )
         ws_url = await fetch_browser_ws_url(self._port)
         self._engine = CDPEngine()
         await self._engine.connect(ws_url)
