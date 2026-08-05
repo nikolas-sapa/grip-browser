@@ -8,3 +8,5 @@ dist/
 .ruff_cache/
 
 .scratch/
+web/node_modules/
+web/.next/

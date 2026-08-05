@@ -6,7 +6,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from graft import NoUsableSources, Retriever, StaticSource
+from gripsearch import NoUsableSources, Retriever, StaticSource
 
 CORPUS = {
     "/asyncio": b"""<html><head><title>asyncio gather</title></head><body>

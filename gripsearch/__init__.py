@@ -1,6 +1,6 @@
-from graft.discovery import BraveSource, CandidateSource, StaticSource
-from graft.retriever import NoUsableSources, Retriever
-from graft.types import Candidate, Passage, RetrievalResult, SourceFailure
+from gripsearch.discovery import BraveSource, CandidateSource, StaticSource
+from gripsearch.retriever import NoUsableSources, Retriever
+from gripsearch.types import Candidate, Passage, RetrievalResult, SourceFailure
 
 __all__ = [
     "BraveSource",

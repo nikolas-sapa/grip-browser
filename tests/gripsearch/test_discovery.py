@@ -1,6 +1,6 @@
 """Contract every CandidateSource must satisfy."""
 import pytest
-from graft.discovery import BraveSource, CandidateSource, StaticSource
+from gripsearch.discovery import BraveSource, CandidateSource, StaticSource
 
 
 def test_static_source_satisfies_the_protocol():

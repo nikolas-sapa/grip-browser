@@ -18,22 +18,29 @@ pip install grip-browser
 
 ## What is Grip?
 
-**Grip is a CDP-native browser SDK for AI agents that turns a web page into a ~50-token semantic snapshot instead of ~12,000 tokens of raw HTML.** It runs on the Chrome DevTools Protocol directly — no Playwright, no Puppeteer, no wrapper binary.
+**Grip is a CDP-native browser SDK for AI agents that turns a web page into a ~2,000-token semantic snapshot instead of ~78,000 tokens of raw HTML.** It runs on the Chrome DevTools Protocol directly — no Playwright, no Puppeteer, no wrapper binary.
 
 ### Why Grip
 
-Agents don't need the DOM. They need to know what's on the page and what they can act on. Grip sends the model only the interactive elements and visible text — structured, indexed, and fuzzy-matchable — so a full agent loop that costs ~200,000 tokens on raw HTML costs ~2,000 with Grip. Same task, ~100x less context burned.
+Agents don't need the DOM. They need to know what's on the page and what they can act on. Grip sends the model only the interactive elements and visible text — structured, indexed, and fuzzy-matchable.
+
+Measured across 8 real pages (Wikipedia, GitHub, react.dev, BBC, Hacker News, Python docs, arXiv, example.com): **median 77,588 tokens of raw HTML becomes 2,018 tokens of grip snapshot — a 19x reduction.** Per-page it ranges from 3x on a page that is already tiny to 95x on a heavy SPA. The bigger and more JavaScript-driven the page, the more grip saves.
 
 ### Grip vs Playwright MCP vs Puppeteer
 
 | | Playwright MCP | Puppeteer | Grip |
 |---|:---:|:---:|:---:|
-| Tokens per snapshot | ~2,000 | ~2,000 | **~50** |
+| Tokens per snapshot | not measured | not measured | **~2,000 median** |
 | Built on | Playwright | Chromium binary API | pure CDP |
 | Shadow DOM traversal | partial | no | full |
 | Fuzzy element match (no selectors) | no | no | yes |
 | Typed error recovery | no | no | yes |
 | Prompt-injection guard | no | no | yes |
+
+grip's token figure is measured across 8 real pages (median; 3x–95x reduction vs raw
+HTML depending on the page). The Playwright MCP and Puppeteer columns are feature
+comparisons — their token figures are not independently measured here, so they are
+left blank rather than guessed.
 
 Honest caveat: Playwright and Puppeteer are broader general-purpose automation frameworks with huge ecosystems and cross-browser support. Grip is narrower on purpose — it does one thing (feed an LLM the smallest useful view of a page) and does not try to replace them for human-driven E2E testing.
 
@@ -53,7 +60,7 @@ Honest caveat: Playwright and Puppeteer are broader general-purpose automation f
 
 **Is Grip a Playwright wrapper?** No. Grip talks to Chrome over the DevTools Protocol directly. There is no Playwright or Puppeteer dependency underneath.
 
-**How does it get to ~50 tokens?** It sends the model only interactive elements (inputs, buttons, links) and visible text, indexed for fuzzy matching — not the full HTML tree, not a screenshot.
+**How does it cut tokens?** It sends the model only interactive elements (inputs, buttons, links) and visible text, indexed for fuzzy matching — not the full HTML tree, not a screenshot. A trivial page like example.com comes out at ~50 tokens; a Wikipedia article at ~7,000, down from ~157,000 raw.
 
 **Which LLMs does it work with?** Anthropic and OpenAI adapters ship in the box; any model works via the `LLMAdapter` protocol.
 
@@ -65,7 +72,7 @@ Honest caveat: Playwright and Puppeteer are broader general-purpose automation f
 
 ## The problem
 
-Most browser tools give AI agents raw HTML or screenshots. Raw HTML is ~12,000 tokens per page. Screenshots are ~3,000 tokens. Both burn through context windows fast and slow your agent down.
+Most browser tools give AI agents raw HTML or screenshots. Raw HTML on a real page runs tens of thousands of tokens — measured median 77,588 across 8 popular sites, and 157,089 for a single Wikipedia article. Screenshots are ~3,000. Both burn through context windows fast and slow your agent down.
 
 ## What grip does instead
 
@@ -85,7 +92,7 @@ CONTENT:
   Delivering to New York — Shop deals in...
 ```
 
-**~50 tokens per snapshot.** A full agent loop that would cost 200,000 tokens with raw HTML costs ~2,000 tokens with grip.
+**~2,000 tokens per snapshot, median.** The example above is example.com, the smallest page on the web at ~50 tokens. A Wikipedia article is ~7,000 — against ~157,000 raw.
 
 ---
 
@@ -102,7 +109,7 @@ async def main():
 
         print(snapshot.text_content)      # readable page text
         print(snapshot.elements)          # interactive elements only
-        print(snapshot.tokens_estimated)  # ~50
+        print(snapshot.tokens_estimated)  # ~50 for this page; ~2,000 median on real pages
 
 asyncio.run(main())
 ```
@@ -203,7 +210,7 @@ grip handles the snapshot → decide → act loop automatically. You just provid
 
 | | Playwright MCP | Puppeteer | grip |
 |---|:---:|:---:|:---:|
-| Tokens per snapshot | ~2,000 | ~2,000 | **~50** |
+| Tokens per snapshot | not measured | not measured | **~2,000 median** |
 | Shadow DOM traversal | Partial | No | Full |
 | Prompt injection guard | No | No | Yes |
 | Typed error recovery | No | No | Yes |

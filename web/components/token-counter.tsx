@@ -40,7 +40,7 @@ export function TokenCounter() {
       <div className="flex-1 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5 text-center">
         <p className="text-xs text-white/40 mb-2 font-mono tracking-wide uppercase">Raw HTML</p>
         <AnimatedNumber
-          target={12000}
+          target={78000}
           duration={1.8}
           className="text-4xl font-semibold tabular-nums text-red-400/80"
         />
@@ -60,12 +60,13 @@ export function TokenCounter() {
         <div className="flex items-baseline justify-center gap-1 relative z-10">
           <span className="text-[11px] text-white/40 font-mono">~</span>
           <AnimatedNumber
-            target={50}
+            target={2000}
             duration={1.0}
             className="text-4xl font-semibold tabular-nums text-emerald-400"
           />
         </div>
         <p className="text-xs text-white/30 mt-1 font-mono relative z-10">tokens / page</p>
+        <p className="text-[10px] text-white/25 mt-1 font-mono relative z-10">median, 8 real pages</p>
       </div>
     </div>
   );

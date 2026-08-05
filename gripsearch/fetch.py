@@ -9,7 +9,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from graft.types import Candidate, SourceFailure
+from gripsearch.types import Candidate, SourceFailure
 from grip.browser import Browser
 from grip.reader import Document
 
