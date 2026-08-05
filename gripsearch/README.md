@@ -27,8 +27,11 @@ seconds and no amount of engineering removes that.
 - **Same or lower cost.** ~$0.025/query vs ~$0.049 for an equivalent Tavily path.
   The browser is not where the money goes; the LLM read is, and that is identical
   either way.
-- **Better reach.** Real Chrome renders SPAs and JS-gated content a static fetch
-  cannot see.
+- ~~**Better reach.**~~ **Measured, and it does not hold.** Across 33 URLs, static
+  fetch recovered the content on every page either arm could read — 23/23, gap zero,
+  including SPAs, because documentation sites server-render for SEO. See
+  [`evaluation/`](../evaluation/). Where static fetch fails it fails on *blocking*,
+  and blocking defeats a headless browser too.
 - **Real citations.** Every passage carries a URL plus a block id and heading trail,
   not just a document.
 

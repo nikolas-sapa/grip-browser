@@ -111,3 +111,18 @@ def test_thin_but_legitimate_page_is_not_a_block():
     blocked page. Only the status distinguishes them, so a 200 must stay clean."""
     err = ErrorClassifier().classify_page_state("Example Domain", "https://example.com/", 200)
     assert err.type not in (ErrorType.ANTI_BOT_BLOCK, ErrorType.RATE_LIMITED)
+
+
+def test_ordinary_titles_containing_forbidden_are_not_blocks():
+    """A false positive is worse than a miss here: callers drop a flagged source
+    without reading it, so a legitimate page vanishes looking like a real block."""
+    c = ErrorClassifier()
+    for title in ("Forbidden fruit - Wikipedia", "Please wait, redirecting…",
+                  "The Forbidden City"):
+        err = c.classify_page_state(title, "https://en.wikipedia.org/x", 200)
+        assert err.type != ErrorType.ANTI_BOT_BLOCK, f"false positive on {title!r}"
+
+
+def test_a_real_403_is_still_a_block():
+    err = ErrorClassifier().classify_page_state("Forbidden fruit", "https://x.com/", 403)
+    assert err.type == ErrorType.ANTI_BOT_BLOCK

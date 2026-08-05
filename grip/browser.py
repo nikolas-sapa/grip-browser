@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import contextlib
 import json
 import logging
 import urllib.parse
@@ -138,7 +139,18 @@ class Browser:
             closer=self._close_target,
         )
         self._pages.append(page)
-        await page.goto(url)
+        try:
+            await page.goto(url)
+        except BaseException:
+            # If goto() fails — or the caller cancels us mid-navigate, which is what
+            # asyncio.wait_for() around open() does on timeout — this coroutine never
+            # returns, so the caller has no Page to close. The tab and its websocket
+            # would then stay open for the lifetime of the Browser. Cancellation is a
+            # BaseException, so `except Exception` would miss the common case.
+            # Shielded so the cleanup completes even while we are being cancelled.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(asyncio.ensure_future(page.close()))
+            raise
         return page
 
     async def _close_target(self, target_id: str) -> None:
