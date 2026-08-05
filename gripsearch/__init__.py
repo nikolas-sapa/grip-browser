@@ -1,8 +1,10 @@
 from gripsearch.discovery import BraveSource, CandidateSource, StaticSource
 from gripsearch.retriever import NoUsableSources, Retriever
+from gripsearch.synthesize import Answer, SynthesisModel, synthesize
 from gripsearch.types import Candidate, Passage, RetrievalResult, SourceFailure
 
 __all__ = [
+    "Answer",
     "BraveSource",
     "Candidate",
     "CandidateSource",
@@ -12,6 +14,8 @@ __all__ = [
     "Retriever",
     "SourceFailure",
     "StaticSource",
+    "SynthesisModel",
+    "synthesize",
 ]
 
 __version__ = "0.1.0"

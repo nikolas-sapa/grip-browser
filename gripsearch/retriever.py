@@ -8,6 +8,7 @@ from grip.browser import Browser
 from gripsearch.discovery import CandidateSource
 from gripsearch.fetch import fetch_all
 from gripsearch.rank import rank
+from gripsearch.synthesize import Answer, SynthesisModel, synthesize
 from gripsearch.types import RetrievalResult
 
 
@@ -37,6 +38,7 @@ class Retriever:
         passages: int = 12,
         headless: bool = True,
         stealth: bool = True,
+        model: SynthesisModel | None = None,
     ) -> None:
         self._source = source
         self._n = sources_per_query
@@ -48,6 +50,9 @@ class Retriever:
         # SDK does.
         self._headless = headless
         self._stealth = stealth
+        # Opt-in: no model, no synthesis. Injected rather than constructed so
+        # any client (real or fake-for-tests) works without an SDK dependency.
+        self._model = model
         self._browser: Browser | None = None
 
     async def __aenter__(self) -> Self:
@@ -85,3 +90,19 @@ class Retriever:
         )
         result.tokens_estimated = sum(len(p.text) for p in passages) // 4
         return result
+
+    async def answer(self, query: str) -> Answer:
+        """Search, then synthesize a cited answer over the result.
+
+        A separate method rather than `search(synthesize=True)`: `Answer` and
+        `RetrievalResult` are different shapes (no failures, no timing), and a
+        flag that changes a method's return type is exactly what mypy exists
+        to catch. Keeping them apart also means `search()` needed zero edits
+        to stay untouched for every existing caller.
+        """
+        if self._model is None:
+            raise RuntimeError(
+                "Retriever needs a `model` to answer(); pass one to __init__"
+            )
+        result = await self.search(query)
+        return await synthesize(query, result.passages, self._model)

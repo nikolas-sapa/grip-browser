@@ -19,6 +19,26 @@ _BLOCK_TITLE_PATTERNS = [
 ]
 _AUTH_URL_PATTERNS = ["/login", "/signin", "/sign-in", "/auth", "/account/login"]
 _AUTH_TITLE_PATTERNS = ["sign in", "log in", "login", "sign up", "create account"]
+_SOFT_404_TITLE_PATTERNS = [
+    "page not found", "404 not found", "error 404", "404 - page not found",
+    # Deliberately NOT bare "404" — "404 Media", "Room 404" and similar titles
+    # use the number without meaning "this page doesn't exist". Every pattern
+    # here spells out "not found" so a real 404 title is required to match.
+]
+# A page can render 200 with a real title while nearly everything read() sees
+# is chrome (cookie banners, consent walls, promo rails) rather than content —
+# lots of raw text, almost nothing survives boilerplate stripping. Raw length
+# alone can't tell a block from a legitimately thin real page (see
+# test_thin_but_legitimate_page_stays_clean); this instead compares raw text
+# to what's left *after* chrome stripping, and only fires when there is a
+# large gap between the two, with content resolutely present and resolutely
+# tiny — not literally zero, since an extractor finding zero blocks is at
+# least as likely to be its own limitation (bare prose in <div>s, no <p>/<li>)
+# as a real block. That case is left unflagged rather than risk a false
+# positive; see test_prose_in_bare_divs_stays_clean.
+RAW_TEXT_PROBE_FLOOR = 200
+_THIN_CONTENT_CHAR_FLOOR = 100
+_THIN_CONTENT_RATIO_CEILING = 0.15
 _STALE_CDP_MESSAGES = [
     "cannot find context",
     "execution context was destroyed",
@@ -53,7 +73,13 @@ class ErrorClassifier:
         )
 
     def classify_page_state(
-        self, title: str, url: str, status_code: int
+        self,
+        title: str,
+        url: str,
+        status_code: int,
+        raw_chars: int | None = None,
+        content_chars: int | None = None,
+        content_blocks: int | None = None,
     ) -> BrowserError:
         title_lower = title.lower()
         url_lower = url.lower()
@@ -101,6 +127,32 @@ class ErrorClassifier:
                 message=f"Login wall detected: {title!r}",
                 confidence=0.82,
                 recovery=[RecoveryAction.ESCALATE_TO_HUMAN],
+            )
+
+        if any(p in title_lower for p in _SOFT_404_TITLE_PATTERNS):
+            return BrowserError(
+                type=ErrorType.NO_CONTENT,
+                message=f"Soft 404 detected: {title!r}",
+                confidence=0.85,
+                recovery=[RecoveryAction.RETRY],
+            )
+
+        if (
+            raw_chars is not None and content_chars is not None
+            and raw_chars >= RAW_TEXT_PROBE_FLOOR
+            and 0 < content_chars < _THIN_CONTENT_CHAR_FLOOR
+            and content_chars / raw_chars < _THIN_CONTENT_RATIO_CEILING
+        ):
+            return BrowserError(
+                type=ErrorType.NO_CONTENT,
+                message=(
+                    f"Page loaded but almost nothing survived chrome stripping "
+                    f"({content_chars} of {raw_chars} raw chars"
+                    f"{f', {content_blocks} blocks' if content_blocks is not None else ''}"
+                    f"): {title!r}"
+                ),
+                confidence=0.75,
+                recovery=[RecoveryAction.RETRY],
             )
 
         return BrowserError(

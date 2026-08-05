@@ -32,7 +32,7 @@ def test_all_error_types_exist():
     expected = {
         "element_stale", "element_not_found",
         "anti_bot_block", "captcha_required", "rate_limited",
-        "auth_required", "zero_results",
+        "auth_required", "zero_results", "no_content",
         "network_timeout", "navigation_failed", "canvas_element",
         "safe_mode_violation",
     }

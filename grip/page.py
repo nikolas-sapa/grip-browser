@@ -17,7 +17,7 @@ from grip.compression.cache import ElementCache
 from grip.compression.refs import RefRegistry
 from grip.compression.diff import SnapshotDiff
 from grip.compression.summarizer import PageSnapshot, Summarizer
-from grip.errors.classifier import ErrorClassifier
+from grip.errors.classifier import ErrorClassifier, RAW_TEXT_PROBE_FLOOR
 from grip.errors.types import BrowserError, ErrorType, GripError
 from grip.security.injection import InjectionDetector
 from grip.reader import Block, Document
@@ -141,9 +141,24 @@ class Page:
 
         page_error = None
         _detected = self._classifier.classify_page_state(title, url, self._status_code)
+        # Title/status alone missed nothing conclusive. Only now — and only if the
+        # page has enough raw text to possibly exhibit the "lots of chrome, almost
+        # no content" shape at all — pay for one extra CDP round trip to check it.
+        # A short page (e.g. "hello") can never trip the ratio check regardless of
+        # what it probes to, so skipping it here changes no outcome.
+        if _detected.type == ErrorType.NAVIGATION_FAILED and len(page_text) >= RAW_TEXT_PROBE_FLOOR:
+            shape = await self._probe_content_shape()
+            if shape is not None:
+                content_blocks, content_chars = shape
+                _detected = self._classifier.classify_page_state(
+                    title, url, self._status_code,
+                    raw_chars=len(page_text),
+                    content_chars=content_chars,
+                    content_blocks=content_blocks,
+                )
         if _detected.type in (
             ErrorType.ANTI_BOT_BLOCK, ErrorType.CAPTCHA_REQUIRED,
-            ErrorType.RATE_LIMITED, ErrorType.AUTH_REQUIRED,
+            ErrorType.RATE_LIMITED, ErrorType.AUTH_REQUIRED, ErrorType.NO_CONTENT,
         ):
             page_error = _detected
 
@@ -297,6 +312,25 @@ class Page:
                 {"expression": SCROLL_BOTTOM_JS, "returnByValue": True},
             )
         return clicked
+
+    async def _probe_content_shape(self) -> tuple[int, int] | None:
+        """One-off, best-effort check of how much content survives chrome
+        stripping — used only to feed the classifier's content-shape signal.
+        Never allowed to turn a working snapshot() into a raised error: any
+        failure here just means the signal is skipped, not that the page failed.
+        """
+        try:
+            result = await self._engine.send(
+                "Runtime.evaluate",
+                {"expression": READ_CONTENT_JS, "returnByValue": True},
+            )
+            raw = result.get("result", {}).get("value") or "{}"
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            blocks = data.get("blocks", [])
+            chars = sum(len(b.get("text", "")) for b in blocks)
+            return len(blocks), chars
+        except Exception:  # noqa: BLE001 — best-effort probe, never fail the snapshot
+            return None
 
     async def _count_blocks(self) -> int:
         result = await self._engine.send(
