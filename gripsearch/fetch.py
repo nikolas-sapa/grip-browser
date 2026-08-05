@@ -9,9 +9,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from gripsearch.types import Candidate, SourceFailure
 from grip.browser import Browser
 from grip.reader import Document
+from gripsearch.types import Candidate, SourceFailure
 
 logger = logging.getLogger(__name__)
 

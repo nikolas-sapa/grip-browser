@@ -42,6 +42,11 @@ export function Hero() {
         grip is a CDP-native browser SDK for AI agents. It hands your agent a
         semantic page snapshot — interactive elements and visible text — instead
         of raw HTML. No Playwright bloat.
+        <span className="block mt-2 text-sm text-white/25">
+          Median across 8 real pages, measured against raw HTML. Against
+          tag-stripped text the reduction is smaller — method and data in the
+          repo.
+        </span>
       </motion.p>
 
       {/* CTAs */}

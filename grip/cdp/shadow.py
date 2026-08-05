@@ -162,6 +162,59 @@ PAGE_TEXT_JS = """
 """
 
 
+CLICK_REVEAL_JS = """
+(function () {
+  // Fixed heuristic, not an LLM call — one LLM round-trip per page would
+  // roughly double unit economics. Text list and aria-expanded are the
+  // two signals real "show more" / "load more" / expander controls use.
+  const PHRASES = ['show more', 'load more', 'next', 'expand', 'read more', 'see more'];
+
+  function visible(el) {
+    const r = el.getBoundingClientRect();
+    const s = window.getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  }
+  function textMatches(el) {
+    const t = (el.innerText || el.getAttribute('aria-label') || '').trim().toLowerCase();
+    return PHRASES.some(function (p) { return t.includes(p); });
+  }
+  // A "Next" link on a paginated site navigates away, which hands read() a
+  // different document mid-loop and breaks citation stability. Only click
+  // anchors that stay on this page (no href, "#...", or same path+query).
+  function staysOnPage(el) {
+    if (el.tagName.toLowerCase() !== 'a') return true;
+    const href = el.getAttribute('href');
+    if (!href || href.charAt(0) === '#') return true;
+    let abs;
+    try { abs = new URL(href, location.href); } catch (e) { return false; }
+    return abs.origin === location.origin
+      && abs.pathname === location.pathname
+      && abs.search === location.search;
+  }
+
+  let target = null;
+  for (const el of document.querySelectorAll('a, button, [role="button"]')) {
+    if (visible(el) && textMatches(el) && staysOnPage(el)) { target = el; break; }
+  }
+  if (!target) {
+    for (const el of document.querySelectorAll('[aria-expanded="false"]')) {
+      if (visible(el)) { target = el; break; }
+    }
+  }
+  if (!target) return false;
+  target.click();
+  return true;
+})();
+"""
+
+SCROLL_BOTTOM_JS = """
+(function () {
+  window.scrollTo(0, document.body.scrollHeight);
+  return true;
+})();
+"""
+
+
 READ_CONTENT_JS = r"""
 (function () {
   const BAD = /(^|[-_ ])(nav|menu|sidebar|footer|header|banner|cookie|consent|promo|advert|subscribe|newsletter|related|comment|share|social|breadcrumb)([-_ ]|$)/i;

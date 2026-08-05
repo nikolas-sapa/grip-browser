@@ -11,9 +11,9 @@ import math
 import re
 from collections import Counter
 
+from grip.reader import Block
 from gripsearch.fetch import Fetched
 from gripsearch.types import Passage
-from grip.reader import Block
 
 _WORD = re.compile(r"[a-z0-9]+")
 

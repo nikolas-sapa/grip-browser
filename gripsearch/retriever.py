@@ -4,11 +4,11 @@ from __future__ import annotations
 import time
 from typing import Self
 
+from grip.browser import Browser
 from gripsearch.discovery import CandidateSource
 from gripsearch.fetch import fetch_all
 from gripsearch.rank import rank
 from gripsearch.types import RetrievalResult
-from grip.browser import Browser
 
 
 class NoUsableSources(RuntimeError):
