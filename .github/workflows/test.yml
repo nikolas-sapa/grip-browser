@@ -26,3 +26,9 @@ jobs:
 
       - name: Run unit tests
         run: pytest tests/unit/ -v
+
+      # Integration and gripsearch tests drive real Chrome. They are offline —
+      # every one serves its own fixtures from a local http.server — but they need
+      # a browser binary, which ubuntu-latest runners ship.
+      - name: Run integration and gripsearch tests
+        run: pytest tests/integration/ tests/gripsearch/ -v
