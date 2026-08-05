@@ -93,3 +93,45 @@ async def test_stealth_removes_the_two_free_tells():
         webdriver, ua = _json.loads(r["result"]["value"])
         assert webdriver is False
         assert "Headless" not in ua
+
+
+@pytest.mark.asyncio
+async def test_cancelled_open_does_not_leak_a_tab():
+    """asyncio.wait_for() around open() cancels it mid-navigate on timeout. The
+    caller never receives a Page, so Browser.open() must clean up after itself or
+    the tab and its websocket leak for the lifetime of the Browser."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    stop = threading.Event()
+
+    class _Slow(BaseHTTPRequestHandler):
+        def do_GET(self):
+            stop.wait(timeout=20)  # never finishes before the caller gives up
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", 0), _Slow)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_port}/"
+
+    try:
+        async with Browser(headless=True) as browser:
+            before = await _target_ids(browser)
+            with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+                await asyncio.wait_for(browser.open(url), timeout=2.0)
+
+            assert browser._pages == [], "Page left in the registry after a failed open"
+
+            for _ in range(50):
+                if await _target_ids(browser) == before:
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                pytest.fail("tab leaked after a cancelled open()")
+    finally:
+        stop.set()
+        httpd.shutdown()

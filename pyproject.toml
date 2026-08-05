@@ -27,6 +27,12 @@ anthropic = ["anthropic>=0.25"]
 [tool.hatch.build.targets.wheel]
 packages = ["grip"]
 
+[tool.hatch.build.targets.sdist]
+# Without this the sdist tars the whole repo, so `gripsearch` — a separate
+# distribution — would ship inside grip-browser. The wheel's `packages` filter
+# does not apply to sdists.
+only-include = ["grip", "README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

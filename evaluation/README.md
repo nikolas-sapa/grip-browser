@@ -94,15 +94,18 @@ Three honest positions remain, none of them "better reach":
    returns junk indistinguishable from content. grip reports `page_error`. Untested
    here as a differentiator, and worth its own experiment.
 3. **Interaction-to-reveal** (ticket 09) — content behind a click, pagination,
-   infinite scroll. **This is the only place reach might still be real**, and it is
-   exactly the tier this evaluation did not test, because grip does not implement it
-   yet.
+   infinite scroll. **This is the only place reach might still be real**, and this
+   evaluation does not test it. `page.read(interact=True)` shipped in 0.3.0 *after*
+   this evaluation was run, so the capability now exists and remains unmeasured — the
+   corpus here would need rebuilding around pages whose content is genuinely gated
+   behind an interaction.
 
 Ticket 09 was deferred on the reasoning that reach should be *proven* before being
 *extended*. That reasoning holds, but the conclusion inverts: rendered-DOM reach is now
-disproven, so if reach is to be the differentiator at all, interaction-to-reveal is no
-longer optional — it is the entire hypothesis, and it needs its own evaluation before
-anyone builds on it.
+disproven, so if reach is to be the differentiator at all, interaction-to-reveal is the
+entire hypothesis. It was built in 0.3.0 and **still has no evaluation** — the same
+mistake this document was written to correct, so treat any reach claim resting on it as
+unproven until that harness exists.
 
 ## Two measurement bugs found while building this
 

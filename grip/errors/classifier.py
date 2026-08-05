@@ -8,9 +8,14 @@ _BLOCK_TITLE_PATTERNS = [
     # Cloudflare's interstitial is titled "Just a moment..." far more often than
     # it is titled "Cloudflare", and it is the single most common block on the web.
     "just a moment",
-    "checking your browser", "one more step", "please wait",
+    "checking your browser", "one more step",
     "are you a robot", "human verification", "verifying you are human",
-    "pardon our interruption", "request blocked", "forbidden",
+    "pardon our interruption", "request blocked",
+    # Deliberately NOT here: bare "please wait" and "forbidden". Both occur in
+    # ordinary titles ("Forbidden fruit", "Please wait, redirecting…"), and a false
+    # positive is worse than a miss: callers drop a flagged source without reading
+    # it, so a legitimate page disappears looking exactly like a genuine block.
+    # A real 403 is caught by status code instead.
 ]
 _AUTH_URL_PATTERNS = ["/login", "/signin", "/sign-in", "/auth", "/account/login"]
 _AUTH_TITLE_PATTERNS = ["sign in", "log in", "login", "sign up", "create account"]
