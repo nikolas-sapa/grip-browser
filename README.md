@@ -59,7 +59,7 @@ Honest caveat: Playwright and Puppeteer are broader general-purpose automation f
 
 **Does it handle CAPTCHAs / bot blocks?** It detects them and returns a typed error with a suggested recovery action (escalate, backoff, rotate). It does not solve CAPTCHAs for you.
 
-**What do I need installed?** Python 3.11+ and Chrome or Chromium. Grip finds Chrome automatically.
+**What do I need installed?** Python 3.11+ and Chrome or Chromium. Grip finds Chrome automatically, and falls back to the Chrome for Testing build that Playwright or Puppeteer already downloaded if no system Chrome is present. Set `CHROME_EXECUTABLE` to override.
 
 ---
 
@@ -123,6 +123,28 @@ async with Browser(headless=True) as browser:
     shot = await page.screenshot()      # JPEG, ~800 tokens for vision models
     shot.save("result.jpg")
 ```
+
+## Concurrent pages
+
+Every `open()` gets its own tab and its own CDP connection, so pages are
+independent and can be driven in parallel:
+
+```python
+async with Browser(headless=True) as browser:
+    urls = ["https://example.com", "https://example.org", "https://example.net"]
+    pages = await asyncio.gather(*(browser.open(u) for u in urls))
+    snapshots = await asyncio.gather(*(p.snapshot() for p in pages))
+
+    for snap in snapshots:
+        print(snap.url, snap.tokens_estimated)
+
+    for page in pages:
+        await page.close()          # closes the tab; browser.close() also closes any left open
+```
+
+`page.goto(url)` navigates an existing tab in place. There is no built-in
+concurrency limit — wrap in an `asyncio.Semaphore` if you need one, since the
+safe ceiling depends on your machine rather than on grip.
 
 ## With an LLM (autonomous mode)
 

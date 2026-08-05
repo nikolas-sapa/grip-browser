@@ -1,7 +1,9 @@
 from __future__ import annotations
+import asyncio
 import base64
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,11 +38,20 @@ class Screenshot:
 
 
 class Page:
-    def __init__(self, engine: CDPEngine, trace: Trace, target_id: str = "", safe: bool = False) -> None:
+    def __init__(
+        self,
+        engine: CDPEngine,
+        trace: Trace,
+        target_id: str = "",
+        safe: bool = False,
+        closer: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self._engine = engine
         self._trace = trace
         self._target_id = target_id
         self._safe = safe
+        self._closer = closer
+        self._closed = False
         self._version = 0
         self._current_snapshot: PageSnapshot | None = None
         self._summarizer = Summarizer()
@@ -52,6 +63,7 @@ class Page:
         self._initialized = False
         self._refs = RefRegistry()
         self._current_url: str = ""
+        self._status_code: int = 0
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -67,6 +79,45 @@ class Page:
             await self._engine.send("Runtime.enable")
             await self._engine.send("Page.enable")
             self._initialized = True
+
+    async def goto(self, url: str, timeout: float = 30.0) -> None:
+        """Navigate this tab and wait for the load event."""
+        await self._engine.send("Page.enable")
+        await self._engine.send("Network.enable")
+        load_event = asyncio.Event()
+
+        def on_load(params: dict) -> None:
+            load_event.set()
+
+        def on_response(params: dict) -> None:
+            # Only the main document response carries the status that describes the
+            # fetch. Sub-resources (images, XHR) fire this too and must be ignored.
+            # Redirect chains fire several Document responses; the last one wins.
+            if params.get("type") == "Document":
+                self._status_code = params.get("response", {}).get("status", 0)
+
+        self._status_code = 0
+        # Subscribe before navigating — a fast page can fire loadEventFired
+        # before the navigate call returns.
+        self._engine.on("Page.loadEventFired", on_load)
+        self._engine.on("Network.responseReceived", on_response)
+        try:
+            await self._engine.send("Page.navigate", {"url": url})
+            await asyncio.wait_for(load_event.wait(), timeout=timeout)
+        except TimeoutError:
+            pass  # slow page: hand it back anyway, snapshot() sees whatever loaded
+        finally:
+            self._engine.off("Page.loadEventFired", on_load)
+            self._engine.off("Network.responseReceived", on_response)
+
+    async def close(self) -> None:
+        """Close this tab and drop its CDP connection. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        await self._engine.disconnect()
+        if self._closer and self._target_id:
+            await self._closer(self._target_id)
 
     async def snapshot(self) -> PageSnapshot:
         await self._ensure_initialized()
@@ -87,7 +138,7 @@ class Page:
         safe_text = scan.safe_text
 
         page_error = None
-        _detected = self._classifier.classify_page_state(title, url, 0)
+        _detected = self._classifier.classify_page_state(title, url, self._status_code)
         if _detected.type in (
             ErrorType.ANTI_BOT_BLOCK, ErrorType.CAPTCHA_REQUIRED,
             ErrorType.RATE_LIMITED, ErrorType.AUTH_REQUIRED,
@@ -281,6 +332,7 @@ class Page:
                 aria_hidden=d.get("ariaHidden", False),
                 width=d.get("width", 1),
                 height=d.get("height", 1),
+                href=d.get("href"),
             )
             for d in raw_data
         ]

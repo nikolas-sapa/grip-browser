@@ -88,3 +88,26 @@ def test_confidence_is_valid_range():
     c = ErrorClassifier()
     err = c.classify_timeout()
     assert 0.0 <= err.confidence <= 1.0
+
+
+def test_classifies_cloudflare_just_a_moment_as_block():
+    """The most common block title on the web; previously fell through as success."""
+    err = ErrorClassifier().classify_page_state("Just a moment...", "https://x.com/a", 200)
+    assert err.type == ErrorType.ANTI_BOT_BLOCK
+
+
+def test_classifies_403_as_block():
+    err = ErrorClassifier().classify_page_state("Some Site", "https://x.com/a", 403)
+    assert err.type == ErrorType.ANTI_BOT_BLOCK
+
+
+def test_classifies_429_as_rate_limited():
+    err = ErrorClassifier().classify_page_state("Some Site", "https://x.com/a", 429)
+    assert err.type == ErrorType.RATE_LIMITED
+
+
+def test_thin_but_legitimate_page_is_not_a_block():
+    """example.com is 127 chars with 1 element — nearly identical in shape to a
+    blocked page. Only the status distinguishes them, so a 200 must stay clean."""
+    err = ErrorClassifier().classify_page_state("Example Domain", "https://example.com/", 200)
+    assert err.type not in (ErrorType.ANTI_BOT_BLOCK, ErrorType.RATE_LIMITED)
