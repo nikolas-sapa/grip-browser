@@ -39,6 +39,7 @@ class Element:
     cx: int
     cy: int
     ref: str = ""
+    href: str | None = None
 
 
 @dataclass
@@ -51,6 +52,13 @@ class PageSnapshot:
     tokens_estimated: int
     changed_from_previous: bool = True
     page_error: "BrowserError | None" = None
+
+    @property
+    def links(self) -> list[tuple[str, str]]:
+        """(text, absolute url) for every fetchable link. Hrefs stay out of the
+        formatted snapshot — a results page carries ~34 of them, which would swamp
+        the token budget — so this is how callers get at them."""
+        return [(el.text, el.href) for el in self.elements if el.href]
 
 
 class Summarizer:
@@ -73,6 +81,7 @@ class Summarizer:
                 in_shadow_dom=el.in_shadow_dom,
                 cx=el.cx,
                 cy=el.cy,
+                href=el.href,
             )
             for i, el in enumerate(raw_elements)
         ]

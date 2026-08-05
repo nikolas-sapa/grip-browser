@@ -53,6 +53,15 @@ DISCOVER_ELEMENTS_JS = """
           role: role || tag,
           text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
           placeholder: el.getAttribute('placeholder') || null,
+          // el.href resolves relative URLs against the document for us. Only
+          // fetchable schemes: mailto:/javascript:/tel:/#fragment are not pages.
+          href: (function () {
+            if (tag !== 'a') return null;
+            const raw = el.getAttribute('href');
+            if (!raw || raw.startsWith('#')) return null;
+            const abs = el.href;
+            return /^https?:/i.test(abs) ? abs : null;
+          })(),
           inShadowDom: inShadow,
           cx: Math.round(rect.left + rect.width / 2),
           cy: Math.round(rect.top + rect.height / 2),

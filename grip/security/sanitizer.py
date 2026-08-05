@@ -17,6 +17,7 @@ class RawElement:
     aria_hidden: bool
     width: int
     height: int
+    href: str | None = None
 
 
 class HiddenElementFilter:

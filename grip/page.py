@@ -332,6 +332,7 @@ class Page:
                 aria_hidden=d.get("ariaHidden", False),
                 width=d.get("width", 1),
                 height=d.get("height", 1),
+                href=d.get("href"),
             )
             for d in raw_data
         ]
