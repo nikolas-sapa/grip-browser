@@ -6,6 +6,11 @@ import tempfile
 from pathlib import Path
 
 
+_STEALTH_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+)
+
 _CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -63,7 +68,12 @@ class ChromeLauncher:
         self._process: subprocess.Popen | None = None
         self._user_data_dir: str | None = None
 
-    def launch(self, headless: bool = True, proxy: str | None = None) -> int:
+    def launch(
+        self,
+        headless: bool = True,
+        proxy: str | None = None,
+        stealth: bool = False,
+    ) -> int:
         self._user_data_dir = tempfile.mkdtemp(prefix="grip_chrome_")
         args = [
             self.executable,
@@ -77,6 +87,13 @@ class ChromeLauncher:
             args.append("--headless=new")
         if proxy:
             args.append(f"--proxy-server={proxy}")
+        if stealth:
+            # Two tells, both free to remove. navigator.webdriver is set by the
+            # automation flag; the UA string literally contains "HeadlessChrome".
+            # Deliberately NOT a full evasion suite — canvas/WebGL/timing spoofing
+            # is a maintained arms race this project is not entering.
+            args.append("--disable-blink-features=AutomationControlled")
+            args.append(f"--user-agent={_STEALTH_UA}")
         self._process = subprocess.Popen(
             args,
             stdout=subprocess.DEVNULL,

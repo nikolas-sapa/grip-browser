@@ -160,3 +160,76 @@ PAGE_TEXT_JS = """
   return (main.innerText || main.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 8000);
 })();
 """
+
+
+READ_CONTENT_JS = r"""
+(function () {
+  const BAD = /(^|[-_ ])(nav|menu|sidebar|footer|header|banner|cookie|consent|promo|advert|subscribe|newsletter|related|comment|share|social|breadcrumb)([-_ ]|$)/i;
+  const CHROME_TAGS = ['nav','footer','header','aside','script','style','noscript','form'];
+  const CHROME_ROLES = ['navigation','banner','contentinfo','complementary','search'];
+
+  function isChrome(el) {
+    if (!el || !el.tagName) return false;
+    if (CHROME_TAGS.includes(el.tagName.toLowerCase())) return true;
+    if (CHROME_ROLES.includes(el.getAttribute('role') || '')) return true;
+    return BAD.test(el.className || '') || BAD.test(el.id || '');
+  }
+
+  // Score a container by how much text sits in its own prose blocks. Nav-heavy
+  // wrappers score low because their text lives in links, not paragraphs.
+  function score(el) {
+    let n = 0;
+    for (const p of el.querySelectorAll('p, li, pre, blockquote')) {
+      if (isChrome(p) || isChrome(p.parentElement)) continue;
+      n += (p.innerText || '').trim().length;
+    }
+    return n;
+  }
+
+  let best = document.querySelector('article, main, [role="main"]');
+  if (!best) {
+    let bestScore = 0;
+    for (const el of document.querySelectorAll('div, section, article, main')) {
+      const s = score(el);
+      // 1.05 so the *smallest* container holding the text wins ties
+      if (s > bestScore * 1.05) { bestScore = s; best = el; }
+    }
+  }
+  best = best || document.body;
+
+  const blocks = [];
+  const trail = [];
+  const walker = document.createTreeWalker(best, NodeFilter.SHOW_ELEMENT);
+  let node = walker.currentNode;
+  while (node) {
+    const tag = node.tagName.toLowerCase();
+    if (isChrome(node)) {
+      let next = walker.nextSibling();
+      while (!next && walker.parentNode()) next = walker.nextSibling();
+      node = next;
+      continue;
+    }
+    if (/^h[1-6]$/.test(tag)) {
+      const level = +tag[1];
+      const text = (node.innerText || '').replace(/\s+/g, ' ').trim();
+      if (text) {
+        while (trail.length && trail[trail.length - 1].level >= level) trail.pop();
+        trail.push({ level: level, text: text });
+        blocks.push({ kind: 'heading', level: level, text: text,
+                      path: trail.map(function (t) { return t.text; }) });
+      }
+    } else if (['p','li','pre','blockquote','td'].includes(tag)) {
+      // leaf-ish only, so a nested container does not repeat its children's text
+      if (!node.querySelector('p, li, pre, blockquote')) {
+        const text = (node.innerText || '').replace(/\s+/g, ' ').trim();
+        if (text.length > 2) {
+          blocks.push({ kind: tag === 'pre' ? 'code' : 'text', level: 0, text: text,
+                        path: trail.map(function (t) { return t.text; }) });
+        }
+      }
+    }
+    node = walker.nextNode();
+  }
+  return JSON.stringify({ title: document.title, url: location.href, blocks: blocks });
+})();
+"""
