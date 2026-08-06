@@ -1,8 +1,14 @@
-DISCOVER_ELEMENTS_JS = """
-(function() {
-  const results = [];
-  let idx = 0;
-
+# The single definition of "which elements are addressable, and in what order".
+#
+# DISCOVER, CLICK and TYPE all index into this same list. They previously each
+# had their own copy of the rules and had drifted apart: DISCOVER treated an
+# element as hidden on six conditions, CLICK on two, and TYPE collected an
+# entirely different (input-only) set. Since `page.click()`/`page.type()` pass an
+# index taken from DISCOVER's snapshot, any disagreement meant acting on the
+# wrong element — silently, and only on pages that happen to contain an
+# aria-hidden or opacity:0 control. Sharing one collector makes that class of bug
+# unrepresentable rather than merely fixed.
+_COLLECT_CANDIDATES_JS = """
   const INTERACTIVE_TAGS = new Set([
     'a','button','input','select','textarea','details','summary'
   ]);
@@ -10,158 +16,128 @@ DISCOVER_ELEMENTS_JS = """
     'button','link','checkbox','radio','menuitem','tab','textbox',
     'combobox','listbox','option','switch','treeitem','slider'
   ]);
+  const _TRACKING_HOSTS = [
+    'googletagmanager.com', 'google-analytics.com', 'facebook.net',
+    'hotjar.com', 'sentry.io', 'recaptcha.net', 'doubleclick.net',
+    'analytics.google.com', 'pixel.facebook.com', 'tr.snapchat.com'
+  ];
 
-  function collectElements(root, inShadow) {
-    const walker = document.createTreeWalker(
-      root,
-      NodeFilter.SHOW_ELEMENT,
-      null
-    );
-    let node = walker.currentNode;
-    while (node) {
-      const el = node;
-      if (!el.tagName) { node = walker.nextNode(); continue; }
-      const tag = el.tagName.toLowerCase();
-      if (tag === 'iframe') {
-        const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
-        let _iframeHost = '';
-        try { _iframeHost = new URL(src, location.href).hostname; } catch(e) {}
-        const isTracking = [
-          'googletagmanager.com', 'google-analytics.com', 'facebook.net',
-          'hotjar.com', 'sentry.io', 'recaptcha.net', 'doubleclick.net',
-          'analytics.google.com', 'pixel.facebook.com', 'tr.snapchat.com'
-        ].some(p => _iframeHost.includes(p));
-        if (isTracking) { node = walker.nextNode(); continue; }
-      }
-      // Cheap attribute reads happen for every node so we know whether it's a
-      // candidate at all. getComputedStyle/getBoundingClientRect/offsetWidth
-      // force style resolution and layout — the expensive part — so they only
-      // run for nodes that could actually end up in results. Non-candidates
-      // never made it into results before either (the old code computed
-      // `hidden` unconditionally but only used it inside the same tag/role
-      // check), so this reorder changes cost, not output.
-      const role = el.getAttribute('role') || el.getAttribute('aria-role') || '';
-      if (INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role)) {
-        const ariaHidden = el.getAttribute('aria-hidden') === 'true';
-        const style = window.getComputedStyle(el);
-        const hidden = (
-          style.display === 'none' ||
-          style.visibility === 'hidden' ||
-          parseFloat(style.opacity) === 0 ||
-          ariaHidden ||
-          el.offsetWidth === 0 ||
-          el.offsetHeight === 0
-        );
-
-        if (!hidden) {
-          const rect = el.getBoundingClientRect();
-          results.push({
-            index: idx++,
-            tag: tag,
-            role: role || tag,
-            text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
-            placeholder: el.getAttribute('placeholder') || null,
-            // el.href resolves relative URLs against the document for us. Only
-            // fetchable schemes: mailto:/javascript:/tel:/#fragment are not pages.
-            href: (function () {
-              if (tag !== 'a') return null;
-              const raw = el.getAttribute('href');
-              if (!raw || raw.startsWith('#')) return null;
-              const abs = el.href;
-              return /^https?:/i.test(abs) ? abs : null;
-            })(),
-            inShadowDom: inShadow,
-            cx: Math.round(rect.left + rect.width / 2),
-            cy: Math.round(rect.top + rect.height / 2),
-          });
-        }
-      }
-
-      if (el.shadowRoot) {
-        collectElements(el.shadowRoot, true);
-      }
-      node = walker.nextNode();
-    }
+  function gripRole(el) {
+    return el.getAttribute('role') || el.getAttribute('aria-role') || '';
   }
 
-  collectElements(document.body, false);
-  return results;
+  function gripIsCandidate(el, tag, role) {
+    return INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role);
+  }
+
+  // Layout-forcing reads (getComputedStyle, offsetWidth/Height) are the
+  // expensive part, so callers only reach this for elements already known to be
+  // candidates.
+  function gripIsHidden(el) {
+    const style = window.getComputedStyle(el);
+    return (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      parseFloat(style.opacity) === 0 ||
+      el.getAttribute('aria-hidden') === 'true' ||
+      el.offsetWidth === 0 ||
+      el.offsetHeight === 0
+    );
+  }
+
+  function gripCollect() {
+    const out = [];
+    function walk(root, inShadow) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+      let node = walker.currentNode;
+      while (node) {
+        const el = node;
+        if (!el.tagName) { node = walker.nextNode(); continue; }
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'iframe') {
+          const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+          let host = '';
+          try { host = new URL(src, location.href).hostname; } catch (e) {}
+          if (_TRACKING_HOSTS.some(p => host.includes(p))) {
+            node = walker.nextNode();
+            continue;
+          }
+        }
+        const role = gripRole(el);
+        if (gripIsCandidate(el, tag, role) && !gripIsHidden(el)) {
+          out.push({ el: el, tag: tag, role: role, inShadow: inShadow });
+        }
+        if (el.shadowRoot) walk(el.shadowRoot, true);
+        node = walker.nextNode();
+      }
+    }
+    walk(document.body, false);
+    return out;
+  }
+"""
+
+DISCOVER_ELEMENTS_JS = """
+(function() {
+""" + _COLLECT_CANDIDATES_JS + """
+  return JSON.stringify(gripCollect().map(function (c, i) {
+    const el = c.el;
+    const rect = el.getBoundingClientRect();
+    return {
+      index: i,
+      tag: c.tag,
+      role: c.role || c.tag,
+      text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
+      placeholder: el.getAttribute('placeholder') || null,
+      // el.href resolves relative URLs against the document for us. Only
+      // fetchable schemes: mailto:/javascript:/tel:/#fragment are not pages.
+      href: (function () {
+        if (c.tag !== 'a') return null;
+        const raw = el.getAttribute('href');
+        if (!raw || raw.startsWith('#')) return null;
+        const abs = el.href;
+        return /^https?:/i.test(abs) ? abs : null;
+      })(),
+      inShadowDom: c.inShadow,
+      cx: Math.round(rect.left + rect.width / 2),
+      cy: Math.round(rect.top + rect.height / 2)
+    };
+  }));
 })();
 """
 
+
 CLICK_ELEMENT_JS = """
 function(index) {
-  const elements = [];
-  const INTERACTIVE_TAGS = new Set([
-    'a','button','input','select','textarea','details','summary'
-  ]);
-  const INTERACTIVE_ROLES = new Set([
-    'button','link','checkbox','radio','menuitem','tab','textbox',
-    'combobox','listbox','option','switch','treeitem','slider'
-  ]);
-
-  function collect(root) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
-    let node = walker.currentNode;
-    while (node) {
-      const el = node;
-      if (!el.tagName) { node = walker.nextNode(); continue; }
-      const tag = el.tagName.toLowerCase();
-      const role = el.getAttribute('role') || '';
-      if (INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role)) {
-        const style = window.getComputedStyle(el);
-        const hidden = (style.display === 'none' || style.visibility === 'hidden');
-        if (!hidden) elements.push(el);
-      }
-      if (el.shadowRoot) collect(el.shadowRoot);
-      node = walker.nextNode();
-    }
-  }
-
-  collect(document.body);
-  if (index < elements.length) {
-    elements[index].click();
-    return true;
-  }
-  return false;
+""" + _COLLECT_CANDIDATES_JS + """
+  const found = gripCollect();
+  if (index < 0 || index >= found.length) return false;
+  found[index].el.click();
+  return true;
 }
 """
+
 
 TYPE_ELEMENT_JS = """
 function(index, text) {
-  const elements = [];
-  const INPUT_TAGS = new Set(['input','textarea']);
-
-  function collect(root) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
-    let node = walker.currentNode;
-    while (node) {
-      const el = node;
-      if (!el.tagName) { node = walker.nextNode(); continue; }
-      const tag = el.tagName.toLowerCase();
-      if (INPUT_TAGS.has(tag) || el.isContentEditable) {
-        const style = window.getComputedStyle(el);
-        if (style.display !== 'none') elements.push(el);
-      }
-      if (el.shadowRoot) collect(el.shadowRoot);
-      node = walker.nextNode();
-    }
-  }
-
-  collect(document.body);
-  if (index < elements.length) {
-    const el = elements[index];
-    el.focus();
-    el.value = '';
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.value = text;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  }
-  return false;
+""" + _COLLECT_CANDIDATES_JS + """
+  const found = gripCollect();
+  if (index < 0 || index >= found.length) return false;
+  const el = found[index].el;
+  // The index comes from the same list DISCOVER produced, so this is the element
+  // the caller meant. It still has to be typable — a link at that index means the
+  // caller matched the wrong thing, and silently typing nowhere would hide that.
+  const tag = el.tagName.toLowerCase();
+  if (!(tag === 'input' || tag === 'textarea' || el.isContentEditable)) return false;
+  el.focus();
+  el.value = '';
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.value = text;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
 }
 """
+
 
 PAGE_TEXT_JS = """
 (function() {

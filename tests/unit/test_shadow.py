@@ -34,8 +34,21 @@ def test_discover_returns_array_structure():
     assert "inShadowDom" in DISCOVER_ELEMENTS_JS
 
 
-def test_discover_js_skips_tracking_iframe():
-    assert "googletagmanager.com" in DISCOVER_ELEMENTS_JS
-    assert "isTracking" in DISCOVER_ELEMENTS_JS
-    assert "if (isTracking)" in DISCOVER_ELEMENTS_JS
-    assert "_iframeHost" in DISCOVER_ELEMENTS_JS
+def test_discover_js_carries_the_tracking_host_list():
+    """Only asserts the data, not the variable names that consume it — an earlier
+    version pinned internal identifiers and broke on a pure refactor while the
+    behaviour was intact. The behaviour itself is covered in
+    tests/integration/test_element_index_parity.py."""
+    for host in ("googletagmanager.com", "google-analytics.com", "doubleclick.net"):
+        assert host in DISCOVER_ELEMENTS_JS
+
+
+def test_click_and_type_share_the_discover_collector():
+    """click() and type() are handed an index produced by DISCOVER. If they build
+    their candidate list by different rules, that index points at a different
+    element. They previously did, so this pins them to one shared collector."""
+    from grip.cdp.shadow import CLICK_ELEMENT_JS, TYPE_ELEMENT_JS
+
+    for js in (DISCOVER_ELEMENTS_JS, CLICK_ELEMENT_JS, TYPE_ELEMENT_JS):
+        assert "gripCollect()" in js
+        assert "gripIsHidden" in js
