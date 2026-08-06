@@ -24,9 +24,15 @@ for f in result.failures:      # blocked or unreachable sources, never silently 
 Not "faster than Tavily" — measured, it is 3–5x slower. Real page loads cost real
 seconds and no amount of engineering removes that.
 
-- **Same or lower cost.** ~$0.025/query vs ~$0.049 for an equivalent Tavily path.
-  The browser is not where the money goes; the LLM read is, and that is identical
-  either way.
+- **Same or lower cost — for text-oriented content.** ~$0.025/query before proxy
+  bandwidth, versus ~$0.049 for an equivalent Tavily path. The browser is not where
+  the money goes; the LLM read is, and that is identical either way.
+
+  Measured with residential proxies and `block_resources=True`: documentation
+  $0.034, blogs $0.035, reference $0.044 — all under Tavily. **News ($0.118) and
+  e-commerce ($0.112) are roughly 2.4x more expensive**, because proxies bill per
+  gigabyte and those pages are ~3 MB. Point this at media-heavy sites and the
+  economic argument inverts. See [`evaluation/PAGE_WEIGHT.md`](../evaluation/PAGE_WEIGHT.md).
 - ~~**Better reach.**~~ **Measured, and it does not hold.** Across 33 URLs, static
   fetch recovered the content on every page either arm could read — 23/23, gap zero,
   including SPAs, because documentation sites server-render for SEO. See

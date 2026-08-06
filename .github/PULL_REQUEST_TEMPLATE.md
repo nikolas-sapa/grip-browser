@@ -10,5 +10,5 @@
 
 - [ ] Tests added or updated for the change
 - [ ] `pytest tests/unit/` passes
-- [ ] `ruff check grip/` and `mypy grip/` pass
+- [ ] `ruff check grip/` and `mypy grip/` show no *new* findings (the repo has pre-existing findings; see CONTRIBUTING.md)
 - [ ] Docs/README updated if behavior or API changed
