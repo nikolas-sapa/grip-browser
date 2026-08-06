@@ -74,12 +74,14 @@ class Browser:
         safe: bool = False,
         proxy: str | None = None,
         stealth: bool = False,
+        block_resources: bool = False,
     ) -> None:
         self._llm = llm
         self._headless = headless
         self._safe = safe
         self._proxy = proxy
         self._stealth = stealth
+        self._block_resources = block_resources
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
@@ -137,6 +139,7 @@ class Browser:
             target_id=target_id,
             safe=self._safe,
             closer=self._close_target,
+            block_resources=self._block_resources,
         )
         self._pages.append(page)
         try:

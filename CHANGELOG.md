@@ -4,6 +4,44 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-08-06
+
+### Added
+
+- `Browser(block_resources=True)` — opt-in blocking of images, fonts and media via
+  `Network.setBlockedURLs`. CSS and XHR are deliberately not blocked: layout decides
+  which elements count as visible, and content routinely arrives over XHR. Measured
+  across 50 real pages, blocking is what makes browser-driven retrieval cheaper than
+  a static-fetch vendor for text-oriented content (see `evaluation/PAGE_WEIGHT.md`).
+- `ErrorType.NO_CONTENT` — a third fetch outcome distinct from success and from a
+  block: the page loaded, was not blocked, and has no usable content. Detected from
+  soft-404 titles and from a content-shape signal comparing raw page text against
+  what survives chrome stripping. Validated against 33 real pages with zero false
+  positives.
+
+### Changed
+
+- `snapshot()` now issues its three independent CDP calls concurrently rather than
+  sequentially — measured 15-30% faster on local fixtures, no behaviour change.
+- The content-shape probe runs once per URL rather than once per snapshot. It costs
+  a second JS evaluation, and its verdict describes the fetch, so re-deriving it
+  after an agent has been interacting with the page cannot change the answer
+  (16.1ms -> 10.2ms median).
+
+### Fixed
+
+- `Browser.open()` no longer leaks a tab and its websocket when navigation fails or
+  the caller cancels mid-navigate. Previously the `Page` was registered before
+  `goto()` ran, so a cancelled `open()` left a tab open with no handle for the caller
+  to close it — at ~219 MB per tab, this accumulated for the lifetime of the browser.
+- `read(interact=True)` now respects safe mode. Revealing content means clicking, and
+  the interaction path bypassed the guard that `click()`/`type()`/`press()` enforce.
+- Removed `"please wait"` and `"forbidden"` from anti-bot title detection. Both match
+  ordinary titles ("Forbidden fruit"), and a false positive causes a legitimate page
+  to be dropped unread. Real 403s are caught by status code.
+- The source distribution no longer bundles the separate `grip-search` package. The
+  wheel's package filter does not apply to sdists.
+
 ## [0.3.0] - 2026-08-05
 
 ### Added

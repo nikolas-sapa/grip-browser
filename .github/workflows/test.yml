@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +20,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
@@ -32,3 +34,32 @@ jobs:
       # a browser binary, which ubuntu-latest runners ship.
       - name: Run integration and gripsearch tests
         run: pytest tests/integration/ tests/gripsearch/ -v
+
+  lint:
+    runs-on: ubuntu-latest
+    # Advisory only: grip/ currently has pre-existing ruff and mypy findings
+    # (see CONTRIBUTING.md) that predate this job. This job reports them on
+    # every PR without blocking merges until the backlog is cleared; flip to
+    # blocking once `ruff check grip/` and `mypy grip/` are both clean.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: ruff check
+        continue-on-error: true
+        run: ruff check grip/
+
+      - name: mypy
+        if: always()
+        continue-on-error: true
+        run: mypy grip/
