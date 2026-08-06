@@ -7,19 +7,19 @@ from grip.reader import Block, Document
 from grip.trace import Trace, TraceEntry
 
 __all__ = [
+    "Block",
     "Browser",
-    "PageSnapshot",
-    "Element",
     "BrowserError",
+    "Document",
+    "Element",
     "ErrorType",
     "GripError",
+    "PageSnapshot",
     "RecoveryAction",
     "RefRegistry",
     "Screenshot",
-    "Block",
-    "Document",
     "Trace",
     "TraceEntry",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"

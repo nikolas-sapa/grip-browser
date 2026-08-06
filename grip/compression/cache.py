@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import hashlib
+
 from grip.compression.summarizer import Element
 
 

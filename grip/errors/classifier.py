@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from grip.errors.types import BrowserError, ErrorType, RecoveryAction
 
 _CAPTCHA_TITLE_PATTERNS = ["captcha", "prove you're human", "verify you are human", "i am not a robot"]

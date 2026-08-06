@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 try:
-    import anthropic as anthropic
+    import anthropic  # type: ignore[import-not-found]  # optional dependency, guarded below
 except ImportError:
     anthropic = None
 

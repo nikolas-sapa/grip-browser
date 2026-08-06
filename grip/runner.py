@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -77,7 +78,7 @@ class Runner:
     async def run(self, goal: str) -> RunResult:
         snapshot = await self._page.snapshot()
         page_state = self._summarizer.format(snapshot)
-        messages = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": (
                 "You are a web browsing agent. Complete the user's goal using the "
                 "available tools. Call 'done' when finished."

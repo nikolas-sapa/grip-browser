@@ -33,39 +33,48 @@ DISCOVER_ELEMENTS_JS = """
         ].some(p => _iframeHost.includes(p));
         if (isTracking) { node = walker.nextNode(); continue; }
       }
+      // Cheap attribute reads happen for every node so we know whether it's a
+      // candidate at all. getComputedStyle/getBoundingClientRect/offsetWidth
+      // force style resolution and layout — the expensive part — so they only
+      // run for nodes that could actually end up in results. Non-candidates
+      // never made it into results before either (the old code computed
+      // `hidden` unconditionally but only used it inside the same tag/role
+      // check), so this reorder changes cost, not output.
       const role = el.getAttribute('role') || el.getAttribute('aria-role') || '';
-      const ariaHidden = el.getAttribute('aria-hidden') === 'true';
-      const style = window.getComputedStyle(el);
-      const hidden = (
-        style.display === 'none' ||
-        style.visibility === 'hidden' ||
-        parseFloat(style.opacity) === 0 ||
-        ariaHidden ||
-        el.offsetWidth === 0 ||
-        el.offsetHeight === 0
-      );
+      if (INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role)) {
+        const ariaHidden = el.getAttribute('aria-hidden') === 'true';
+        const style = window.getComputedStyle(el);
+        const hidden = (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          parseFloat(style.opacity) === 0 ||
+          ariaHidden ||
+          el.offsetWidth === 0 ||
+          el.offsetHeight === 0
+        );
 
-      if (!hidden && (INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role))) {
-        const rect = el.getBoundingClientRect();
-        results.push({
-          index: idx++,
-          tag: tag,
-          role: role || tag,
-          text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
-          placeholder: el.getAttribute('placeholder') || null,
-          // el.href resolves relative URLs against the document for us. Only
-          // fetchable schemes: mailto:/javascript:/tel:/#fragment are not pages.
-          href: (function () {
-            if (tag !== 'a') return null;
-            const raw = el.getAttribute('href');
-            if (!raw || raw.startsWith('#')) return null;
-            const abs = el.href;
-            return /^https?:/i.test(abs) ? abs : null;
-          })(),
-          inShadowDom: inShadow,
-          cx: Math.round(rect.left + rect.width / 2),
-          cy: Math.round(rect.top + rect.height / 2),
-        });
+        if (!hidden) {
+          const rect = el.getBoundingClientRect();
+          results.push({
+            index: idx++,
+            tag: tag,
+            role: role || tag,
+            text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
+            placeholder: el.getAttribute('placeholder') || null,
+            // el.href resolves relative URLs against the document for us. Only
+            // fetchable schemes: mailto:/javascript:/tel:/#fragment are not pages.
+            href: (function () {
+              if (tag !== 'a') return null;
+              const raw = el.getAttribute('href');
+              if (!raw || raw.startsWith('#')) return null;
+              const abs = el.href;
+              return /^https?:/i.test(abs) ? abs : null;
+            })(),
+            inShadowDom: inShadow,
+            cx: Math.round(rect.left + rect.width / 2),
+            cy: Math.round(rect.top + rect.height / 2),
+          });
+        }
       }
 
       if (el.shadowRoot) {

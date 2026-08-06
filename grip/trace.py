@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
 from grip.errors.types import BrowserError
 
 
@@ -49,5 +51,4 @@ class Trace:
 
     def to_jsonl(self, path: str) -> None:
         with open(path, "w") as f:
-            for entry in self.actions:
-                f.write(json.dumps(entry.to_dict()) + "\n")
+            f.writelines(json.dumps(entry.to_dict()) + "\n" for entry in self.actions)

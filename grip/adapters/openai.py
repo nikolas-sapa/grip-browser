@@ -1,9 +1,10 @@
 from __future__ import annotations
+
 import json
 from typing import Any
 
 try:
-    import openai as openai
+    import openai  # type: ignore[import-not-found]  # optional dependency, guarded below
 except ImportError:
     openai = None
 

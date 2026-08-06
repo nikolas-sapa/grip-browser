@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.1] - 2026-08-06
+
+### Changed
+
+- `DISCOVER_ELEMENTS_JS` now resolves computed style and layout only for elements
+  that are interactive candidates, instead of for every node it walks.
+  `getComputedStyle`, `offsetWidth`/`offsetHeight` and `getBoundingClientRect` force
+  style resolution and layout, and were previously paid on every element in the DOM
+  even though the result was only ever consulted inside the tag/role check. Measured
+  1.14x-2.27x faster on real pages (Python docs 25.8ms -> 11.6ms, react.dev
+  17.3ms -> 7.6ms), with element output verified byte-identical across five sites.
+
+### Fixed
+
+- Cleared the entire lint and type backlog in `grip/`: 39 ruff findings and 10 mypy
+  errors down to zero, with no test modified. Notably a real forward-reference bug
+  (`RunResult` undefined in `browser.py`) and a stale websockets type annotation
+  (`WebSocketClientProtocol`, which the installed version no longer exports).
+  `CDPEngine.send()` now raises a clear error when called before `connect()` rather
+  than failing on a `None` attribute.
+- CI's lint job is now a real gate at zero rather than a ratchet against a backlog.
+
 ## [0.4.0] - 2026-08-06
 
 ### Added
