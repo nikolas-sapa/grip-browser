@@ -37,11 +37,12 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    # Advisory only: grip/ currently has pre-existing ruff and mypy findings
-    # (see CONTRIBUTING.md) that predate this job. This job reports them on
-    # every PR without blocking merges until the backlog is cleared; flip to
-    # blocking once `ruff check grip/` and `mypy grip/` are both clean.
-    continue-on-error: true
+    # A ratchet, not a gate. grip/ carries a pre-existing backlog of 39 ruff and
+    # 10 mypy findings that predate this job, so demanding zero would fail on
+    # arrival and get ignored. Demanding "no worse than the backlog" catches the
+    # thing that actually matters — a change that adds new findings — and the
+    # numbers below come down as the backlog is cleared. gripsearch/, evaluation/
+    # and benchmarks/ are clean and are held to zero.
     steps:
       - uses: actions/checkout@v4
 
@@ -55,11 +56,36 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: ruff check
-        continue-on-error: true
-        run: ruff check grip/
+      - name: ruff (grip backlog must not grow)
+        run: |
+          BASELINE=39
+          COUNT=$(ruff check grip/ --output-format=concise | grep -c "^grip/" || true)
+          echo "ruff findings in grip/: $COUNT (baseline $BASELINE)"
+          if [ "$COUNT" -gt "$BASELINE" ]; then
+            echo "::error::ruff findings rose from $BASELINE to $COUNT"
+            ruff check grip/ --output-format=concise
+            exit 1
+          fi
+          if [ "$COUNT" -lt "$BASELINE" ]; then
+            echo "::notice::backlog is down to $COUNT — lower BASELINE in this workflow"
+          fi
 
-      - name: mypy
+      - name: ruff (everything else must stay clean)
         if: always()
-        continue-on-error: true
-        run: mypy grip/
+        run: ruff check gripsearch/ evaluation/ benchmarks/
+
+      - name: mypy (grip backlog must not grow)
+        if: always()
+        run: |
+          BASELINE=10
+          COUNT=$(mypy grip/ --no-error-summary 2>/dev/null | grep -c "error:" || true)
+          echo "mypy errors in grip/: $COUNT (baseline $BASELINE)"
+          if [ "$COUNT" -gt "$BASELINE" ]; then
+            echo "::error::mypy errors rose from $BASELINE to $COUNT"
+            mypy grip/
+            exit 1
+          fi
+
+      - name: mypy (gripsearch must stay clean)
+        if: always()
+        run: mypy gripsearch/
