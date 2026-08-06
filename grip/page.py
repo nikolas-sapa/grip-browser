@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -9,19 +10,23 @@ from typing import Any
 
 from grip.cdp.engine import CDPEngine
 from grip.cdp.shadow import (
-    DISCOVER_ELEMENTS_JS, CLICK_ELEMENT_JS,
-    TYPE_ELEMENT_JS, PAGE_TEXT_JS, READ_CONTENT_JS,
-    CLICK_REVEAL_JS, SCROLL_BOTTOM_JS,
+    CLICK_ELEMENT_JS,
+    CLICK_REVEAL_JS,
+    DISCOVER_ELEMENTS_JS,
+    PAGE_TEXT_JS,
+    READ_CONTENT_JS,
+    SCROLL_BOTTOM_JS,
+    TYPE_ELEMENT_JS,
 )
 from grip.compression.cache import ElementCache
-from grip.compression.refs import RefRegistry
 from grip.compression.diff import SnapshotDiff
+from grip.compression.refs import RefRegistry
 from grip.compression.summarizer import PageSnapshot, Summarizer
-from grip.errors.classifier import ErrorClassifier, RAW_TEXT_PROBE_FLOOR
+from grip.errors.classifier import RAW_TEXT_PROBE_FLOOR, ErrorClassifier
 from grip.errors.types import BrowserError, ErrorType, GripError
-from grip.security.injection import InjectionDetector
 from grip.reader import Block, Document
 from grip.resources import BLOCKED_RESOURCE_PATTERNS
+from grip.security.injection import InjectionDetector
 from grip.security.sanitizer import HiddenElementFilter, RawElement
 from grip.trace import Trace, TraceEntry
 
@@ -489,13 +494,12 @@ class Page:
         # Fuzzy match
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
-            if el.tag in ("input", "textarea") or el.role == "textbox":
-                if (
-                    desc_lower in el.text.lower()
-                    or desc_lower in (el.placeholder or "").lower()
-                    or desc_lower in el.role.lower()
-                ):
-                    return el.index
+            if (el.tag in ("input", "textarea") or el.role == "textbox") and (
+                desc_lower in el.text.lower()
+                or desc_lower in (el.placeholder or "").lower()
+                or desc_lower in el.role.lower()
+            ):
+                return el.index
         return None
 
     async def _discover_elements(self) -> list[RawElement]:

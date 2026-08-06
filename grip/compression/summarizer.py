@@ -1,5 +1,6 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from grip.security.sanitizer import RawElement
@@ -13,7 +14,9 @@ try:
 
     def _count_tokens(text: str) -> int:
         return len(_ENC.encode(text))
-except Exception:
+except Exception:  # noqa: BLE001 — tiktoken is optional; any failure to import or
+    # fetch its encoding (missing package, no network for the cached vocab, etc.)
+    # falls back to the char-count heuristic below rather than breaking snapshotting.
     def _count_tokens(text: str) -> int:
         return len(text) // 4
 
@@ -51,7 +54,7 @@ class PageSnapshot:
     text_content: str
     tokens_estimated: int
     changed_from_previous: bool = True
-    page_error: "BrowserError | None" = None
+    page_error: BrowserError | None = None
 
     @property
     def links(self) -> list[tuple[str, str]]:

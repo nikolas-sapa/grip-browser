@@ -1,10 +1,10 @@
 from __future__ import annotations
+
 import glob
 import os
 import subprocess
 import tempfile
 from pathlib import Path
-
 
 _STEALTH_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -49,7 +49,9 @@ def find_chrome() -> str | None:
             return candidate
     for name in ("google-chrome", "chromium", "chromium-browser"):
         try:
-            result = subprocess.run(["which", name], capture_output=True, text=True)
+            result = subprocess.run(
+                ["which", name], capture_output=True, text=True, check=False
+            )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
         except FileNotFoundError:
@@ -104,6 +106,7 @@ class ChromeLauncher:
 
     def _read_port(self) -> int:
         import time
+        assert self._user_data_dir is not None  # set by launch() just before this is called
         port_file = Path(self._user_data_dir) / "DevToolsActivePort"
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:

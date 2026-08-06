@@ -52,10 +52,24 @@ def _build_html(n_interactive: int, n_paragraphs: int) -> bytes:
     return "".join(parts).encode()
 
 
+def _build_sparse_html(n_wrappers: int, n_interactive: int) -> bytes:
+    """Real pages are mostly non-interactive wrapper divs/spans around a
+    small number of interactive elements — the "large" fixture above is
+    unusually dense (60% interactive) and under-represents that shape."""
+    parts = ["<html><body><main>"]
+    for i in range(n_wrappers):
+        parts.append(f'<div class="wrap{i}"><span>text {i}</span></div>')
+    for i in range(n_interactive):
+        parts.append(f'<button id="b{i}">Button {i}</button>')
+    parts.append("</main></body></html>")
+    return "".join(parts).encode()
+
+
 FIXTURES = {
     "small": _build_html(n_interactive=20, n_paragraphs=10),
     "medium": _build_html(n_interactive=300, n_paragraphs=100),
     "large": _build_html(n_interactive=3000, n_paragraphs=2000),
+    "sparse": _build_sparse_html(n_wrappers=5000, n_interactive=150),
 }
 
 

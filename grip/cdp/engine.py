@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class CDPEngine:
     def __init__(self) -> None:
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws: websockets.ClientConnection | None = None
         self._id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._listeners: dict[str, list[Callable]] = {}
@@ -38,6 +39,8 @@ class CDPEngine:
             self._ws = None
 
     async def send(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        if self._ws is None:
+            raise RuntimeError("CDPEngine is not connected. Call connect() first.")
         msg_id = self._next_id()
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[msg_id] = fut
@@ -45,7 +48,7 @@ class CDPEngine:
         await self._ws.send(payload)
         try:
             return await asyncio.wait_for(fut, timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(msg_id, None)
             raise TimeoutError(f"CDP command {method} timed out")
 
@@ -58,6 +61,7 @@ class CDPEngine:
             listeners.remove(callback)
 
     async def _receive_loop(self) -> None:
+        assert self._ws is not None  # set by connect() just before this task is created
         try:
             async for raw in self._ws:
                 msg = json.loads(raw)
@@ -74,5 +78,8 @@ class CDPEngine:
                             cb(msg.get("params", {}))
                         except Exception:
                             logger.exception("CDP listener error for %s", msg["method"])
-        except Exception:
+        except Exception:  # noqa: BLE001 — loop must end quietly on any transport
+            # failure (closed socket, connection reset, etc.); the caller learns
+            # about disconnection through pending futures never resolving, not
+            # through this task raising.
             logger.debug("CDP receive loop ended")

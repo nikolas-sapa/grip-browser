@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 
@@ -33,9 +34,7 @@ class HiddenElementFilter:
             pass
         if el.aria_hidden:
             return False
-        if el.width == 0 or el.height == 0:
-            return False
-        return True
+        return not (el.width == 0 or el.height == 0)
 
     def filter(self, elements: list[RawElement]) -> list[RawElement]:
         return [el for el in elements if self.is_visible(el)]

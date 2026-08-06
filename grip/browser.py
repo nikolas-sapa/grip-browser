@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 import asyncio
 import contextlib
 import json
 import logging
 import urllib.parse
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from grip.cdp.engine import CDPEngine
 from grip.cdp.launcher import ChromeLauncher
@@ -13,6 +14,7 @@ from grip.trace import Trace
 
 if TYPE_CHECKING:
     from grip.adapters.base import LLMAdapter
+    from grip.runner import RunResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +47,8 @@ def _expand_macro(url: str, **kwargs: str) -> str:
 async def fetch_browser_ws_url(port: int) -> str:
     """Browser-level CDP endpoint. Unlike a page endpoint it survives tabs
     opening and closing, and it is the only place Target.createTarget works."""
-    import urllib.request
     import time
+    import urllib.request
 
     def _do_fetch() -> dict:
         with urllib.request.urlopen(
@@ -60,7 +62,7 @@ async def fetch_browser_ws_url(port: int) -> str:
             info = await asyncio.to_thread(_do_fetch)
             if ws_url := info.get("webSocketDebuggerUrl"):
                 return ws_url
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort probe, retried until deadline below
             pass
         await asyncio.sleep(0.2)
     raise RuntimeError(f"No Chrome browser endpoint found on port {port}")
@@ -69,7 +71,7 @@ async def fetch_browser_ws_url(port: int) -> str:
 class Browser:
     def __init__(
         self,
-        llm: "LLMAdapter | None" = None,
+        llm: LLMAdapter | None = None,
         headless: bool = True,
         safe: bool = False,
         proxy: str | None = None,
@@ -88,7 +90,7 @@ class Browser:
         self._pages: list[Page] = []
         self.trace = Trace()
 
-    async def __aenter__(self) -> "Browser":
+    async def __aenter__(self) -> Self:
         await self._connect()
         return self
 
@@ -161,8 +163,9 @@ class Browser:
             await self._engine.send("Target.closeTarget", {"targetId": target_id})
         self._pages = [p for p in self._pages if p._target_id != target_id]
 
-    async def run(self, goal: str, url: str) -> "RunResult":
+    async def run(self, goal: str, url: str) -> RunResult:
         from grip.runner import Runner
+        assert self._llm is not None, "Browser.run() requires an llm adapter"
         page = await self.open(url)
         runner = Runner(llm=self._llm, page=page, trace=self.trace)
         return await runner.run(goal)
@@ -189,15 +192,23 @@ class Browser:
         # scoped to one tab.
         result = await self._engine.send("Storage.getCookies", {})
         cookies = result.get("cookies", [])
-        with open(path, "w") as f:
-            json.dump(cookies, f, indent=2)
+
+        def _write() -> None:
+            with open(path, "w") as f:
+                json.dump(cookies, f, indent=2)
+
+        await asyncio.to_thread(_write)
 
     async def load_session(self, path: str) -> None:
         if not self._engine:
             raise RuntimeError("Browser is not connected. Use open() or async with first.")
-        try:
+
+        def _read() -> list[dict]:
             with open(path) as f:
-                cookies = json.load(f)
+                return json.load(f)
+
+        try:
+            cookies = await asyncio.to_thread(_read)
         except FileNotFoundError:
             raise FileNotFoundError(f"Session file not found: {path}")
         except json.JSONDecodeError as e:
