@@ -4,6 +4,45 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.2] - 2026-08-06
+
+### Fixed
+
+- **`click()` and `type()` could act on the wrong element.** Both are handed an index
+  produced by `snapshot()`, but each built its own candidate list by different rules.
+  `DISCOVER_ELEMENTS_JS` treated an element as hidden on six conditions (display,
+  visibility, opacity, aria-hidden, zero width, zero height); `CLICK_ELEMENT_JS`
+  checked two; `TYPE_ELEMENT_JS` collected an entirely different, input-only set and
+  ignored the snapshot's ordering altogether.
+
+  On any page containing an `aria-hidden` or `opacity:0` control, click landed on a
+  different element than the one matched. Typing was worse: an input preceded by
+  buttons or links sat at a different index in `TYPE`'s list than the snapshot
+  reported, so text went to the wrong field. Existing tests passed only because every
+  fixture happened to put the input first.
+
+  All three now index into one shared collector, so the lists cannot drift apart
+  again. `type()` additionally returns false rather than silently doing nothing if
+  the addressed element is not typable. Verified by regression tests that fail
+  against the previous implementation (4 of 5) and pass against this one.
+
+### Changed
+
+- The tracking-iframe unit test asserted internal JavaScript variable names and broke
+  on a pure refactor while the behaviour was intact. It now asserts the host list,
+  with the behaviour itself covered by an integration test.
+
+### Note on 0.4.1's performance claim
+
+0.4.1 reported element discovery 1.14x-2.27x faster on real pages, which holds. It is
+worth recording what it does *not* claim: on a deliberately dense benchmark fixture
+(3000 interactive elements, ~60% of all nodes), the change is inside measurement
+noise. Roughly 95% of that fixture's cost is `getComputedStyle`,
+`getBoundingClientRect` and `innerText` on elements that genuinely are candidates —
+load-bearing for the output and not removable without changing what is returned. The
+speedup comes from skipping that work on non-candidates, so it scales with how
+sparse the page is, and real pages are sparse.
+
 ## [0.4.1] - 2026-08-06
 
 ### Changed
