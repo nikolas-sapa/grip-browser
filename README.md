@@ -127,7 +127,7 @@ async with Browser(headless=True) as browser:
     await page.click("Go")              # fuzzy match — no selectors needed
 
     await page.snapshot()               # re-index after navigation
-    data = await page.extract({"product": "str", "price": "str"})
+    doc = await page.read()             # prose, citable blocks, no nav chrome
 
     shot = await page.screenshot()      # JPEG, ~800 tokens for vision models
     shot.save("result.jpg")

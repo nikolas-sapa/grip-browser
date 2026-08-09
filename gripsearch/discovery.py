@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from gripsearch.types import Candidate
 
@@ -39,7 +39,8 @@ class BraveSource:
         import asyncio
 
         url = f"{self.ENDPOINT}?{urllib.parse.urlencode({'q': query, 'count': limit})}"
-        req = urllib.request.Request(
+        # Scheme is fixed by ENDPOINT; only the query string varies.
+        req = urllib.request.Request(  # noqa: S310
             url,
             headers={
                 "Accept": "application/json",
@@ -47,9 +48,10 @@ class BraveSource:
             },
         )
 
-        def _fetch() -> dict:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                return json.loads(resp.read())
+        def _fetch() -> dict[str, Any]:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
+                parsed: dict[str, Any] = json.loads(resp.read())
+                return parsed
 
         data = await asyncio.to_thread(_fetch)
         results = (data.get("web") or {}).get("results") or []
@@ -71,5 +73,7 @@ class StaticSource:
     def __init__(self, urls: list[str]) -> None:
         self._urls = urls
 
-    async def find(self, query: str, limit: int = 8) -> list[Candidate]:
+    async def find(self, query: str, limit: int = 8) -> list[Candidate]:  # noqa: ARG002
+        # query is unused by design — this source is a fixed list — but the
+        # signature is the Source protocol every caller dispatches through.
         return [Candidate(url=u, rank=i) for i, u in enumerate(self._urls[:limit])]

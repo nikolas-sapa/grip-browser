@@ -13,6 +13,10 @@ from grip.errors import GripError
 from grip.page import Page
 from grip.trace import Trace, TraceEntry
 
+# ~3k tokens of prose. Enough for a full article's argument, small enough that a
+# read() result sitting in the transcript stays cheaper than re-snapshotting.
+_READ_MAX_CHARS = 12000
+
 _TOOLS = [
     {"type": "function", "function": {
         "name": "snapshot",
@@ -35,18 +39,13 @@ _TOOLS = [
         }, "required": ["target", "text"]},
     }},
     {"type": "function", "function": {
-        "name": "extract",
-        "description": "Extract structured data from the page.",
-        "parameters": {"type": "object", "properties": {
-            "schema": {"type": "object"},
-        }, "required": ["schema"]},
-    }},
-    {"type": "function", "function": {
-        "name": "observe",
-        "description": "Ask a question about the page without acting.",
-        "parameters": {"type": "object", "properties": {
-            "question": {"type": "string"},
-        }, "required": ["question"]},
+        "name": "read",
+        "description": (
+            "Read the page as prose: ordered, citable text blocks with navigation "
+            "and boilerplate removed. Use for reading an article; use snapshot to "
+            "see what is clickable."
+        ),
+        "parameters": {"type": "object", "properties": {}},
     }},
     {"type": "function", "function": {
         "name": "done",
@@ -108,14 +107,23 @@ class Runner:
         snap = self._page._current_snapshot
         delta = self._page.delta
         # A delta is only readable against a baseline the model actually received.
-        # extract() snapshots and returns data, and click()/type() snapshot
-        # implicitly when the cache is cold (which is the state goto() leaves
-        # behind) — both advance the page's baseline without emitting anything.
-        # "A delta exists" is therefore not the same question as "the model can
-        # apply it", and getting that wrong describes refs it has never seen.
+        # click()/type() snapshot implicitly when the ref cache is cold (which is
+        # the state goto() leaves behind), advancing the page's baseline without
+        # emitting anything. "A delta exists" is therefore not the same question
+        # as "the model can apply it", and getting that wrong describes refs it
+        # has never seen.
         if delta is not None and delta.previous_version == self._last_sent_version:
             self._last_sent_version = delta.version
             return format_delta(delta)
+        if snap is None:
+            # Every path here snapshots first — run() before the opening message,
+            # _dispatch after each action. Reaching this means a new caller skipped
+            # that. Deliberately not a GripError: run() converts those into a tool
+            # result and keeps going, which would hand the model an empty page as
+            # if it were the truth. This is a bug in the caller, not a page state.
+            raise RuntimeError(
+                "_page_payload called before any snapshot; the page has no state to send"
+            )
         self._last_sent_version = snap.version
         return self._summarizer.format(snap)
 
@@ -232,7 +240,7 @@ class Runner:
 
         return RunResult(data=final_result, trace=self._trace, tokens=self._trace.total_tokens)
 
-    async def _dispatch(self, name: str, args: dict) -> Any:
+    async def _dispatch(self, name: str, args: dict[str, Any]) -> Any:
         if name == "snapshot":
             await self._page.snapshot()
             return self._page_payload()
@@ -244,10 +252,14 @@ class Runner:
             await self._page.type(args["target"], args["text"])
             await self._page.snapshot()
             return self._page_payload()
-        if name == "extract":
-            return await self._page.extract(args.get("schema", {}))
-        if name == "observe":
-            return await self._page.observe(args["question"])
+        if name == "read":
+            # Bounded, because the tool takes no arguments and cannot: a long-form
+            # article dumped verbatim into the transcript is re-sent every turn
+            # afterwards, which is the exact growth term the delta payload exists
+            # to remove. read() truncates on whole-block boundaries, so the model
+            # gets prose that ends mid-document rather than mid-sentence.
+            doc = await self._page.read(max_chars=_READ_MAX_CHARS)
+            return f"{doc.title}\n\n{doc.text}"
         if name == "done":
             return args.get("result")
         return f"Unknown tool: {name}"

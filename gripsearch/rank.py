@@ -70,7 +70,7 @@ def rank(
             df[term] += 1
 
     scored: list[tuple[float, Fetched, Block]] = []
-    for (f, block), terms in zip(items, docs):
+    for (f, block), terms in zip(items, docs, strict=True):
         tf = Counter(terms)
         score = 0.0
         for term in q_terms:

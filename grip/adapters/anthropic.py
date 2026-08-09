@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 try:
     import anthropic  # type: ignore[import-not-found]  # optional dependency, guarded below
 except ImportError:
@@ -17,7 +19,9 @@ class AnthropicAdapter:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
 
-    async def complete(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
+    async def complete(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> LLMResponse:
         kwargs = {"model": self._model, "max_tokens": 4096, "messages": messages}
         if tools:
             kwargs["tools"] = tools

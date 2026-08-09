@@ -22,7 +22,7 @@ class Passage:
     text: str
     url: str
     title: str
-    citation: str  # e.g. "[12] Coroutines and tasks › Coroutines"
+    citation: str  # e.g. "[12] Coroutines and tasks › Coroutines"  # noqa: RUF003
     score: float = 0.0
 
     def __str__(self) -> str:

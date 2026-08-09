@@ -44,10 +44,12 @@ Run: .venv/bin/python -m evaluation.run_silent_failure
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from evaluation.run_reach import static_fetch
 from evaluation.silent_failure_corpus import CORPUS
@@ -115,15 +117,14 @@ async def main() -> None:
                 doc = await page.read()
                 grip_blocks = len(doc.blocks)
                 grip_chars = len(doc.text)
-            except Exception as e:  # noqa: BLE001 - record the failure, keep going
+            except Exception as e:
                 note = f"browser error: {type(e).__name__}"
                 grip_error_type = "exception"
             finally:
                 if page is not None:
-                    try:
+                    # Teardown: nothing useful to report if closing fails.
+                    with contextlib.suppress(Exception):
                         await page.close()
-                    except Exception:  # noqa: BLE001,S110 - teardown, nothing to report
-                        pass
 
             static_text, status = static_fetch(url)
             static_chars = len(static_text)
@@ -162,7 +163,7 @@ async def main() -> None:
         "rows": [asdict(r) for r in rows],
     }
     # ASYNC230: a single blocking write after all fetching is done, not in a hot path.
-    with open("evaluation/silent_failure_results.json", "w") as f:  # noqa: ASYNC230
+    with Path("evaluation/silent_failure_results.json").open("w") as f:  # noqa: ASYNC230
         json.dump(out, f, indent=1)
 
     report(rows)

@@ -43,4 +43,5 @@ class BrowserError:
 class GripError(Exception):
     def __init__(self, error: BrowserError) -> None:
         self.error = error
-        super().__init__(f"{error.type.name}: {error.message}")  # .name = SCREAMING_SNAKE for log readability
+        # .name = SCREAMING_SNAKE, which is what reads best in a log line.
+        super().__init__(f"{error.type.name}: {error.message}")

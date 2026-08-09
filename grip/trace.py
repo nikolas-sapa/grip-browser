@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from grip.errors.types import BrowserError
 
@@ -10,13 +12,13 @@ from grip.errors.types import BrowserError
 class TraceEntry:
     timestamp: float
     action: str
-    input: dict
-    output: dict
+    input: dict[str, Any]
+    output: dict[str, Any]
     tokens_consumed: int
     duration_ms: int
     error: BrowserError | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "timestamp": self.timestamp,
             "action": self.action,
@@ -59,5 +61,5 @@ class Trace:
             self.errors.append(entry.error)
 
     def to_jsonl(self, path: str) -> None:
-        with open(path, "w") as f:
+        with Path(path).open("w") as f:
             f.writelines(json.dumps(entry.to_dict()) + "\n" for entry in self.actions)

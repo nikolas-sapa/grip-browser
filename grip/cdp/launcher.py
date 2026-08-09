@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import os
 import shutil
 import subprocess
@@ -25,19 +24,24 @@ _CHROME_CANDIDATES = [
 # Chrome for Testing as downloaded by Playwright and Puppeteer. Anyone doing browser
 # automation likely already has one of these, so falling back to them beats telling
 # the user to install a second Chrome.
+_MACOS_APP = "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
 _CACHED_CHROME_GLOBS = [
-    "~/Library/Caches/ms-playwright/chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    f"~/Library/Caches/ms-playwright/chromium-*/chrome-mac*/{_MACOS_APP}",
     "~/Library/Caches/ms-playwright/chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
     "~/.cache/ms-playwright/chromium-*/chrome-linux/chrome",
     "~/.cache/puppeteer/chrome/*/chrome-linux64/chrome",
-    "~/.cache/puppeteer/chrome/*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    f"~/.cache/puppeteer/chrome/*/chrome-mac*/{_MACOS_APP}",
 ]
 
 
 def _find_cached_chrome() -> str | None:
     for pattern in _CACHED_CHROME_GLOBS:
+        # Path.glob only takes a relative pattern, so an absolute one has to be
+        # split at its anchor and globbed from there.
+        expanded = Path(pattern).expanduser()
+        root = Path(expanded.anchor)
         # Highest build number wins — these caches keep old versions around.
-        matches = sorted(glob.glob(os.path.expanduser(pattern)))
+        matches = sorted(str(p) for p in root.glob(str(expanded.relative_to(root))))
         if matches:
             return matches[-1]
     return None
@@ -64,7 +68,7 @@ class ChromeLauncher:
             )
         self.executable = exe
         self.port: int = 0
-        self._process: subprocess.Popen | None = None
+        self._process: subprocess.Popen[bytes] | None = None
         self._user_data_dir: str | None = user_data_dir
         # Only delete what we created. A caller pointing at their own profile is
         # doing it to keep logins, service workers and IndexedDB across runs —
@@ -81,7 +85,7 @@ class ChromeLauncher:
             self._user_data_dir = tempfile.mkdtemp(prefix="grip_chrome_")
         else:
             assert self._user_data_dir is not None  # set in __init__ when not owned
-            os.makedirs(self._user_data_dir, exist_ok=True)
+            Path(self._user_data_dir).mkdir(parents=True, exist_ok=True)
             # A reused profile still holds the previous run's DevToolsActivePort.
             # Leaving it there makes _read_port() return a dead port immediately
             # instead of waiting for the one Chrome is about to write.
@@ -105,7 +109,9 @@ class ChromeLauncher:
             # is a maintained arms race this project is not entering.
             args.append("--disable-blink-features=AutomationControlled")
             args.append(f"--user-agent={_STEALTH_UA}")
-        self._process = subprocess.Popen(
+        # No shell, and argv[0] is a path this module found or the operator set
+        # via CHROME_EXECUTABLE — not page-derived input.
+        self._process = subprocess.Popen(  # noqa: S603
             args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

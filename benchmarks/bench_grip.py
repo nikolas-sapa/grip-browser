@@ -118,7 +118,8 @@ async def bench_snapshot(browser: Browser, url: str, label: str) -> None:
     page = await browser.open(url)
     await page.snapshot()  # warm-up: first hit pays connection/JIT costs
     samples = await _time_calls(page.snapshot)
-    print(f"  snapshot()          [{label:6s}] {_stats(samples)}  elements={len(page._current_snapshot.elements)}")
+    n_elements = len(page._current_snapshot.elements)
+    print(f"  snapshot()          [{label:6s}] {_stats(samples)}  elements={n_elements}")
     await page.close()
 
 
@@ -249,7 +250,10 @@ def bench_compression_pipeline() -> None:
         refs = RefRegistry()
 
         t0 = time.monotonic()
-        snap = summarizer.build(version=1, url="http://x", title="t", raw_elements=raw, page_text="hello " * 500)
+        snap = summarizer.build(
+            version=1, url="http://x", title="t", raw_elements=raw,
+            page_text="hello " * 500,
+        )
         for el in snap.elements:
             el.ref = refs.assign(el.handle)
         snap.tokens_estimated = summarizer.count_tokens(summarizer.format(snap))

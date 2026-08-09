@@ -136,20 +136,17 @@ async def test_press_does_not_raise():
         await page.press("Enter")  # should not raise
 
 
-# ── extract ───────────────────────────────────────────────────────────────────
+# ── read ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_extract_returns_page_content():
+async def test_read_returns_page_content():
     async with Browser(headless=True) as browser:
         page = await open_with_html(browser, CONTENT_HTML)
 
-        data = await page.extract({"product": "str", "price": "str"})
+        doc = await page.read()
 
-        assert "product" in data
-        assert "price" in data
-        assert data["product"] is not None
-        assert "Blue Sneakers" in data["product"]
-        assert "64.99" in data["price"]
+        assert "Blue Sneakers" in doc.text
+        assert "64.99" in doc.text
 
 
 # ── shadow DOM ────────────────────────────────────────────────────────────────

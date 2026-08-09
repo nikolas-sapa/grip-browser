@@ -8,6 +8,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from grip.cdp.engine import CDPEngine
@@ -71,8 +72,7 @@ class Screenshot:
         return base64.b64encode(self.data).decode()
 
     def save(self, path: str) -> None:
-        with open(path, "wb") as f:
-            f.write(self.data)
+        Path(path).write_bytes(self.data)
 
 
 class Page:
@@ -132,10 +132,10 @@ class Page:
         """
         load_event = asyncio.Event()
 
-        def on_load(params: dict) -> None:
+        def on_load(_params: dict[str, Any]) -> None:
             load_event.set()
 
-        def on_response(params: dict) -> None:
+        def on_response(params: dict[str, Any]) -> None:
             # Only the main document response carries the status that describes the
             # fetch. Sub-resources (images, XHR) fire this too and must be ignored.
             # Redirect chains fire several Document responses; the last one wins.
@@ -213,7 +213,7 @@ class Page:
                     "returnByValue": True,
                 },
             )
-        except Exception:  # noqa: BLE001 — a failed probe just means we navigate
+        except Exception:
             return False
         raw = result.get("result", {}).get("value")
         if not raw:
@@ -489,7 +489,7 @@ class Page:
             blocks = data.get("blocks", [])
             chars = sum(len(b.get("text", "")) for b in blocks)
             return len(blocks), chars
-        except Exception:  # noqa: BLE001 — best-effort probe, never fail the snapshot
+        except Exception:
             return None
 
     async def _count_blocks(self) -> int:
@@ -586,7 +586,7 @@ class Page:
     # A wrong action is worse than a failed one, so every non-ok outcome becomes a
     # typed error the runner's recovery can act on, rather than a boolean the
     # caller has no way to notice.
-    def _raise_for_action(self, outcome: dict, description: str) -> None:
+    def _raise_for_action(self, outcome: dict[str, Any], description: str) -> None:
         if outcome.get("ok"):
             return
         reason = outcome.get("reason", "")
@@ -662,7 +662,8 @@ class Page:
         """
         self._assert_not_safe("drag")
         t0 = time.monotonic()
-        r = rng or random.Random()
+        # Jitter shaped like a hand, not a nonce.
+        r = rng or random.Random()  # noqa: S311
         sx, sy = start
         ex, ey = end
         await self._mouse("mousePressed", sx, sy, button="left", click_count=1)
@@ -698,7 +699,7 @@ class Page:
         end: tuple[int, int],
         rng: random.Random | None = None,
     ) -> int:
-        r = rng or random.Random()
+        r = rng or random.Random()  # noqa: S311
         path = bezier_path(start, end, rng=rng)
         for px, py in path:
             await self._mouse("mouseMoved", px, py)
@@ -849,16 +850,6 @@ class Page:
         html = await self._eval("document.documentElement.outerHTML")
         return html if isinstance(html, str) else ""
 
-    async def extract(self, schema: dict[str, str]) -> dict[str, Any]:
-        snap = await self.snapshot()
-        # Returns raw page text per key — pass to an LLM for semantic parsing.
-        # Use browser.run(goal, llm=...) for automatic structured extraction.
-        return {key: snap.text_content for key in schema}
-
-    async def observe(self, question: str) -> str:
-        snap = await self.snapshot()
-        return self._summarizer.format(snap)
-
     async def screenshot(self, quality: int = 75) -> Screenshot:
         """
         Capture a JPEG screenshot. quality=75 gives ~800 vision tokens vs ~3000 for PNG.
@@ -957,7 +948,8 @@ class Page:
             "Runtime.evaluate",
             {"expression": PAGE_TEXT_JS, "returnByValue": True},
         )
-        return result.get("result", {}).get("value", "")
+        value = result.get("result", {}).get("value", "")
+        return str(value) if value is not None else ""
 
     async def _get_page_info(self) -> tuple[str, str]:
         result = await self._engine.send("Target.getTargetInfo", {})

@@ -46,7 +46,7 @@ def _payload() -> str:
     return _summarizer.format(_page._current_snapshot)
 
 
-async def call_tool(name: str, arguments: dict) -> str:
+async def call_tool(name: str, arguments: dict[str, Any]) -> str:
     global _page
     if name == "open":
         browser = await _ensure_browser()
@@ -68,7 +68,7 @@ async def call_tool(name: str, arguments: dict) -> str:
         return _payload()
     if name == "read":
         doc = await _page.read()
-        return doc.text
+        return str(doc.text)
     return f"ERROR: unknown tool {name!r}"
 
 
@@ -90,7 +90,7 @@ def main() -> None:
         # navigation is information the client can act on, a traceback is not.
         try:
             return await call_tool(tool_name, arguments)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return f"ERROR: {type(e).__name__}: {e}"
 
     # The signatures are the tool schemas — MCPServer derives inputSchema from

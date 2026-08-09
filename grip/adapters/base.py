@@ -20,6 +20,6 @@ class LLMResponse:
 class LLMAdapter(Protocol):
     async def complete(
         self,
-        messages: list[dict],
-        tools: list[dict],
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
     ) -> LLMResponse: ...

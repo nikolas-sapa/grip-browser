@@ -14,7 +14,7 @@ try:
 
     def _count_tokens(text: str) -> int:
         return len(_ENC.encode(text))
-except Exception:  # noqa: BLE001 — tiktoken is optional; any failure to import or
+except Exception:
     # fetch its encoding (missing package, no network for the cached vocab, etc.)
     # falls back to the char-count heuristic below rather than breaking snapshotting.
     def _count_tokens(text: str) -> int:

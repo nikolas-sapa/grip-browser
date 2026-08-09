@@ -53,9 +53,13 @@ _COLLECT_CANDIDATES_JS = """
     const style = window.getComputedStyle(el);
     if (parseFloat(style.textIndent) < -500) return true;
     if (parseFloat(style.fontSize) === 0) return true;
-    // ponytail: a transparent container whose child re-sets colour reads as
+    // transparent + background-clip:text is the gradient-text idiom and it is
+    // used on primary CTAs — reading that as hidden would delete the main button.
+    // ponytail: a transparent container whose child re-sets colour still reads as
     // hidden. Candidates are interactive elements, where that is rare.
-    if (style.color === 'rgba(0, 0, 0, 0)') return true;
+    if (style.color === 'rgba(0, 0, 0, 0)' &&
+        style.getPropertyValue('-webkit-background-clip') !== 'text' &&
+        style.backgroundClip !== 'text') return true;
 
     // Document-space, not viewport: comparing against innerHeight would mark
     // every below-the-fold element hidden and gut snapshots of long pages. Only
@@ -278,7 +282,14 @@ SCROLL_BOTTOM_JS = """
 
 READ_CONTENT_JS = r"""
 (function () {
-  const BAD = /(^|[-_ ])(nav|menu|sidebar|footer|header|banner|cookie|consent|promo|advert|subscribe|newsletter|related|comment|share|social|breadcrumb)([-_ ]|$)/i;
+  // Built rather than written as a literal: a regex literal cannot wrap, and the
+  // one-line version ran past every sane line width.
+  const BAD_WORDS = [
+    'nav', 'menu', 'sidebar', 'footer', 'header', 'banner', 'cookie', 'consent',
+    'promo', 'advert', 'subscribe', 'newsletter', 'related', 'comment', 'share',
+    'social', 'breadcrumb',
+  ];
+  const BAD = new RegExp('(^|[-_ ])(' + BAD_WORDS.join('|') + ')([-_ ]|$)', 'i');
   const CHROME_TAGS = ['nav','footer','header','aside','script','style','noscript','form'];
   const CHROME_ROLES = ['navigation','banner','contentinfo','complementary','search'];
 

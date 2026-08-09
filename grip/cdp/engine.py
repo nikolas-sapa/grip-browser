@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -15,9 +16,9 @@ class CDPEngine:
     def __init__(self) -> None:
         self._ws: websockets.ClientConnection | None = None
         self._id = 0
-        self._pending: dict[int, asyncio.Future] = {}
-        self._listeners: dict[str, list[Callable]] = {}
-        self._receive_task: asyncio.Task | None = None
+        self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._listeners: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
+        self._receive_task: asyncio.Task[None] | None = None
         self._closed_reason: BaseException | None = None
 
     def _next_id(self) -> int:
@@ -31,10 +32,8 @@ class CDPEngine:
     async def disconnect(self) -> None:
         if self._receive_task:
             self._receive_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._receive_task
-            except asyncio.CancelledError:
-                pass
         if self._ws:
             await self._ws.close()
             self._ws = None
@@ -47,7 +46,7 @@ class CDPEngine:
                 f"CDP connection is closed: {self._closed_reason}"
             ) from self._closed_reason
         msg_id = self._next_id()
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[msg_id] = fut
         payload = json.dumps({"id": msg_id, "method": method, "params": params or {}})
         await self._ws.send(payload)
@@ -57,10 +56,10 @@ class CDPEngine:
             self._pending.pop(msg_id, None)
             raise TimeoutError(f"CDP command {method} timed out") from e
 
-    def on(self, event: str, callback: Callable) -> None:
+    def on(self, event: str, callback: Callable[[dict[str, Any]], None]) -> None:
         self._listeners.setdefault(event, []).append(callback)
 
-    def off(self, event: str, callback: Callable) -> None:
+    def off(self, event: str, callback: Callable[[dict[str, Any]], None]) -> None:
         listeners = self._listeners.get(event, [])
         if callback in listeners:
             listeners.remove(callback)

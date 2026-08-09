@@ -43,10 +43,12 @@ Run: .venv/bin/python -m evaluation.run_interaction
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from evaluation.interaction_corpus import CORPUS
 from evaluation.run_reach import normalise, static_fetch
@@ -137,14 +139,13 @@ async def main() -> None:
                 new_texts = [b.text for b in doc1.blocks if b.text not in before_texts]
                 new_block_count = len(new_texts)
                 marker = pick_marker(new_texts)
-            except Exception as e:  # noqa: BLE001 - record the failure, keep going
+            except Exception as e:
                 note = f"browser error: {type(e).__name__}"
             finally:
                 if page is not None:
-                    try:
+                    # Teardown: nothing useful to report if closing fails.
+                    with contextlib.suppress(Exception):
                         await page.close()
-                    except Exception:  # noqa: BLE001,S110 - teardown, nothing to report
-                        pass
 
             # Tab B: time control. Fresh navigation, no interaction, same elapsed
             # wait as tab A's read(interact=True) took — isolates "does waiting
@@ -159,14 +160,13 @@ async def main() -> None:
                 new_texts_b = [b.text for b in doc_b.blocks if b.text not in before_texts_b]
                 c_new_block_count = len(new_texts_b)
                 c_gain_chars = len(doc_b.text) - len(doc_a.text)
-            except Exception as e:  # noqa: BLE001 - record the failure, keep going
+            except Exception as e:
                 note = note or f"control error: {type(e).__name__}"
             finally:
                 if page is not None:
-                    try:
+                    # Teardown: nothing useful to report if closing fails.
+                    with contextlib.suppress(Exception):
                         await page.close()
-                    except Exception:  # noqa: BLE001,S110 - teardown, nothing to report
-                        pass
 
             static_text, status = static_fetch(url)
             if marker:
@@ -198,7 +198,7 @@ async def main() -> None:
         "rows": [asdict(r) for r in rows],
     }
     # ASYNC230: a single blocking write after all fetching is done, not in a hot path.
-    with open("evaluation/interaction_results.json", "w") as f:  # noqa: ASYNC230
+    with Path("evaluation/interaction_results.json").open("w") as f:  # noqa: ASYNC230
         json.dump(out, f, indent=1)
 
     report(rows)

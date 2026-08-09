@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from typing import Self
 
 from grip.browser import Browser
@@ -15,7 +16,7 @@ from gripsearch.types import RetrievalResult
 class NoUsableSources(RuntimeError):
     """Every candidate failed. The failures are attached rather than swallowed."""
 
-    def __init__(self, query: str, failures: list) -> None:
+    def __init__(self, query: str, failures: Sequence[object]) -> None:
         self.query = query
         self.failures = failures
         detail = "; ".join(str(f) for f in failures) or "no candidates found"
@@ -60,7 +61,7 @@ class Retriever:
         await self._browser.__aenter__()
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, *args: object) -> None:
         if self._browser:
             await self._browser.close()
             self._browser = None

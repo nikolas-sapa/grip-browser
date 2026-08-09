@@ -7,6 +7,7 @@ from grip.runner import Runner, RunResult
 from grip.adapters.base import LLMResponse, ToolCall
 from grip.compression.delta import build_delta
 from grip.compression.summarizer import Element, PageSnapshot
+from grip.reader import Block, Document
 from grip.trace import Trace
 
 
@@ -15,8 +16,6 @@ def make_page_mock():
     page.snapshot = AsyncMock()
     page.click = AsyncMock()
     page.type = AsyncMock()
-    page.extract = AsyncMock(return_value={"result": "found"})
-    page.observe = AsyncMock(return_value="PAGE: X\nURL: x.com")
     snap = MagicMock()
     snap.tokens_estimated = 40
     snap.version = 1
@@ -44,8 +43,9 @@ class FakePage:
     go green without a delta ever being computed.
     """
 
-    def __init__(self, labels, navigates=False):
+    def __init__(self, labels, navigates=False, cold_clicks=()):
         self._navigates = navigates
+        self._cold_clicks = set(cold_clicks)
         self._labels = list(labels)
         self._n = 0
         self._current_snapshot = None
@@ -75,16 +75,22 @@ class FakePage:
         return snap
 
     async def click(self, target):
+        # The real Page.click snapshots itself when the ref cache is cold, which is
+        # the state goto() leaves behind. That snapshot advances the delta baseline
+        # without any page state reaching the model, so the delta the runner emits
+        # next is written against a version the model was never shown.
+        if target in self._cold_clicks:
+            await self.snapshot()
         return None
 
     async def type(self, target, text):
         return None
 
-    async def extract(self, schema):
-        # The real Page.extract snapshots and returns data, so it advances the
-        # delta baseline without any page state reaching the model.
-        await self.snapshot()
-        return {k: "value" for k in schema}
+    async def read(self, max_chars=None):
+        # read() does not snapshot, so unlike click() it never moves the baseline.
+        return Document(title="T", url="https://x.test", blocks=[
+            Block(id=0, kind="text", text="the page body says things"),
+        ])
 
 
 def _runner_with(clicks, navigates=False):
@@ -119,20 +125,20 @@ async def test_superseded_page_state_is_pruned():
 
 @pytest.mark.asyncio
 async def test_delta_is_not_sent_against_a_baseline_the_model_never_saw():
-    """extract() snapshots internally and returns data, so the page's delta
+    """click() snapshots internally when the ref cache is cold, so the page's delta
     baseline moves on without anything being transmitted. Sending the next delta
     against that baseline would describe refs the model has never been shown."""
     responses = [
         LLMResponse(content=None, tool_call=ToolCall(name="click", arguments={"target": "A"})),
-        LLMResponse(content=None, tool_call=ToolCall(name="extract", arguments={"schema": {"p": "s"}})),
         LLMResponse(content=None, tool_call=ToolCall(name="click", arguments={"target": "B"})),
         LLMResponse(content=None, tool_call=ToolCall(name="done", arguments={"result": "ok"})),
     ]
-    runner = Runner(llm=make_llm(responses), page=FakePage(["A", "X", "B"]), trace=Trace())
+    page = FakePage(["A", "X", "B"], cold_clicks={"B"})
+    runner = Runner(llm=make_llm(responses), page=page, trace=Trace())
     await runner.run("do the thing")
     payloads = [unfenced(m["content"]) for m in runner._messages if m.get("role") == "tool"]
     assert payloads[-1].startswith("PAGE:"), (
-        "sent a delta whose baseline was the un-transmitted extract() snapshot"
+        "sent a delta whose baseline was the un-transmitted click() snapshot"
     )
 
 

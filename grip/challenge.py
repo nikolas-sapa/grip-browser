@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class ChallengeStage(Enum):
@@ -142,11 +143,11 @@ def detect_challenge_from_html(html: str, frames: list[str]) -> ChallengeStage:
     return ChallengeStage.NONE
 
 
-def frame_urls(frame_tree: dict) -> list[str]:
+def frame_urls(frame_tree: dict[str, Any]) -> list[str]:
     """Flatten a Page.getFrameTree response into a URL list."""
     urls: list[str] = []
 
-    def walk(node: dict) -> None:
+    def walk(node: dict[str, Any]) -> None:
         frame = node.get("frame") or {}
         url = frame.get("url")
         if url:
@@ -160,7 +161,9 @@ def frame_urls(frame_tree: dict) -> list[str]:
 
 # Reads the response field every provider writes its token into. Returned as a
 # string so an empty answer and a missing field are the same "not yet".
-TOKEN_PROBE_JS = """
+# The name ends in TOKEN; the value is JavaScript source, not a credential.
+TOKEN_PROBE_JS = (
+    """
 (function gripChallengeToken() {
   var names = ['g-recaptcha-response', 'cf-turnstile-response', 'h-captcha-response'];
   for (var i = 0; i < names.length; i++) {
@@ -169,7 +172,8 @@ TOKEN_PROBE_JS = """
   }
   return '';
 })()
-"""
+"""  # noqa: S105
+)
 
 # Viewport-centre coordinates of the widget's clickable target. The checkbox
 # itself lives cross-origin inside the anchor iframe, so grip aims at the iframe

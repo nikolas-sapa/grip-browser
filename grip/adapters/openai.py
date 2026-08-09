@@ -18,7 +18,9 @@ class OpenAIAdapter:
         self._client = openai.AsyncOpenAI(api_key=api_key)
         self._model = model
 
-    async def complete(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
+    async def complete(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> LLMResponse:
         kwargs: dict[str, Any] = {"model": self._model, "messages": messages}
         if tools:
             kwargs["tools"] = tools

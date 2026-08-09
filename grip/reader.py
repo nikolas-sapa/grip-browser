@@ -27,7 +27,7 @@ class Block:
 
     @property
     def citation(self) -> str:
-        where = " › ".join(self.path) if self.path else "(top)"
+        where = " › ".join(self.path) if self.path else "(top)"  # noqa: RUF001
         return f"[{self.id}] {where}"
 
 

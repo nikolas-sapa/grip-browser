@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -26,12 +26,22 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Run unit tests
-        run: pytest tests/unit/ -v
+      # Unit tests alone measure 83%; the higher figure quoted elsewhere includes
+      # the integration run below, which this step deliberately excludes so the
+      # floor does not depend on a browser being present. 80 sits under today's
+      # number on purpose: the floor exists to catch a collapse, not to block a
+      # refactor that moves a few points.
+      #
+      # grip/cdp/shadow.py reports near-100% on a handful of Python statements
+      # while ~95% of the file is JS strings Python coverage cannot see — the
+      # integration tests below are the only thing exercising that code.
+      - name: Unit tests with coverage
+        run: pytest tests/unit/ --cov=grip --cov-report=term-missing --cov-fail-under=80
 
       # Integration and gripsearch tests drive real Chrome. They are offline —
       # every one serves its own fixtures from a local http.server — but they need
-      # a browser binary, which ubuntu-latest runners ship.
+      # a browser binary, which ubuntu-latest runners ship. Without one they skip
+      # (tests/conftest.py) rather than fail.
       - name: Run integration and gripsearch tests
         run: pytest tests/integration/ tests/gripsearch/ -v
 

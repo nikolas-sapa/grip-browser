@@ -6,7 +6,8 @@ import json
 import logging
 import os
 import urllib.parse
-from typing import TYPE_CHECKING, Self
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
 
 from grip.cdp.engine import CDPEngine
 from grip.cdp.launcher import ChromeLauncher
@@ -52,19 +53,20 @@ async def fetch_browser_ws_url(port: int) -> str:
     import time
     import urllib.request
 
-    def _do_fetch() -> dict:
+    def _do_fetch() -> dict[str, Any]:
         with urllib.request.urlopen(
             f"http://localhost:{port}/json/version", timeout=2
         ) as resp:
-            return json.loads(resp.read())
+            parsed: dict[str, Any] = json.loads(resp.read())
+            return parsed
 
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         try:
             info = await asyncio.to_thread(_do_fetch)
             if ws_url := info.get("webSocketDebuggerUrl"):
-                return ws_url
-        except Exception:  # noqa: BLE001, S110 — best-effort probe, retried until deadline below
+                return str(ws_url)
+        except Exception:  # noqa: S110 — best-effort probe, retried until deadline below
             pass
         await asyncio.sleep(0.2)
     raise RuntimeError(f"No Chrome browser endpoint found on port {port}")
@@ -109,7 +111,7 @@ class Browser:
         await self._connect()
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, *args: object) -> None:
         await self.close()
 
     async def _connect(self) -> None:
@@ -275,9 +277,10 @@ class Browser:
         if not self._engine:
             raise RuntimeError("Browser is not connected. Use open() or async with first.")
 
-        def _read() -> list[dict]:
-            with open(path) as f:
-                return json.load(f)
+        def _read() -> list[dict[str, Any]]:
+            with Path(path).open() as f:
+                cookies: list[dict[str, Any]] = json.load(f)
+                return cookies
 
         try:
             cookies = await asyncio.to_thread(_read)
