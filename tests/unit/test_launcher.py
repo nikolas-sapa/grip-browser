@@ -75,3 +75,25 @@ def test_find_chrome_uses_shutil_which(monkeypatch):
 
     monkeypatch.setattr(mod.subprocess, "run", no_subprocess)
     assert mod.find_chrome() == "/usr/bin/google-chrome"
+
+
+def test_caller_supplied_profile_is_not_deleted(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHROME_EXECUTABLE", "/fake/chrome")
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    launcher = ChromeLauncher(user_data_dir=str(profile))
+    launcher.terminate()
+    assert profile.exists(), "a caller's profile directory was deleted on teardown"
+
+
+def test_temp_profile_is_still_cleaned(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setenv("CHROME_EXECUTABLE", "/fake/chrome")
+    launcher = ChromeLauncher()
+    assert launcher._owns_user_data_dir
+    launcher._user_data_dir = str(tmp_path / "temp_profile")
+    os.mkdir(launcher._user_data_dir)
+    path = launcher._user_data_dir
+    launcher.terminate()
+    assert not os.path.exists(path)

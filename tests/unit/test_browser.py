@@ -74,6 +74,9 @@ async def test_concurrent_connect_launches_one_chrome(monkeypatch):
     class FakeLauncher:
         port = 9222
 
+        def __init__(self, user_data_dir=None):
+            pass
+
         def launch(self, **kwargs):
             launches.append(1)
             return 9222
@@ -96,6 +99,9 @@ async def test_connect_failure_terminates_chrome(monkeypatch):
 
     class FakeLauncher:
         port = 9222
+
+        def __init__(self, user_data_dir=None):
+            pass
 
         def launch(self, **kwargs):
             return 9222
@@ -154,6 +160,9 @@ async def test_launch_runs_off_the_event_loop(monkeypatch):
     class SlowLauncher:
         port = 9222
 
+        def __init__(self, user_data_dir=None):
+            pass
+
         def launch(self, **kwargs):
             time.sleep(0.15)
             return 9222
@@ -170,3 +179,123 @@ async def test_launch_runs_off_the_event_loop(monkeypatch):
     await asyncio.gather(browser._connect(), ticker())
     assert len(ticks) == 5
     assert ticks[-1] - start < 0.12, "event loop was blocked during launch"
+
+
+@pytest.mark.asyncio
+async def test_cdp_url_skips_launching_chrome(monkeypatch):
+    launched = []
+
+    class FakeLauncher:
+        port = 9222
+
+        def launch(self, **kwargs):
+            launched.append(1)
+            return 9222
+
+        def terminate(self):
+            pass
+
+    monkeypatch.setattr("grip.browser.ChromeLauncher", FakeLauncher)
+    monkeypatch.setattr(CDPEngine, "connect", _async_noop)
+
+    browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+    await browser._connect()
+    assert launched == [], "cdp_url should attach, not launch"
+    assert browser._launcher is None, "attached mode must own no Chrome to terminate"
+
+
+@pytest.mark.asyncio
+async def test_cdp_url_accepts_a_remote_wss_endpoint(monkeypatch):
+    """A remote CDP engine (Kitesurf on Workers, a browser-grid vendor) is a wss://
+    URL on someone else's host, usually carrying an auth token in the query."""
+    connected = []
+
+    async def record_connect(self, url):
+        connected.append(url)
+
+    monkeypatch.setattr(CDPEngine, "connect", record_connect)
+
+    remote = "wss://kitesurf.example.workers.dev/v1/browser/abc?token=t0ken"
+    browser = Browser(cdp_url=remote)
+    await browser._connect()
+    assert connected == [remote]
+
+    page_url = browser._page_ws_url("TARGET123")
+    assert page_url.startswith("wss://kitesurf.example.workers.dev/")
+    assert "localhost" not in page_url
+    assert page_url.endswith("/devtools/page/TARGET123?token=t0ken")
+
+
+def test_page_ws_url_uses_the_local_port_when_we_launched(monkeypatch):
+    browser = Browser()
+    browser._port = 9333
+    assert browser._page_ws_url("T1") == "ws://localhost:9333/devtools/page/T1"
+
+
+@pytest.mark.asyncio
+async def test_open_refuses_a_file_url_by_default(monkeypatch):
+    """Local file reads are the other half of the SSRF hole: open("file:///etc/passwd")
+    used to come straight back through read()."""
+    monkeypatch.setattr(CDPEngine, "connect", _async_noop)
+    browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+    with pytest.raises(ValueError, match="navigation refused"):
+        await browser.open("file:///etc/passwd")
+
+
+@pytest.mark.asyncio
+async def test_open_refuses_loopback_by_default(monkeypatch):
+    monkeypatch.setattr(CDPEngine, "connect", _async_noop)
+    browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+    with pytest.raises(ValueError, match="navigation refused"):
+        await browser.open("http://127.0.0.1:8080/admin")
+
+
+@pytest.mark.asyncio
+async def test_open_refuses_cloud_metadata_by_default(monkeypatch):
+    monkeypatch.setattr(CDPEngine, "connect", _async_noop)
+    browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+    with pytest.raises(ValueError, match="metadata"):
+        await browser.open("http://169.254.169.254/latest/meta-data/")
+
+
+@pytest.mark.asyncio
+async def test_a_bare_domain_still_reaches_the_policy_as_https(monkeypatch):
+    """Scheme-defaulting runs first, so "example.com" must not bypass the check."""
+    monkeypatch.setattr(CDPEngine, "connect", _async_noop)
+    browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+    assert browser._policy.check("https://example.com") is None
+    with pytest.raises(ValueError, match="navigation refused"):
+        await browser.open("localhost:3000")
+
+
+@pytest.mark.asyncio
+async def test_user_data_dir_reaches_the_launcher(monkeypatch):
+    """Without this the launcher can support profiles while Browser silently
+    drops the argument, and every "persistent" run gets a fresh temp profile."""
+    seen = {}
+
+    class RecordingLauncher:
+        port = 9222
+
+        def __init__(self, user_data_dir=None):
+            seen["dir"] = user_data_dir
+
+        def launch(self, **kwargs):
+            return 9222
+
+        def terminate(self):
+            pass
+
+    monkeypatch.setattr("grip.browser.ChromeLauncher", RecordingLauncher)
+    monkeypatch.setattr("grip.browser.fetch_browser_ws_url", _async_return("ws://x"))
+    monkeypatch.setattr(CDPEngine, "connect", _async_noop)
+
+    await Browser(user_data_dir="/tmp/grip_profile_x")._connect()
+    assert seen["dir"] == "/tmp/grip_profile_x"
+
+
+def test_page_ws_url_keeps_a_non_default_remote_port():
+    browser = Browser(cdp_url="wss://cdp.example.net:7443/session/abc?token=t0ken")
+    assert browser._page_ws_url("T9") == (
+        "wss://cdp.example.net:7443/devtools/page/T9?token=t0ken"
+    )

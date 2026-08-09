@@ -2286,6 +2286,34 @@ git add grip/security/policy.py grip/browser.py tests/
 git commit -m "feat: deny private ranges, metadata endpoints and non-http schemes by default"
 ```
 
+**DEVIATION (as implemented) — bare `about:blank` is allowed.**
+
+`check()` returns `None` for `url.strip().lower() == "about:blank"` before any
+scheme handling. An empty tab reaches no network and reads no file, so refusing it
+buys zero coverage against the SSRF and local-file-disclosure threat this task
+exists for, while breaking grip's own idiom for "open a tab" — `open()` itself
+calls `Target.createTarget` with `about:blank`, and 14 call sites across four
+integration suites use it. The exception is an exact string match, deliberately
+*not* `scheme == "about"`: `about:cache`, `about:net-internals` and the rest of the
+browser-internals pages do expose state and stay refused. `data:` and `file:` carry
+attacker-controlled content and stay refused by default as specified.
+
+So `test_about_and_data_refused_by_default` was split: `data:` still refused,
+`about:blank` now asserted allowed, with `test_other_about_pages_stay_refused`
+pinning `about:cache`, `about:net-internals`, `about:blank?x` and `about:blankfoo`.
+
+`test_stale_element.py` and `test_concurrent_pages.py` had their `data:` fixture
+helpers rewritten to write HTML into a module-scoped temp dir and return
+`Path.as_uri()`, with `Browser(allow_file=True)`. `test_concurrent_pages.py`'s
+cancelled-open test drives a loopback HTTP server and now passes `allow_private=True`.
+`test_interactions.py` and `test_discover_elements_perf_parity.py` needed no change
+once `about:blank` was allowed.
+
+Residual gaps are stated in the class docstring rather than deferred to SECURITY.md:
+a DNS name resolves inside Chrome so the landing address is invisible here, and only
+the URL passed to `open()` is checked — a public URL that 302s to 169.254.169.254 is
+not caught. This closes the direct-navigation hole, not the SSRF class.
+
 ### Task 18: Stop persisting secrets, hide the hidden text (F31, F32, F28)
 
 **Files:**
@@ -2663,6 +2691,36 @@ Expected: PASS
 git add grip/cdp/launcher.py grip/browser.py tests/
 git commit -m "feat: reusable profile directory and attach-to-existing-Chrome"
 ```
+
+**DEVIATION (as implemented) — the page socket is derived from `cdp_url`.**
+
+Step 4 as written is not sufficient. `open()` built the per-tab websocket as
+`f"ws://localhost:{self._port}/devtools/page/{target_id}"`; under `cdp_url` nothing
+sets `_port`, so it stayed 0 and the host was wrong. `cdp_url` would have connected
+to the browser endpoint and then failed on the first `open()` — shipping a feature
+that looks done. `Browser._page_ws_url(target_id)` now rewrites the path of
+`cdp_url`, preserving scheme, host, port and query string, and falls back to the
+`ws://localhost:{port}` form only when grip launched the browser itself. Preserving
+the scheme matters twice over: a remote CDP engine (Cloudflare Kitesurf, a browser
+grid) is `wss://` on the public internet, and downgrading it to `ws://` is a
+security regression as well as a broken connection. Preserving the query string
+matters because that is where such providers put the auth token.
+
+Pinned by `test_cdp_url_accepts_a_remote_wss_endpoint`: a
+`wss://kitesurf.example.workers.dev/...?token=...` endpoint must keep its scheme,
+its non-localhost host and its query through the rewrite, and must contain no
+`localhost`. Verified end to end against a separately launched Chrome as well.
+
+**Also fixed, not in the plan:** `launch()` deletes a stale `DevToolsActivePort`
+from a reused profile before spawning Chrome. Otherwise `_read_port()` reads the
+*previous* run's port instantly and the second run of any persistent profile
+connects to a dead endpoint.
+
+`test_temp_profile_is_still_cleaned` uses `tmp_path` plus
+`monkeypatch.setenv("CHROME_EXECUTABLE", ...)` rather than the bare
+`ChromeLauncher()` + `tempfile.mkdtemp` written above, matching the idiom already in
+`test_launcher.py` — the version above raises `RuntimeError` on a machine without
+Chrome installed.
 
 ---
 

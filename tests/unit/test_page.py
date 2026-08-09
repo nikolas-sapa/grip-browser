@@ -122,6 +122,61 @@ def _bare_page():
     return Page(engine=make_cdp_mock(), trace=Trace())
 
 
+def _already_loaded_engine(page, monkeypatch, href, ready_state="complete"):
+    """An engine whose target is already sitting on `href`, fully loaded, and
+    which will therefore never fire Page.loadEventFired again."""
+    calls = []
+
+    async def fake_send(method, params=None):
+        calls.append(method)
+        if method == "Runtime.evaluate":
+            return {"result": {"value": json.dumps(
+                {"url": href, "readyState": ready_state}
+            )}}
+        return {}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    monkeypatch.setattr(page._engine, "on", lambda *a: None)
+    monkeypatch.setattr(page._engine, "off", lambda *a: None)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_goto_returns_fast_when_target_already_loaded(monkeypatch):
+    page = _bare_page()
+    calls = _already_loaded_engine(page, monkeypatch, "https://y.test/")
+
+    start = time.monotonic()
+    await page.goto("https://y.test", timeout=30.0)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, f"goto waited {elapsed:.2f}s for a load event that already fired"
+    assert page._initialized, "goto must leave Runtime enabled so snapshot() works"
+    assert "Page.navigate" not in calls
+
+
+@pytest.mark.asyncio
+async def test_goto_still_navigates_when_target_is_on_another_url(monkeypatch):
+    page = _bare_page()
+    calls = _already_loaded_engine(page, monkeypatch, "about:blank")
+
+    await page.goto("https://y.test", timeout=0.05)
+
+    assert "Page.navigate" in calls, "a loaded but different document must not short-circuit"
+
+
+@pytest.mark.asyncio
+async def test_goto_still_navigates_when_document_is_still_loading(monkeypatch):
+    page = _bare_page()
+    calls = _already_loaded_engine(
+        page, monkeypatch, "https://y.test/", ready_state="loading"
+    )
+
+    await page.goto("https://y.test", timeout=0.05)
+
+    assert "Page.navigate" in calls
+
+
 @pytest.mark.asyncio
 async def test_goto_honours_its_own_timeout(monkeypatch):
     page = _bare_page()

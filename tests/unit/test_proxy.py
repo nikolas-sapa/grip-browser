@@ -7,6 +7,7 @@ def test_proxy_flag_added_to_args():
     launcher.executable = "/fake/chrome"
     launcher._process = None
     launcher._user_data_dir = None
+    launcher._owns_user_data_dir = True
 
     with patch("tempfile.mkdtemp", return_value="/tmp/fake"), \
          patch("subprocess.Popen") as mock_popen, \
@@ -22,6 +23,7 @@ def test_no_proxy_flag_when_proxy_is_none():
     launcher.executable = "/fake/chrome"
     launcher._process = None
     launcher._user_data_dir = None
+    launcher._owns_user_data_dir = True
 
     with patch("tempfile.mkdtemp", return_value="/tmp/fake"), \
          patch("subprocess.Popen") as mock_popen, \

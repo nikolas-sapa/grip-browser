@@ -56,7 +56,7 @@ def find_chrome() -> str | None:
 
 
 class ChromeLauncher:
-    def __init__(self) -> None:
+    def __init__(self, user_data_dir: str | None = None) -> None:
         exe = find_chrome()
         if not exe:
             raise RuntimeError(
@@ -65,7 +65,11 @@ class ChromeLauncher:
         self.executable = exe
         self.port: int = 0
         self._process: subprocess.Popen | None = None
-        self._user_data_dir: str | None = None
+        self._user_data_dir: str | None = user_data_dir
+        # Only delete what we created. A caller pointing at their own profile is
+        # doing it to keep logins, service workers and IndexedDB across runs —
+        # rmtree'ing that would be the opposite of persistence.
+        self._owns_user_data_dir = user_data_dir is None
 
     def launch(
         self,
@@ -73,7 +77,15 @@ class ChromeLauncher:
         proxy: str | None = None,
         stealth: bool = False,
     ) -> int:
-        self._user_data_dir = tempfile.mkdtemp(prefix="grip_chrome_")
+        if self._owns_user_data_dir:
+            self._user_data_dir = tempfile.mkdtemp(prefix="grip_chrome_")
+        else:
+            assert self._user_data_dir is not None  # set in __init__ when not owned
+            os.makedirs(self._user_data_dir, exist_ok=True)
+            # A reused profile still holds the previous run's DevToolsActivePort.
+            # Leaving it there makes _read_port() return a dead port immediately
+            # instead of waiting for the one Chrome is about to write.
+            Path(self._user_data_dir, "DevToolsActivePort").unlink(missing_ok=True)
         args = [
             self.executable,
             "--remote-debugging-port=0",
@@ -132,6 +144,6 @@ class ChromeLauncher:
                 self._process.kill()
                 self._process.wait(timeout=5)
             self._process = None
-        if self._user_data_dir:
+        if self._user_data_dir and self._owns_user_data_dir:
             shutil.rmtree(self._user_data_dir, ignore_errors=True)
             self._user_data_dir = None

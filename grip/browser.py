@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Self
 from grip.cdp.engine import CDPEngine
 from grip.cdp.launcher import ChromeLauncher
 from grip.page import Page
+from grip.security.policy import NavigationPolicy
 from grip.trace import Trace
 
 if TYPE_CHECKING:
@@ -77,6 +78,10 @@ class Browser:
         proxy: str | None = None,
         stealth: bool = False,
         block_resources: bool = False,
+        allow_private: bool = False,
+        allow_file: bool = False,
+        user_data_dir: str | None = None,
+        cdp_url: str | None = None,
     ) -> None:
         self._llm = llm
         self._headless = headless
@@ -84,6 +89,11 @@ class Browser:
         self._proxy = proxy
         self._stealth = stealth
         self._block_resources = block_resources
+        self._policy = NavigationPolicy(
+            allow_private=allow_private, allow_file=allow_file
+        )
+        self._user_data_dir = user_data_dir
+        self._cdp_url = cdp_url
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
@@ -107,7 +117,14 @@ class Browser:
         async with self._connect_lock:
             if self._engine:
                 return
-            launcher = ChromeLauncher()
+            if self._cdp_url:
+                # Attaching to a Chrome someone else launched — or a remote CDP
+                # engine entirely. No profile, no process, nothing to terminate.
+                engine = CDPEngine()
+                await engine.connect(self._cdp_url)
+                self._engine = engine
+                return
+            launcher = ChromeLauncher(user_data_dir=self._user_data_dir)
             # launch() polls for the DevTools port for up to 10s; on the loop that
             # stalls every other tab.
             await asyncio.to_thread(
@@ -148,15 +165,18 @@ class Browser:
         url = _expand_macro(url, **kwargs)
 
         if not url.startswith(("http", "about:", "data:", "file:", "blob:")):
+            # Bare domains still work; everything else reaches the policy as-is so
+            # a non-http scheme cannot be laundered into an allowed one.
             url = "https://" + url
+
+        if reason := self._policy.check(url):
+            raise ValueError(f"navigation refused: {reason}")
 
         result = await self._engine.send("Target.createTarget", {"url": "about:blank"})
         target_id = result["targetId"]
 
         page_engine = CDPEngine()
-        await page_engine.connect(
-            f"ws://localhost:{self._port}/devtools/page/{target_id}"
-        )
+        await page_engine.connect(self._page_ws_url(target_id))
         page = Page(
             engine=page_engine,
             trace=self.trace,
@@ -179,6 +199,21 @@ class Browser:
                 await asyncio.shield(asyncio.ensure_future(page.close()))
             raise
         return page
+
+    def _page_ws_url(self, target_id: str) -> str:
+        """Websocket for one tab.
+
+        Derived from cdp_url when attached, because the endpoint may be anywhere:
+        a remote CDP engine is a wss:// host on the public internet, often with an
+        auth token in the query string. Both have to survive the rewrite — assuming
+        ws://localhost here is what confines grip to a Chrome on this machine.
+        """
+        if self._cdp_url:
+            parts = urllib.parse.urlsplit(self._cdp_url)
+            return urllib.parse.urlunsplit(
+                (parts.scheme, parts.netloc, f"/devtools/page/{target_id}", parts.query, "")
+            )
+        return f"ws://localhost:{self._port}/devtools/page/{target_id}"
 
     async def _close_target(self, target_id: str) -> None:
         if self._engine:

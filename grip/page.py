@@ -30,6 +30,19 @@ from grip.security.sanitizer import RawElement
 from grip.trace import Trace, TraceEntry
 
 
+def _same_document(current: str, requested: str) -> bool:
+    """Whether two URLs address the same document for load-wait purposes.
+
+    location.href is normalised by the browser ("https://x.test" comes back as
+    "https://x.test/"), so a raw string compare would miss the common case and
+    silently give up the fast path. Only the trailing slash is forgiven — query
+    and fragment differences are real navigations.
+    """
+    if not current or not requested:
+        return False
+    return current.rstrip("/") == requested.rstrip("/")
+
+
 @dataclass
 class Screenshot:
     data: bytes
@@ -123,15 +136,27 @@ class Page:
         self._engine.on("Network.responseReceived", on_response)
         try:
             async with asyncio.timeout(timeout):
+                # Runtime goes up with the other two rather than lazily in
+                # snapshot(): a page handed back by goto() has to be usable, and
+                # enabling Runtime after the fact costs a round trip on the hot path.
                 await asyncio.gather(
                     self._engine.send("Page.enable"),
                     self._engine.send("Network.enable"),
+                    self._engine.send("Runtime.enable"),
                 )
+                self._initialized = True
                 if self._block_resources:
                     await self._engine.send(
                         "Network.setBlockedURLs",
                         {"urls": list(BLOCKED_RESOURCE_PATTERNS)},
                     )
+                # Page.loadEventFired is not replayed. If the target is already
+                # sitting on the requested document, the event we just subscribed
+                # to fired before we existed and will never fire again, so the
+                # wait below would burn the entire timeout and then be swallowed
+                # as success. Ask the page instead of assuming.
+                if await self._already_at(url):
+                    return
                 await self._engine.send("Page.navigate", {"url": url})
                 await load_event.wait()
         except TimeoutError:
@@ -142,6 +167,42 @@ class Page:
         finally:
             self._engine.off("Page.loadEventFired", on_load)
             self._engine.off("Network.responseReceived", on_response)
+
+    async def _already_at(self, url: str) -> bool:
+        """True only if this target is *already* showing a finished `url`.
+
+        Both halves matter. readyState alone is not enough: right after a
+        navigation is requested the outgoing document can still report
+        "complete", so gating on it alone would let goto() return before the
+        requested page exists. The URL alone is not enough either — the document
+        can be committed but still parsing.
+
+        Best-effort: any failure here means "no, navigate normally", which is
+        the behaviour that predates this check.
+        """
+        try:
+            result = await self._engine.send(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        'JSON.stringify({url: location.href,'
+                        ' readyState: document.readyState})'
+                    ),
+                    "returnByValue": True,
+                },
+            )
+        except Exception:  # noqa: BLE001 — a failed probe just means we navigate
+            return False
+        raw = result.get("result", {}).get("value")
+        if not raw:
+            return False
+        try:
+            state = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            return False
+        if state.get("readyState") not in ("interactive", "complete"):
+            return False
+        return _same_document(str(state.get("url", "")), url)
 
     async def close(self) -> None:
         """Close this tab and drop its CDP connection. Idempotent."""
