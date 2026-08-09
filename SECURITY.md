@@ -79,3 +79,35 @@ Do not rely on it to bypass anti-bot systems; use it only where you have a
 legitimate reason to reduce automation fingerprinting (e.g. testing your
 own site's behavior) and the operator's terms of service permit automated
 access.
+
+**Its effect is unmeasured.** A competitor measured the equivalent
+page-world approach against live reCAPTCHA and found it made detection
+easier rather than harder, so the flag is not documented as beneficial.
+`evaluation/stealth_measurement.py` counts detection signals in both modes
+and is the script that settles it; it needs a host with outbound network.
+Until it has been run, treat `stealth=True` as unproven in either
+direction.
+
+### Challenge solving
+
+`page.solve_challenge()` interacts with the challenge widget on the page
+using pointer events grip dispatches itself. It calls no third-party
+solving service and sends no page content anywhere. It reports `"solved"`
+only when it can verify the outcome (a response token is present, or the
+widget has left the DOM); an unverifiable attempt returns `"timeout"`, so
+a caller is never told a challenge was cleared when it was not.
+
+Solving a challenge on a site you do not operate may breach that site's
+terms of service. That is your call to make, not grip's, and grip does not
+make it for you: `solve_challenge()` is an explicit call that never runs
+on its own, and it is blocked under `Browser(safe=True)` along with the
+rest of the interaction surface (`click_at`, `drag`).
+
+### Boundary
+
+TLS/JA3 fingerprints and full headless fingerprint parity are below the
+DevTools Protocol and unreachable from a Python client driving stock
+Chromium. grip does not attempt them and does not claim them. A block based
+on IP reputation is an egress problem: route through a residential or mobile
+proxy with `Browser(proxy=...)`, and match your locale and timezone to that
+egress yourself.

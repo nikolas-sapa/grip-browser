@@ -11,7 +11,6 @@ import pytest
 
 from grip.browser import Browser
 
-
 HIDDEN_HTML = """
 <html><body>
   <button id="real">Submit Order</button>
@@ -24,6 +23,7 @@ HIDDEN_HTML = """
   <button style="color:transparent">Decoy Transparent</button>
   <button style="display:none">Decoy Display</button>
   <button style="visibility:hidden">Decoy Visibility</button>
+  <button style="background:linear-gradient(blue,red);-webkit-background-clip:text;color:transparent">Gradient CTA</button>
   <div style="height:3000px"></div>
   <button id="below">Below The Fold</button>
 </body></html>
@@ -58,4 +58,7 @@ async def test_hidden_controls_stay_out_of_the_snapshot():
     assert "Submit Order" in labels
     # Below the fold is not hidden — a viewport test here would gut every long page.
     assert "Below The Fold" in labels
+    # transparent + background-clip:text is the gradient-text idiom, and it is
+    # used on primary CTAs. Reading it as hidden would delete the main button.
+    assert "Gradient CTA" in labels
     assert "Decoy" not in labels, f"a hidden control reached the snapshot: {labels}"

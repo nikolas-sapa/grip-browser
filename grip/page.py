@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
+import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -18,11 +20,23 @@ from grip.cdp.shadow import (
     SCROLL_BOTTOM_JS,
     TYPE_ELEMENT_JS,
 )
+from grip.challenge import (
+    POINT_PROBE_JS,
+    SLIDER_PROBE_JS,
+    TOKEN_PROBE_JS,
+    ChallengeResult,
+    ChallengeStage,
+    detect_challenge_from_html,
+    frame_urls,
+    is_solvable,
+    needs_vision,
+)
 from grip.compression.delta import SnapshotDelta, build_delta
 from grip.compression.refs import RefRegistry
 from grip.compression.summarizer import Element, PageSnapshot, Summarizer
 from grip.errors.classifier import RAW_TEXT_PROBE_FLOOR, ErrorClassifier
 from grip.errors.types import BrowserError, ErrorType, GripError, RecoveryAction
+from grip.input import RESOLVE_POINT_JS, bezier_path, move_delay, press_dwell
 from grip.reader import Block, Document
 from grip.resources import BLOCKED_RESOURCE_PATTERNS
 from grip.security.injection import InjectionDetector
@@ -90,6 +104,10 @@ class Page:
         self._status_code: int = 0
         self._content_probed_url: str = ""
         self._block_resources = block_resources
+        # Where the synthetic pointer currently sits, so a human path starts from
+        # the last position instead of teleporting to the target every time.
+        self._pointer_x = 0
+        self._pointer_y = 0
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -483,7 +501,7 @@ class Page:
         data = json.loads(raw) if isinstance(raw, str) else raw
         return len(data.get("blocks", []))
 
-    async def click(self, description: str) -> None:
+    async def click(self, description: str, *, human: bool = False) -> None:
         self._assert_not_safe("click")
         if not self._current_snapshot:
             await self.snapshot()
@@ -492,6 +510,29 @@ class Page:
         if el is None:
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
+        if human:
+            # Default stays the JS path: it is faster and works headless.
+            # human=True is for challenge flows, where the approach to the target
+            # is itself scored. It re-resolves the handle first rather than
+            # trusting the snapshot's cx/cy, so a stale element still raises
+            # instead of putting a real click on whatever now occupies that spot.
+            probe = await self._eval(
+                f"({RESOLVE_POINT_JS})"
+                f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+            )
+            outcome = probe or {}
+            self._trace.add(TraceEntry(
+                timestamp=time.time(),
+                action="click",
+                input={"description": description, "handle": el.handle, "human": True},
+                output={"success": bool(outcome.get("ok")),
+                        "reason": outcome.get("reason", "")},
+                tokens_consumed=0,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+            ))
+            self._raise_for_action(outcome, description)
+            await self.click_at(int(outcome["x"]), int(outcome["y"]), human=True)
+            return
         js = (
             f"({CLICK_ELEMENT_JS})"
             f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
@@ -573,6 +614,240 @@ class Page:
             "Input.dispatchKeyEvent",
             {"type": "keyUp", "key": key},
         )
+
+    async def click_at(
+        self, x: int, y: int, *, human: bool = True, rng: random.Random | None = None
+    ) -> None:
+        """Click real viewport coordinates with a trusted pointer event.
+
+        click() dispatches an untrusted JS event with no pointer motion at all,
+        which is fine for ordinary pages and useless for challenge widgets that
+        score the approach to the target. This path moves along a curved, eased
+        Bezier first, then presses with a randomized dwell.
+        """
+        self._assert_not_safe("click_at")
+        t0 = time.monotonic()
+        moves = 0
+        if human:
+            moves = await self._move_pointer((self._pointer_x, self._pointer_y), (x, y), rng)
+        await self._mouse(
+            "mousePressed", x, y, button="left", click_count=1
+        )
+        await asyncio.sleep(press_dwell(rng))
+        await self._mouse(
+            "mouseReleased", x, y, button="left", click_count=1
+        )
+        self._pointer_x, self._pointer_y = x, y
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="click_at",
+            input={"x": x, "y": y, "human": human},
+            output={"moves": moves},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
+    async def drag(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        *,
+        human: bool = True,
+        rng: random.Random | None = None,
+    ) -> None:
+        """Press at start, travel to end with the button held, release.
+
+        The slider primitive. The button stays down for every intermediate move:
+        a released mid-path pointer is not a drag and sliders reject it.
+        """
+        self._assert_not_safe("drag")
+        t0 = time.monotonic()
+        r = rng or random.Random()
+        sx, sy = start
+        ex, ey = end
+        await self._mouse("mousePressed", sx, sy, button="left", click_count=1)
+
+        path = bezier_path(start, end, rng=rng) if human else [end]
+        # Slight overshoot-and-correct: a hand rarely lands a slider handle dead
+        # on the stop at the first attempt.
+        if human and (ex, ey) != (sx, sy):
+            over = r.randint(3, 9)
+            dx, dy = ex - sx, ey - sy
+            norm = math.hypot(dx, dy) or 1.0
+            path.append((int(ex + dx / norm * over), int(ey + dy / norm * over)))
+            path.append((ex, ey))
+
+        for px, py in path:
+            await self._mouse("mouseMoved", px, py, button="left")
+            if human:
+                await asyncio.sleep(move_delay(r))
+        await self._mouse("mouseReleased", ex, ey, button="left", click_count=1)
+        self._pointer_x, self._pointer_y = ex, ey
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="drag",
+            input={"start": list(start), "end": list(end), "human": human},
+            output={"moves": len(path)},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
+    async def _move_pointer(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        rng: random.Random | None = None,
+    ) -> int:
+        r = rng or random.Random()
+        path = bezier_path(start, end, rng=rng)
+        for px, py in path:
+            await self._mouse("mouseMoved", px, py)
+            await asyncio.sleep(move_delay(r))
+        return len(path)
+
+    async def _mouse(
+        self,
+        event_type: str,
+        x: int,
+        y: int,
+        *,
+        button: str = "none",
+        click_count: int = 0,
+    ) -> None:
+        params: dict[str, Any] = {"type": event_type, "x": x, "y": y, "button": button}
+        if click_count:
+            params["clickCount"] = click_count
+        await self._engine.send("Input.dispatchMouseEvent", params)
+
+    async def detect_challenge(self) -> ChallengeStage:
+        """Classify any bot challenge on the page. Read-only, no network calls."""
+        # A Page reached without goto() (remote CDP attach, an adopted target)
+        # has no Runtime domain enabled, and every probe below is an evaluate.
+        await self._ensure_initialized()
+        html = await self._page_html()
+        tree = await self._engine.send("Page.getFrameTree")
+        return detect_challenge_from_html(html, frame_urls(tree or {}))
+
+    async def solve_challenge(self, timeout: float = 30.0) -> ChallengeResult:
+        """Attempt the challenge in-process and report a verified outcome.
+
+        status is one of: none, solved, needs_vision, unsupported, timeout.
+        "solved" is only returned once a response token is present or the widget
+        has left the DOM. Nothing here calls a third-party solving service.
+        """
+        self._assert_not_safe("solve_challenge")
+        t0 = time.monotonic()
+        stage = await self.detect_challenge()
+
+        if stage is ChallengeStage.NONE:
+            result = ChallengeResult(status="none", stage=stage)
+        elif needs_vision(stage):
+            shot = await self.screenshot()
+            result = ChallengeResult(
+                status="needs_vision",
+                stage=stage,
+                detail=(
+                    f"{stage.value} challenge needs a vision model to answer. "
+                    "Pass result.screenshot to your model, then act with "
+                    "page.click_at(x, y, human=True)."
+                ),
+                screenshot=shot,
+            )
+        elif not is_solvable(stage):
+            result = ChallengeResult(
+                status="unsupported",
+                stage=stage,
+                detail=(
+                    f"{stage.value} challenge has no in-process solve path. "
+                    "It is scored server-side or grip could not identify the widget."
+                ),
+            )
+        elif stage is ChallengeStage.SLIDER:
+            result = await self._solve_slider(stage, timeout)
+        else:
+            result = await self._solve_click_widget(stage, timeout)
+
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="solve_challenge",
+            input={"timeout": timeout},
+            output={"stage": stage.value, "status": result.status},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+        return result
+
+    async def _solve_click_widget(
+        self, stage: ChallengeStage, timeout: float
+    ) -> ChallengeResult:
+        deadline = time.monotonic() + timeout
+        point = await self._eval(POINT_PROBE_JS)
+        if not isinstance(point, dict):
+            return ChallengeResult(
+                status="unsupported",
+                stage=stage,
+                detail="Widget frame has no measurable box; nothing to click.",
+            )
+        await self.click_at(int(point["x"]), int(point["y"]), human=True)
+        return await self._await_verification(stage, deadline)
+
+    async def _solve_slider(
+        self, stage: ChallengeStage, timeout: float
+    ) -> ChallengeResult:
+        deadline = time.monotonic() + timeout
+        geom = await self._eval(SLIDER_PROBE_JS)
+        if not isinstance(geom, dict):
+            return ChallengeResult(
+                status="unsupported",
+                stage=stage,
+                detail="Could not locate the slider handle and its track.",
+            )
+        await self.drag(
+            (int(geom["x"]), int(geom["y"])),
+            (int(geom["endX"]), int(geom["y"])),
+            human=True,
+        )
+        return await self._await_verification(stage, deadline)
+
+    async def _await_verification(
+        self, stage: ChallengeStage, deadline: float
+    ) -> ChallengeResult:
+        """Poll until the challenge is provably gone, or give up honestly.
+
+        The click having been dispatched proves nothing — providers score the
+        interaction and may silently refuse. Only a token or a vanished widget
+        is evidence, and without either this returns "timeout".
+        """
+        while True:
+            token = await self._eval(TOKEN_PROBE_JS)
+            if isinstance(token, str) and token:
+                return ChallengeResult(
+                    status="solved", stage=stage, detail="Response token present."
+                )
+            if await self.detect_challenge() is ChallengeStage.NONE:
+                return ChallengeResult(
+                    status="solved", stage=stage, detail="Widget left the page."
+                )
+            if time.monotonic() >= deadline:
+                return ChallengeResult(
+                    status="timeout",
+                    stage=stage,
+                    detail=(
+                        "Interaction was dispatched but no token appeared and the "
+                        "widget is still present. The challenge is NOT solved."
+                    ),
+                )
+            await asyncio.sleep(0.4)
+
+    async def _eval(self, expression: str) -> Any:
+        result = await self._engine.send(
+            "Runtime.evaluate", {"expression": expression, "returnByValue": True}
+        )
+        return (result or {}).get("result", {}).get("value")
+
+    async def _page_html(self) -> str:
+        html = await self._eval("document.documentElement.outerHTML")
+        return html if isinstance(html, str) else ""
 
     async def extract(self, schema: dict[str, str]) -> dict[str, Any]:
         snap = await self.snapshot()

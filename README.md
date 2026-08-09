@@ -66,7 +66,7 @@ Honest caveat: Playwright and Puppeteer are broader general-purpose automation f
 
 **Which LLMs does it work with?** Anthropic and OpenAI adapters ship in the box; any model works via the `LLMAdapter` protocol.
 
-**Does it handle CAPTCHAs / bot blocks?** It detects them and returns a typed error with a suggested recovery action (escalate, backoff, rotate). It does not solve CAPTCHAs for you.
+**Does it handle CAPTCHAs / bot blocks?** It detects and classifies them (`page.detect_challenge()`), and returns a typed error with a suggested recovery action (escalate, backoff, rotate). `page.solve_challenge()` attempts checkbox, Turnstile and slider stages in-process and only reports success it can verify; image-grid and text challenges come back to your model with a screenshot. No third-party solving service is used, and success rates are unmeasured — see [Challenges and automation tells](#challenges-and-automation-tells).
 
 **What do I need installed?** Python 3.11+ and Chrome or Chromium. Grip finds Chrome automatically, and falls back to the Chrome for Testing build that Playwright or Puppeteer already downloaded if no system Chrome is present. Set `CHROME_EXECUTABLE` to override.
 
@@ -176,16 +176,61 @@ async with Browser(headless=True) as browser:
 default is no limit — deciding which parts of a page matter is ranking, and that
 belongs to the caller.
 
-## Automation tells
+## Challenges and automation tells
+
+grip **detects** checkbox, Turnstile, slider, image-grid, text and invisible
+challenges from the page's DOM and frame URLs, and classifies them without a
+network call (`page.detect_challenge()`). Detection is tested against real widget
+markup.
+
+`page.solve_challenge()` implements in-process solve flows for the checkbox,
+Turnstile and slider stages, using human-shaped pointer motion and no
+third-party solving API. Each flow reports `"solved"` **only** after it verifies
+the outcome — a response token is present, or the widget has left the page. If
+neither is true when the timeout expires it returns `"timeout"`, never `"solved"`.
+Image-grid and text challenges return `"needs_vision"` with a screenshot for your
+own model to answer; grip does not ship a classifier. **Solve success rates are
+unmeasured** as of 2026-08-10: they depend on IP reputation and provider-side
+scoring, so any number quoted here without a stated egress would be meaningless.
+
+```python
+result = await page.solve_challenge(timeout=30.0)
+match result.status:
+    case "solved":       ...  # verified: token present or widget gone
+    case "needs_vision": ...  # result.screenshot -> your model -> page.click_at(x, y)
+    case "unsupported":  ...  # named in result.stage
+    case "timeout":      ...  # NOT solved; the challenge is still there
+    case "none":         ...
+```
+
+Human-shaped input is available on its own: `page.click_at(x, y, human=True)` and
+`page.drag(start, end)` travel a curved, eased Bézier path with a randomized press
+dwell. Straight-line constant-velocity motion is the clearest synthetic-input
+tell. `page.click(desc, human=True)` uses that path instead of the JS click: it
+re-resolves the element first, so it still raises `ELEMENT_STALE` on a stale
+handle and clicks the element's live position rather than the one the snapshot
+recorded. The default stays the JS path — it is faster and works headless —
+and `human=True` is for challenge flows.
 
 Chrome under CDP sets `navigator.webdriver` and puts `HeadlessChrome` in the user
 agent. `Browser(stealth=True)` removes both. It is off by default because grip is a
 general-purpose SDK and silently masking automation would surprise anyone using it
-for ordinary testing.
+for ordinary testing. **Whether that flag helps is unmeasured.** A competitor
+measured the equivalent page-world approach against live reCAPTCHA and found it
+made detection *easier*, not harder, so grip does not claim a benefit it has not
+observed. `evaluation/stealth_measurement.py` is the script that settles it; it
+needs a host with outbound network, which the development sandbox is not:
 
-This is deliberately not an evasion suite — no canvas, WebGL, or timing spoofing.
-Those are a maintained arms race. The remaining tell is your IP, which no browser
-flag fixes.
+```
+.venv/bin/python -m evaluation.stealth_measurement
+```
+
+grip does **not** hide that it is automation at the network layer. TLS/JA3
+fingerprints, and full headless fingerprint parity, live below the Chrome
+DevTools Protocol and cannot be reached from a Python client driving stock
+Chromium. If a site blocks you on IP reputation or TLS fingerprint, no flag in
+this library will change that — that is an egress problem, and the answer is a
+residential or mobile proxy, which grip supports via `proxy=`.
 
 ## With an LLM (autonomous mode)
 

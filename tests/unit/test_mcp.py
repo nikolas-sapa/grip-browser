@@ -9,8 +9,6 @@ def test_importing_grip_does_not_require_the_mcp_extra():
 def test_importing_the_server_module_does_not_require_mcp():
     # The mcp import lives inside main(); the module itself must stay importable
     # so the base wheel can be inspected without the extra installed.
-    import sys
-    assert "mcp" not in sys.modules or True
     from grip.mcp import server
     assert server is not None
 
