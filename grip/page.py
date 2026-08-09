@@ -29,6 +29,10 @@ from grip.security.injection import InjectionDetector
 from grip.security.sanitizer import RawElement
 from grip.trace import Trace, TraceEntry
 
+# An element still has to be listed and clickable after its label is cut, so the
+# label is replaced rather than the element dropped.
+_ELIDED = "[elided: detected instruction-like text]"
+
 
 def _same_document(current: str, requested: str) -> bool:
     """Whether two URLs address the same document for load-wait purposes.
@@ -241,6 +245,24 @@ class Page:
 
         scan = self._injector.scan(page_text)
         safe_text = scan.safe_text
+        # The guard only ever saw the CONTENT block. The title, every interactive
+        # element's label and every placeholder reach the model too, and a payload
+        # in any of them landed verbatim in the formatted snapshot.
+        title_scan = self._injector.scan(title)
+        elements_stripped = False
+        for raw in raw_elements:
+            if raw.text and not self._injector.scan(raw.text).is_clean:
+                raw.text = _ELIDED
+                elements_stripped = True
+            if raw.placeholder and not self._injector.scan(raw.placeholder).is_clean:
+                raw.placeholder = _ELIDED
+                elements_stripped = True
+            # role is the formatter's last fallback for an element with no text
+            # and no placeholder (icon-only buttons), so it is printed verbatim
+            # too — and it is just another page-controlled attribute.
+            if raw.role and not self._injector.scan(raw.role).is_clean:
+                raw.role = _ELIDED
+                elements_stripped = True
 
         page_error = None
         _detected = self._classifier.classify_page_state(title, url, self._status_code)
@@ -280,11 +302,17 @@ class Page:
         snapshot = self._summarizer.build(
             version=self._version,
             url=url,
-            title=title,
+            title=title_scan.safe_text,
             raw_elements=raw_elements,
             page_text=safe_text,
         )
         snapshot.page_error = page_error
+        # Deliberately after classify_page_state, which keys off real title strings
+        # ("Just a moment...", "Access Denied"): sanitizing the title before that
+        # check would let an injected title silently flip the anti-bot verdict.
+        snapshot.prompt_injection = (
+            scan.was_modified or title_scan.was_modified or elements_stripped
+        )
         for el in snapshot.elements:
             el.ref = self._refs.assign(el.handle)
         self._refs.evict({el.handle for el in snapshot.elements})

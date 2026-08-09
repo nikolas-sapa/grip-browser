@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import urllib.parse
 from typing import TYPE_CHECKING, Self
 
@@ -259,7 +260,13 @@ class Browser:
         cookies = result.get("cookies", [])
 
         def _write() -> None:
-            with open(path, "w") as f:
+            # Cookies carry session tokens; never leave them world-readable.
+            # O_CREAT's mode applies only to a new inode, and re-saving over an
+            # existing 0644 file is the common path — fchmod on the fd we already
+            # hold tightens it with no path-race window.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as f:
                 json.dump(cookies, f, indent=2)
 
         await asyncio.to_thread(_write)

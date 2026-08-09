@@ -34,15 +34,36 @@ _COLLECT_CANDIDATES_JS = """
   // expensive part, so callers only reach this for elements already known to be
   // candidates.
   function gripIsHidden(el) {
+    // checkVisibility accounts for the element AND its ancestors — a child of an
+    // opacity:0 parent used to pass as visible here, because
+    // getComputedStyle().opacity does not inherit. That let an off-screen decoy
+    // sharing a visible control's label absorb clicks meant for the real one.
+    if (typeof el.checkVisibility === 'function') {
+      if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return true;
+    } else {
+      const s = window.getComputedStyle(el);
+      if (s.display === 'none' || s.visibility === 'hidden' ||
+          parseFloat(s.opacity) === 0) return true;
+    }
+    if (el.getAttribute('aria-hidden') === 'true') return true;
+    if (el.offsetWidth === 0 || el.offsetHeight === 0) return true;
+
+    // checkVisibility does no geometry and no text-colour work, so the classic
+    // off-screen and invisible-text decoys survive it with a normal-sized box.
     const style = window.getComputedStyle(el);
-    return (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      parseFloat(style.opacity) === 0 ||
-      el.getAttribute('aria-hidden') === 'true' ||
-      el.offsetWidth === 0 ||
-      el.offsetHeight === 0
-    );
+    if (parseFloat(style.textIndent) < -500) return true;
+    if (parseFloat(style.fontSize) === 0) return true;
+    // ponytail: a transparent container whose child re-sets colour reads as
+    // hidden. Candidates are interactive elements, where that is rare.
+    if (style.color === 'rgba(0, 0, 0, 0)') return true;
+
+    // Document-space, not viewport: comparing against innerHeight would mark
+    // every below-the-fold element hidden and gut snapshots of long pages. Only
+    // fully off-canvas left/top counts.
+    const r = el.getBoundingClientRect();
+    if (r.right + window.scrollX <= 0 || r.bottom + window.scrollY <= 0) return true;
+
+    return false;
   }
 
   function gripCollect() {

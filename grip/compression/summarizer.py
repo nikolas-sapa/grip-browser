@@ -55,6 +55,10 @@ class PageSnapshot:
     tokens_estimated: int
     changed_from_previous: bool = True
     page_error: BrowserError | None = None
+    # Detections used to be computed and discarded, so a caller had no way to tell
+    # a stripped page from a clean one — which is the difference between "this page
+    # is quiet" and "this page tried something and we cut it out".
+    prompt_injection: bool = False
 
     @property
     def links(self) -> list[tuple[str, str]]:

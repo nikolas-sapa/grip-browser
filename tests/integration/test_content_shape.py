@@ -118,7 +118,7 @@ def server():
 @pytest.mark.asyncio
 async def test_consent_wall_shape_surfaces_as_no_content(server):
     base = server(_ConsentWallHandler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base)
         snap = await page.snapshot()
         assert page._status_code == 200
@@ -131,7 +131,7 @@ async def test_long_real_article_stays_clean(server):
     """Content roughly matches raw length — must not be flagged even though
     both numbers are well above the probe floor."""
     base = server(_LongArticleHandler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base)
         snap = await page.snapshot()
         assert page._status_code == 200
@@ -143,7 +143,7 @@ async def test_prose_in_bare_divs_stays_clean(server):
     """The extractor finds zero blocks (no <p>/<li> to anchor on) — treated
     as its own limitation, not evidence of a block."""
     base = server(_DivOnlyHandler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base)
         snap = await page.snapshot()
         assert page._status_code == 200
@@ -156,7 +156,7 @@ async def test_content_shape_is_probed_once_per_url(server):
     verdict describes the fetch, so it cannot change between snapshots of the same
     URL — re-running it would cost latency for no new information."""
     base = server(_ConsentWallHandler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base)
         calls = 0
         original = page._probe_content_shape

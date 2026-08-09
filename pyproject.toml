@@ -23,6 +23,13 @@ dev = [
 ]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.25"]
+# 2.0 dropped the 1.x low-level decorators (@server.list_tools/@server.call_tool)
+# in favour of MCPServer.tool; grip.mcp.server is written against the 2.x surface,
+# so an older floor would resolve to a version that cannot run it.
+mcp = ["mcp>=2.0.0"]
+
+[project.scripts]
+grip-mcp = "grip.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["grip"]

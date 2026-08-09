@@ -83,3 +83,10 @@ def test_format_output_has_content_section():
     fmt = s.format(snapshot)
     assert "CONTENT:" in fmt
     assert "Some page text" in fmt
+
+
+def test_snapshot_carries_injection_flag():
+    """A stripped page must be distinguishable from a clean one."""
+    snap = PageSnapshot(version=1, url="u", title="t", elements=[],
+                        text_content="", tokens_estimated=0)
+    assert snap.prompt_injection is False

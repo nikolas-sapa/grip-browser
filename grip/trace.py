@@ -35,6 +35,9 @@ class TraceEntry:
         return d
 
 
+_REDACTED_TEXT = "[REDACTED — typed text is never persisted]"
+
+
 class Trace:
     def __init__(self) -> None:
         self.actions: list[TraceEntry] = []
@@ -43,6 +46,12 @@ class Trace:
         self.errors: list[BrowserError] = []
 
     def add(self, entry: TraceEntry) -> None:
+        # An agent types passwords. The trace is a debugging artifact that gets
+        # committed, pasted into issues and shipped to logs — the one place a
+        # credential must not be. Redact at entry, not at serialization, so the
+        # secret never lands in memory for a caller to read off `trace.actions`.
+        if entry.action == "type" and "text" in entry.input:
+            entry.input = {**entry.input, "text": _REDACTED_TEXT}
         self.actions.append(entry)
         self.total_tokens += entry.tokens_consumed
         self.total_duration_ms += entry.duration_ms

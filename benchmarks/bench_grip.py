@@ -259,7 +259,7 @@ def bench_compression_pipeline() -> None:
 async def main() -> None:
     bench_compression_pipeline()
 
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         for label, html in FIXTURES.items():
             httpd, url = _serve(html)
             try:
