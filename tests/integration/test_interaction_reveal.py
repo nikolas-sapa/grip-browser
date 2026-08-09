@@ -132,6 +132,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def base_url():
+    # Loopback fixture: NavigationPolicy refuses private addresses by default
+    # (SSRF guard), so every Browser here opts in with allow_private=True.
     httpd = HTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_port}"

@@ -88,6 +88,8 @@ def _make_handler(page: bytes) -> type[BaseHTTPRequestHandler]:
 
 
 def _serve(page: bytes) -> tuple[HTTPServer, str]:
+    # Loopback fixture: NavigationPolicy refuses private addresses by default
+    # (SSRF guard), so every Browser here opts in with allow_private=True.
     httpd = HTTPServer(("127.0.0.1", 0), _make_handler(page))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, f"http://127.0.0.1:{httpd.server_port}"

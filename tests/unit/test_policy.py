@@ -55,3 +55,13 @@ def test_bare_about_blank_is_allowed():
 def test_other_about_pages_stay_refused():
     for url in ("about:cache", "about:net-internals", "about:blank?x", "about:blankfoo"):
         assert NavigationPolicy().check(url) is not None, url
+
+
+def test_browser_threads_allow_private_into_its_policy():
+    """The tests' fixture servers rely on Browser(allow_private=True) actually
+    reaching the policy — a constructor that silently dropped the flag would
+    look identical until Chrome tried to navigate."""
+    from grip.browser import Browser
+
+    assert Browser()._policy.check("http://127.0.0.1:8080/") is not None
+    assert Browser(allow_private=True)._policy.check("http://127.0.0.1:8080/") is None

@@ -136,12 +136,13 @@ class Runner:
         page_states = [
             i for i, m in enumerate(self._messages)
             if m.get("role") == "tool"
-            and str(m.get("content", "")).startswith("<page_state>\nPAGE:")
+            and str(m.get("content", "")).startswith(f"{_FENCE_OPEN}PAGE:")
         ]
         for i in page_states[:-1]:
             self._messages[i] = {
                 **self._messages[i],
-                "content": _fence("[superseded page state; see the deltas that follow]"),
+                # Runner-authored, so it stays outside the fence like the errors.
+                "content": "[superseded page state; see the deltas that follow]",
             }
 
     async def run(self, goal: str) -> RunResult:
@@ -178,9 +179,15 @@ class Runner:
                 break
 
             tc = response.tool_call
+            # An error message is written by the runner, not by the page. Fencing
+            # it would put the one instruction the model is meant to act on — the
+            # suggested recovery — inside the region the system prompt tells it to
+            # never follow.
+            errored = False
             try:
                 tool_result = await self._dispatch(tc.name, tc.arguments)
             except GripError as e:
+                errored = True
                 # The error taxonomy exists so the model can recover — a stale
                 # element means "re-snapshot and try again", not "give up". Raising
                 # here ended the whole run on the first miss.
@@ -190,6 +197,7 @@ class Runner:
                     f"(suggested recovery: {recovery})"
                 )
             except KeyError as e:
+                errored = True
                 # ponytail: a KeyError raised deeper than argument lookup is
                 # reported as a missing argument too. Mis-attributed, but a wrong
                 # label the model can retry past beats ending the run.
@@ -218,7 +226,7 @@ class Runner:
             messages.append({
                 "role": "tool",
                 "tool_call_id": "0",
-                "content": _fence(tool_result),
+                "content": str(tool_result) if errored else _fence(tool_result),
             })
             self._prune_superseded()
 

@@ -60,6 +60,8 @@ def _serve(body):
         def log_message(self, *args):
             pass
 
+    # Loopback fixture: NavigationPolicy refuses private addresses by default
+    # (SSRF guard), so every Browser here opts in with allow_private=True.
     httpd = HTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return f"http://127.0.0.1:{httpd.server_port}", httpd

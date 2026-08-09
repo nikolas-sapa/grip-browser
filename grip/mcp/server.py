@@ -73,7 +73,15 @@ async def call_tool(name: str, arguments: dict) -> str:
 
 
 def main() -> None:
-    from mcp.server import MCPServer
+    try:
+        from mcp.server import MCPServer
+    except ModuleNotFoundError as e:  # pragma: no cover — needs a base install
+        # A bare ModuleNotFoundError from a console script tells the user nothing
+        # about the extra they were meant to install.
+        raise SystemExit(
+            "grip-mcp needs the optional mcp package: "
+            'pip install "grip-browser[mcp]"'
+        ) from e
 
     server = MCPServer("grip")
 

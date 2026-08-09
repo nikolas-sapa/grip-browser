@@ -43,6 +43,8 @@ class _OkHandler(_Handler):
 @pytest.fixture
 def server():
     def _start(handler):
+        # Loopback fixture: NavigationPolicy refuses private addresses by default
+        # (SSRF guard), so every Browser here opts in with allow_private=True.
         httpd = HTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         return httpd
