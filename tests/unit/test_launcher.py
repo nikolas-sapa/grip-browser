@@ -59,3 +59,19 @@ def test_find_cached_chrome_prefers_newest_build(monkeypatch, tmp_path):
         launcher_mod, "_CACHED_CHROME_GLOBS", [str(tmp_path / "chromium-*" / "chrome-mac-arm64" / "chrome")]
     )
     assert launcher_mod._find_cached_chrome().endswith("chromium-1228/chrome-mac-arm64/chrome")
+
+
+def test_find_chrome_uses_shutil_which(monkeypatch):
+    import grip.cdp.launcher as mod
+
+    monkeypatch.setattr(mod.os.environ, "get", lambda *a: None)
+    monkeypatch.setattr(mod.Path, "exists", lambda self: False)
+    monkeypatch.setattr(mod, "_find_cached_chrome", lambda: None)
+    monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name
+                        if name == "google-chrome" else None)
+
+    def no_subprocess(*a, **k):
+        raise AssertionError("find_chrome should not shell out")
+
+    monkeypatch.setattr(mod.subprocess, "run", no_subprocess)
+    assert mod.find_chrome() == "/usr/bin/google-chrome"

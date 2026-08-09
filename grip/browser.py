@@ -88,6 +88,10 @@ class Browser:
         self._engine: CDPEngine | None = None
         self._port: int = 0
         self._pages: list[Page] = []
+        # open() is documented for concurrent use (asyncio.gather over URLs). Without
+        # this, N first-callers each see _engine as None and each launch their own
+        # Chrome — N-1 of which nothing owns and nothing terminates.
+        self._connect_lock = asyncio.Lock()
         self.trace = Trace()
 
     async def __aenter__(self) -> Self:
@@ -100,13 +104,31 @@ class Browser:
     async def _connect(self) -> None:
         if self._engine:
             return
-        self._launcher = ChromeLauncher()
-        self._port = self._launcher.launch(
-            headless=self._headless, proxy=self._proxy, stealth=self._stealth
-        )
-        ws_url = await fetch_browser_ws_url(self._port)
-        self._engine = CDPEngine()
-        await self._engine.connect(ws_url)
+        async with self._connect_lock:
+            if self._engine:
+                return
+            launcher = ChromeLauncher()
+            # launch() polls for the DevTools port for up to 10s; on the loop that
+            # stalls every other tab.
+            await asyncio.to_thread(
+                launcher.launch,
+                headless=self._headless,
+                proxy=self._proxy,
+                stealth=self._stealth,
+            )
+            # Chrome is already running by this point, so any failure between here
+            # and a live engine has to clean it up: __aenter__ raising means
+            # __aexit__ never runs and close() is never called.
+            try:
+                self._port = launcher.port
+                ws_url = await fetch_browser_ws_url(self._port)
+                engine = CDPEngine()
+                await engine.connect(ws_url)
+            except BaseException:
+                launcher.terminate()
+                raise
+            self._launcher = launcher
+            self._engine = engine
 
     async def open(self, url: str, **kwargs: str) -> Page:
         """Open a URL in its own tab and return a Page bound to it.
@@ -177,12 +199,20 @@ class Browser:
             except Exception:
                 logger.debug("Failed to close tab %s", page._target_id, exc_info=True)
         self._pages.clear()
-        if self._engine:
-            await self._engine.disconnect()
+        try:
+            if self._engine:
+                await self._engine.disconnect()
+        except Exception:
+            # Teardown never raises: an already-dead socket is not a caller error,
+            # and raising here would mask whatever exception is unwinding __aexit__.
+            logger.debug("Failed to disconnect the browser engine", exc_info=True)
+        finally:
             self._engine = None
-        if self._launcher:
-            self._launcher.terminate()
-            self._launcher = None
+            # Whatever the websocket did, the OS process and its temp profile are
+            # ours to reclaim. Skipping this is how orphaned Chromes accumulate.
+            if self._launcher:
+                await self._launcher.aterminate()
+                self._launcher = None
 
     async def save_session(self, path: str) -> None:
         if not self._engine:
@@ -209,8 +239,8 @@ class Browser:
 
         try:
             cookies = await asyncio.to_thread(_read)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Session file not found: {path}")
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Session file not found: {path}") from e
         except json.JSONDecodeError as e:
             raise ValueError(f"Session file is not valid JSON: {path}") from e
         await self._engine.send("Storage.setCookies", {"cookies": cookies})

@@ -21,9 +21,9 @@ from grip.cdp.shadow import (
 from grip.compression.cache import ElementCache
 from grip.compression.diff import SnapshotDiff
 from grip.compression.refs import RefRegistry
-from grip.compression.summarizer import PageSnapshot, Summarizer
+from grip.compression.summarizer import Element, PageSnapshot, Summarizer
 from grip.errors.classifier import RAW_TEXT_PROBE_FLOOR, ErrorClassifier
-from grip.errors.types import BrowserError, ErrorType, GripError
+from grip.errors.types import BrowserError, ErrorType, GripError, RecoveryAction
 from grip.reader import Block, Document
 from grip.resources import BLOCKED_RESOURCE_PATTERNS
 from grip.security.injection import InjectionDetector
@@ -88,17 +88,15 @@ class Page:
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
             await self._engine.send("Runtime.enable")
-            await self._engine.send("Page.enable")
             self._initialized = True
 
     async def goto(self, url: str, timeout: float = 30.0) -> None:
-        """Navigate this tab and wait for the load event."""
-        await self._engine.send("Page.enable")
-        await self._engine.send("Network.enable")
-        if self._block_resources:
-            await self._engine.send(
-                "Network.setBlockedURLs", {"urls": list(BLOCKED_RESOURCE_PATTERNS)}
-            )
+        """Navigate this tab and wait for the load event.
+
+        The timeout bounds the whole call. It previously bounded only the load
+        wait, so the three CDP enables in front of it each contributed their own
+        30s and goto(timeout=1) could block for a minute and a half.
+        """
         load_event = asyncio.Event()
 
         def on_load(params: dict) -> None:
@@ -112,15 +110,32 @@ class Page:
                 self._status_code = params.get("response", {}).get("status", 0)
 
         self._status_code = 0
+        # The cached snapshot describes the document we are leaving. Element
+        # handles, refs and indices are all scoped to it, so keeping it across a
+        # navigation would let an action resolve against the previous page.
+        self._current_snapshot = None
         # Subscribe before navigating — a fast page can fire loadEventFired
         # before the navigate call returns.
         self._engine.on("Page.loadEventFired", on_load)
         self._engine.on("Network.responseReceived", on_response)
         try:
-            await self._engine.send("Page.navigate", {"url": url})
-            await asyncio.wait_for(load_event.wait(), timeout=timeout)
+            async with asyncio.timeout(timeout):
+                await asyncio.gather(
+                    self._engine.send("Page.enable"),
+                    self._engine.send("Network.enable"),
+                )
+                if self._block_resources:
+                    await self._engine.send(
+                        "Network.setBlockedURLs",
+                        {"urls": list(BLOCKED_RESOURCE_PATTERNS)},
+                    )
+                await self._engine.send("Page.navigate", {"url": url})
+                await load_event.wait()
         except TimeoutError:
-            pass  # slow page: hand it back anyway, snapshot() sees whatever loaded
+            # A slow page is still a usable page: hand it back and let snapshot()
+            # report whatever loaded. A dead connection is not — but that surfaces
+            # as a ConnectionError from send(), which we deliberately do not catch.
+            pass
         finally:
             self._engine.off("Page.loadEventFired", on_load)
             self._engine.off("Network.responseReceived", on_response)
@@ -130,9 +145,13 @@ class Page:
         if self._closed:
             return
         self._closed = True
-        await self._engine.disconnect()
-        if self._closer and self._target_id:
-            await self._closer(self._target_id)
+        try:
+            await self._engine.disconnect()
+        finally:
+            # The tab outlives its websocket. Skipping this on a failed disconnect
+            # leaks the target for the lifetime of the Browser.
+            if self._closer and self._target_id:
+                await self._closer(self._target_id)
 
     async def snapshot(self) -> PageSnapshot:
         await self._ensure_initialized()
@@ -203,7 +222,8 @@ class Page:
         )
         snapshot.page_error = page_error
         for el in snapshot.elements:
-            el.ref = self._refs.assign(el.tag, el.text)
+            el.ref = self._refs.assign(el.handle)
+        self._refs.evict({el.handle for el in snapshot.elements})
         snapshot.tokens_estimated = self._summarizer.count_tokens(
             self._summarizer.format(snapshot)
         )
@@ -377,47 +397,80 @@ class Page:
         if not self._current_snapshot:
             await self.snapshot()
         t0 = time.monotonic()
-        index = self._find_element_index(description)
-        if index is None:
+        el = self._find_element(description)
+        if el is None:
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
-        js = f"({CLICK_ELEMENT_JS})({index})"
+        js = (
+            f"({CLICK_ELEMENT_JS})"
+            f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+        )
         result = await self._engine.send(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
-        success = result.get("result", {}).get("value", False)
+        outcome = result.get("result", {}).get("value") or {}
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._trace.add(TraceEntry(
             timestamp=time.time(),
             action="click",
-            input={"description": description, "index": index},
-            output={"success": success},
+            input={"description": description, "handle": el.handle},
+            output={"success": bool(outcome.get("ok")),
+                    "reason": outcome.get("reason", "")},
             tokens_consumed=0,
             duration_ms=duration_ms,
         ))
+        self._raise_for_action(outcome, description)
 
     async def type(self, description: str, text: str) -> None:
         self._assert_not_safe("type")
         if not self._current_snapshot:
             await self.snapshot()
         t0 = time.monotonic()
-        index = self._find_input_index(description)
-        if index is None:
+        el = self._find_input(description)
+        if el is None:
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
-        js = f"({TYPE_ELEMENT_JS})({index}, {json.dumps(text)})"
-        await self._engine.send(
+        js = (
+            f"({TYPE_ELEMENT_JS})"
+            f"({json.dumps(el.handle)}, {json.dumps(text)}, "
+            f"{json.dumps(el.tag)}, {json.dumps(el.text)})"
+        )
+        result = await self._engine.send(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
+        outcome = result.get("result", {}).get("value") or {}
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._trace.add(TraceEntry(
             timestamp=time.time(),
             action="type",
-            input={"description": description, "text": text, "index": index},
-            output={"success": True},
+            input={"description": description, "text": text, "handle": el.handle},
+            output={"success": bool(outcome.get("ok")),
+                    "reason": outcome.get("reason", "")},
             tokens_consumed=0,
             duration_ms=duration_ms,
         ))
+        self._raise_for_action(outcome, description)
+
+    # A wrong action is worse than a failed one, so every non-ok outcome becomes a
+    # typed error the runner's recovery can act on, rather than a boolean the
+    # caller has no way to notice.
+    def _raise_for_action(self, outcome: dict, description: str) -> None:
+        if outcome.get("ok"):
+            return
+        reason = outcome.get("reason", "")
+        if reason == "not_typable":
+            raise GripError(self._classifier.classify_semantic_miss(description))
+        raise GripError(
+            BrowserError(
+                type=ErrorType.ELEMENT_STALE,
+                message=(
+                    f"Element for {description!r} no longer matches the snapshot "
+                    f"it was found in ({reason or 'unknown'}). Re-snapshot and retry."
+                ),
+                confidence=1.0,
+                recovery=[RecoveryAction.RE_SNAPSHOT],
+            )
+        )
 
     async def press(self, key: str) -> None:
         self._assert_not_safe("press")
@@ -468,21 +521,21 @@ class Page:
         ))
         return Screenshot(data=img_bytes, tokens_estimated=tokens)
 
-    def _find_element_index(self, description: str) -> int | None:
+    def _find_element(self, description: str) -> Element | None:
         if not self._current_snapshot:
             return None
         # Exact ref match (e.g., "e5")
         for el in self._current_snapshot.elements:
             if el.ref == description:
-                return el.index
+                return el
         # Fuzzy text/role match
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
             if desc_lower in el.text.lower() or desc_lower in el.role.lower():
-                return el.index
+                return el
         return None
 
-    def _find_input_index(self, description: str) -> int | None:
+    def _find_input(self, description: str) -> Element | None:
         if not self._current_snapshot:
             return None
         # Exact ref match
@@ -490,7 +543,7 @@ class Page:
             if el.ref == description and (
                 el.tag in ("input", "textarea") or el.role == "textbox"
             ):
-                return el.index
+                return el
         # Fuzzy match
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
@@ -499,7 +552,7 @@ class Page:
                 or desc_lower in (el.placeholder or "").lower()
                 or desc_lower in el.role.lower()
             ):
-                return el.index
+                return el
         return None
 
     async def _discover_elements(self) -> list[RawElement]:
@@ -528,6 +581,7 @@ class Page:
                 width=d.get("width", 1),
                 height=d.get("height", 1),
                 href=d.get("href"),
+                handle=d.get("handle", ""),
             )
             for d in raw_data
         ]

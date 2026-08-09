@@ -3231,3 +3231,251 @@ Wave 1 is the bottleneck and cannot be shortened. Waves 2-4 are ~2.5x parallel. 
 
 **Known ordering trap, called out where it bites:** Task 7's `_connect` rewrite references `launcher.port`, which Task 9 introduces. Task 7 Step 3 says so explicitly and gives the interim form. An agent running Task 7 alone must use `self._port = launcher.launch(...)`.
 
+
+---
+
+## Phase 11 — Challenge handling and human-shaped input (added 2026-08-08)
+
+**Scope note.** The goal stated for this phase is "don't flag their IP for bots, solve CAPTCHAs." Only part of that is a code problem, and being honest about which part is the difference between a feature and a lie in the README.
+
+**What the competitor measured.** BetterWright's `src/cloak-v2.ts:16-18` says, verbatim:
+
+> Page-world shims are intentionally avoided: live reCAPTCHA verification showed that the old init pack made Cloak easier, not harder, to detect.
+
+They tested JS-level stealth patching against live reCAPTCHA and found it *increased* detectability. Their working approach is a patched Chromium fork (`src/chromium-fork-install.ts`, source patches in `patches/chromium-150/`) plus an IP layer with timezone and locale resolved to match the egress IP, so the network story and the JS story agree.
+
+grip's current `stealth=True` (`grip/cdp/launcher.py:92-98`) is exactly the kind of page-world tell that finding warns about: `--disable-blink-features=AutomationControlled` plus a hardcoded UA string. It is two flags, honestly documented as "not a full evasion suite" — but the evidence now says it may be net-negative. Task 25 measures it rather than assuming either way.
+
+**What is reachable from Python on stock Chromium:**
+
+| Capability | Reachable | Why |
+|---|---|---|
+| CAPTCHA solve: checkbox, Turnstile, slider | Yes | DOM/frame inspection plus human-shaped pointer motion |
+| CAPTCHA solve: image grid, text | Partial | Needs a vision handoff to the caller's model |
+| Human-shaped pointer and keystroke timing | Yes | `Input.dispatchMouseEvent` with interpolated paths |
+| Proxy egress | Already shipped | `launcher.py` `--proxy-server` |
+| Challenge detection | Already shipped | `ErrorType.CAPTCHA_REQUIRED`, `classifier.py:96` |
+| TLS/JA3 fingerprint parity | **No** | Lives below CDP; needs a patched binary |
+| Full headless fingerprint parity | **No** | Needs the Chromium fork |
+| "Never flag the IP" | **Not code** | Residential/mobile egress is a procurement problem |
+
+Anything in the "No" rows must stay out of the README. A claim grip cannot back is worse than an absent feature — the audit already caught one such claim ("Element staleness detection: Yes") that was false until Phase 1.
+
+### Task 25: Measure whether `stealth=True` helps or hurts
+
+**Files:**
+- Create: `evaluation/stealth_measurement.py`
+- Test: manual measurement, results recorded in the file's docstring
+
+**Interfaces:**
+- Produces: a reproducible script reporting detection-signal counts with `stealth=False` vs `stealth=True`.
+
+- [ ] **Step 1: Write the measurement script**
+
+Probe a set of public fingerprint surfaces and count how many automation tells fire in each mode. Use pages that report signals rather than pass/fail verdicts, so the output is a count and not a coin flip:
+
+```python
+"""Does grip's stealth flag reduce or increase detectability?
+
+BetterWright measured the equivalent JS-shim approach against live reCAPTCHA and
+found it made detection EASIER (their cloak-v2.ts:16-18). grip ships two flags
+with the same shape, so the same question applies here and guessing is not an
+answer. This script counts automation tells in both modes.
+"""
+PROBES = [
+    "https://bot.sannysoft.com/",
+    "https://abrahamjuliot.github.io/creepjs/",
+]
+```
+
+For each probe and each mode, snapshot the page and count occurrences of the failure markers each probe uses. Report a table.
+
+- [ ] **Step 2: Run it and record the numbers**
+
+Run: `.venv/bin/python evaluation/stealth_measurement.py`
+Record the actual counts in the module docstring, dated.
+
+- [ ] **Step 3: Act on the result**
+
+- If `stealth=True` shows *more* tells: deprecate the flag, document the finding, keep the UA override only where a caller sets it explicitly.
+- If it shows fewer: keep it, document the measured delta, and keep the "not a full evasion suite" caveat.
+- If the difference is within noise: say so. Do not ship a flag whose value is unmeasured.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add evaluation/stealth_measurement.py
+git commit -m "eval: measure whether the stealth flag reduces or increases detectability"
+```
+
+### Task 26: Human-shaped input primitives
+
+**Files:**
+- Create: `grip/input.py`, `tests/unit/test_input.py`
+- Modify: `grip/page.py` (click path)
+
+**Interfaces:**
+- Produces:
+  - `bezier_path(start: tuple[int,int], end: tuple[int,int], steps: int = 24) -> list[tuple[int,int]]` — a curved pointer path with eased spacing, never a straight line at constant velocity.
+  - `Page.click_at(x: int, y: int, *, human: bool = True) -> None` — dispatches `Input.dispatchMouseEvent` moves along the path, then press/release with a short randomized dwell.
+  - `Page.drag(start, end, *, human: bool = True) -> None` — the slider primitive.
+
+Deterministic seeding: the path generator takes an optional `rng: random.Random` so tests are reproducible while production paths vary per call.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_bezier_path_is_not_a_straight_line():
+    from grip.input import bezier_path
+    path = bezier_path((0, 0), (100, 0), steps=20)
+    ys = [y for _, y in path]
+    assert max(abs(y) for y in ys) > 0, "path was perfectly straight"
+
+
+def test_bezier_path_starts_and_ends_on_target():
+    from grip.input import bezier_path
+    path = bezier_path((5, 5), (200, 120), steps=16)
+    assert path[0] == (5, 5)
+    assert path[-1] == (200, 120)
+
+
+def test_path_velocity_is_not_constant():
+    """Constant-velocity motion is the single clearest synthetic-input tell."""
+    from grip.input import bezier_path
+    path = bezier_path((0, 0), (300, 0), steps=30)
+    gaps = [abs(path[i + 1][0] - path[i][0]) for i in range(len(path) - 1)]
+    assert len(set(gaps)) > 3, "every step advanced by the same amount"
+
+
+def test_path_is_reproducible_with_a_seeded_rng():
+    import random
+    from grip.input import bezier_path
+    a = bezier_path((0, 0), (50, 50), rng=random.Random(7))
+    b = bezier_path((0, 0), (50, 50), rng=random.Random(7))
+    assert a == b
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/unit/test_input.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'grip.input'`
+
+- [ ] **Step 3: Implement**
+
+A quadratic Bézier with a perpendicular control-point offset, sampled on an ease-in-out curve so the pointer accelerates and decelerates. Keep it small — this is geometry, not a behavioural model.
+
+- [ ] **Step 4: Wire it into the click path**
+
+`Page.click()` currently calls `el.click()` in JS, which dispatches an untrusted event with no pointer motion at all. Add the coordinate path as an option: elements already carry `cx`/`cy` from discovery (`shadow.py:101-102`), so `click(description, human=True)` can move-then-click at those coordinates instead. Default stays the JS path — it is faster and works headless; `human=True` is for challenge flows.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add grip/input.py tests/unit/test_input.py grip/page.py
+git commit -m "feat: human-shaped pointer paths for challenge interaction"
+```
+
+### Task 27: Challenge solver — checkbox, Turnstile, slider
+
+**Files:**
+- Create: `grip/challenge.py`, `tests/unit/test_challenge.py`, `tests/integration/test_challenge_detect.py`
+- Modify: `grip/page.py`
+
+**Interfaces:**
+- Consumes: `bezier_path`, `Page.click_at`, `Page.drag` (Task 26).
+- Produces:
+  - `ChallengeStage` enum: `NONE`, `CHECKBOX`, `TURNSTILE`, `SLIDER`, `IMAGE_GRID`, `TEXT`, `INVISIBLE`, `UNKNOWN`.
+  - `detect_challenge(page) -> ChallengeStage` — frame and DOM inspection, no network calls.
+  - `Page.solve_challenge(timeout: float = 30.0) -> ChallengeResult` — `status` is one of `"solved"`, `"needs_vision"`, `"unsupported"`, `"timeout"`. Never claims success it cannot verify: "solved" requires the widget to be gone or a token present.
+
+**Design constraints, non-negotiable:**
+- No third-party CAPTCHA APIs, no token farms. In-process only.
+- `IMAGE_GRID` and `TEXT` return `needs_vision` with a screenshot attached, for the caller's model to answer. grip does not ship a classifier.
+- The result must be verifiable. A solver that returns "solved" on a challenge still sitting there is worse than one that returns "unsupported", because the agent proceeds on a false premise.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_detect_returns_none_on_a_plain_page():
+    from grip.challenge import ChallengeStage, detect_challenge_from_html
+    assert detect_challenge_from_html("<h1>hello</h1>", frames=[]) is ChallengeStage.NONE
+
+
+def test_detects_recaptcha_checkbox_frame():
+    from grip.challenge import ChallengeStage, detect_challenge_from_html
+    stage = detect_challenge_from_html(
+        '<div class="g-recaptcha"></div>',
+        frames=["https://www.google.com/recaptcha/api2/anchor?k=abc"],
+    )
+    assert stage is ChallengeStage.CHECKBOX
+
+
+def test_detects_turnstile():
+    from grip.challenge import ChallengeStage, detect_challenge_from_html
+    stage = detect_challenge_from_html(
+        '<div class="cf-turnstile"></div>',
+        frames=["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x"],
+    )
+    assert stage is ChallengeStage.TURNSTILE
+
+
+def test_image_grid_is_reported_as_needing_vision():
+    from grip.challenge import ChallengeStage, needs_vision
+    assert needs_vision(ChallengeStage.IMAGE_GRID)
+    assert needs_vision(ChallengeStage.TEXT)
+    assert not needs_vision(ChallengeStage.CHECKBOX)
+```
+
+Detection is split into a pure function over (html, frame urls) so the classification logic is unit-testable without a browser — the same shape the existing `ErrorClassifier` uses.
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/unit/test_challenge.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'grip.challenge'`
+
+- [ ] **Step 3: Implement detection, then the solve loop**
+
+Detection reads the frame URL list (`Page.getFrameTree`) and the DOM. Solving:
+- `CHECKBOX` / `TURNSTILE`: locate the widget's clickable point inside its frame, move a human path to it, click, then poll for the token field or widget disappearance up to `timeout`.
+- `SLIDER`: locate the handle and track, drag along a human path with a slight overshoot-and-correct.
+- Everything else: return `needs_vision` or `unsupported` with the stage named.
+
+- [ ] **Step 4: Integration test — detection only**
+
+Detection can be tested against local fixtures that embed the real widget markup and frame URLs. **Solving** cannot be honestly asserted in CI against live challenge providers: the result depends on IP reputation and provider-side scoring, so a green test would prove nothing and a red one would be flaky. Test detection in CI; document solve rates as measured manually, with the date and the egress used.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add grip/challenge.py grip/page.py tests/
+git commit -m "feat: challenge detection and checkbox/turnstile/slider solving"
+```
+
+### Task 28: Document the boundary honestly
+
+**Files:**
+- Modify: `README.md`, `SECURITY.md`
+
+- [ ] **Step 1: State what grip does and does not do**
+
+In the README, alongside the challenge feature:
+
+> grip solves checkbox, Turnstile and slider challenges in-process, with
+> human-shaped pointer motion and no third-party solving API. Image-grid and
+> text challenges are handed back to your model with a screenshot.
+>
+> grip does **not** hide that it is automation at the network layer. TLS/JA3
+> fingerprints, and full headless fingerprint parity, live below the Chrome
+> DevTools Protocol and cannot be reached from a Python client driving stock
+> Chromium. If a site blocks you on IP reputation or TLS fingerprint, no flag in
+> this library will change that — that is an egress problem, and the answer is a
+> residential or mobile proxy, which grip supports via `proxy=`.
+
+Record the Task 25 measurement result next to the `stealth=` flag, whichever way it went.
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add README.md SECURITY.md
+git commit -m "docs: state the challenge-handling boundary and what grip cannot do"
+```

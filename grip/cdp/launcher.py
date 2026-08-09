@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import glob
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -48,14 +50,8 @@ def find_chrome() -> str | None:
         if Path(candidate).exists():
             return candidate
     for name in ("google-chrome", "chromium", "chromium-browser"):
-        try:
-            result = subprocess.run(
-                ["which", name], capture_output=True, text=True, check=False
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except FileNotFoundError:
-            pass
+        if found := shutil.which(name):
+            return found
     return _find_cached_chrome()
 
 
@@ -67,6 +63,7 @@ class ChromeLauncher:
                 "Chrome/Chromium not found. Install Chrome or set CHROME_EXECUTABLE."
             )
         self.executable = exe
+        self.port: int = 0
         self._process: subprocess.Popen | None = None
         self._user_data_dir: str | None = None
 
@@ -101,8 +98,8 @@ class ChromeLauncher:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        port = self._read_port()
-        return port
+        self.port = self._read_port()
+        return self.port
 
     def _read_port(self) -> int:
         import time
@@ -119,6 +116,11 @@ class ChromeLauncher:
             time.sleep(0.05)
         raise RuntimeError("Timed out waiting for Chrome DevTools port")
 
+    async def aterminate(self) -> None:
+        """terminate() does a 5s process wait and an rmtree; both freeze the loop.
+        Callers inside async code should prefer this."""
+        await asyncio.to_thread(self.terminate)
+
     def terminate(self) -> None:
         if self._process:
             self._process.terminate()
@@ -131,6 +133,5 @@ class ChromeLauncher:
                 self._process.wait(timeout=5)
             self._process = None
         if self._user_data_dir:
-            import shutil
             shutil.rmtree(self._user_data_dir, ignore_errors=True)
             self._user_data_dir = None

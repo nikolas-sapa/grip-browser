@@ -19,6 +19,7 @@ class RawElement:
     width: int
     height: int
     href: str | None = None
+    handle: str = ""
 
 
 class HiddenElementFilter:

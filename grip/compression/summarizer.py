@@ -42,6 +42,7 @@ class Element:
     cx: int
     cy: int
     ref: str = ""
+    handle: str = ""
     href: str | None = None
 
 
@@ -84,6 +85,7 @@ class Summarizer:
                 in_shadow_dom=el.in_shadow_dom,
                 cx=el.cx,
                 cy=el.cy,
+                handle=el.handle,
                 href=el.href,
             )
             for i, el in enumerate(raw_elements)
