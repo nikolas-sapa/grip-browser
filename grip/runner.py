@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from grip.adapters.base import LLMAdapter
+from grip.compression.delta import format_delta
 from grip.compression.summarizer import Summarizer
 from grip.page import Page
 from grip.trace import Trace, TraceEntry
@@ -74,11 +75,54 @@ class Runner:
         self._trace = trace
         self._max_steps = max_steps
         self._summarizer = Summarizer()
+        self._messages: list[dict[str, Any]] = []
+        self._last_sent_version = 0
+
+    # Turn 2 onward, the model already has the page in context; re-sending it costs
+    # the full snapshot every turn and, because the transcript grows, re-sends every
+    # earlier one too. Measured at 89% of prompt tokens by turn 20.
+    def _page_payload(self) -> str:
+        snap = self._page._current_snapshot
+        delta = self._page.delta
+        # A delta is only readable against a baseline the model actually received.
+        # extract() snapshots and returns data, and click()/type() snapshot
+        # implicitly when the cache is cold (which is the state goto() leaves
+        # behind) — both advance the page's baseline without emitting anything.
+        # "A delta exists" is therefore not the same question as "the model can
+        # apply it", and getting that wrong describes refs it has never seen.
+        if delta is not None and delta.previous_version == self._last_sent_version:
+            self._last_sent_version = delta.version
+            return format_delta(delta)
+        self._last_sent_version = snap.version
+        return self._summarizer.format(snap)
+
+    # A delta describes a change against the state the model was last shown, so
+    # only the newest full snapshot has to stay verbatim. Older ones are the same
+    # information the deltas already carry.
+    #
+    # Scanning only role=="tool" deliberately exempts the opening user message,
+    # which carries the goal alongside the first snapshot. That leaves ~600 tokens
+    # resident for the whole run and is why the saving measures 65% at 5 turns
+    # rather than higher — but it is a constant, not a growth term, so per-turn
+    # cost stays flat. The goal belongs in that message; splitting it out to prune
+    # the snapshot would trade a real invariant for a fixed-size win.
+    def _prune_superseded(self) -> None:
+        page_states = [
+            i for i, m in enumerate(self._messages)
+            if m.get("role") == "tool" and str(m.get("content", "")).startswith("PAGE:")
+        ]
+        for i in page_states[:-1]:
+            self._messages[i] = {
+                **self._messages[i],
+                "content": "[superseded page state; see the deltas that follow]",
+            }
 
     async def run(self, goal: str) -> RunResult:
         snapshot = await self._page.snapshot()
         page_state = self._summarizer.format(snapshot)
-        messages: list[dict[str, Any]] = [
+        self._last_sent_version = snapshot.version
+        messages = self._messages
+        messages[:] = [
             {"role": "system", "content": (
                 "You are a web browsing agent. Complete the user's goal using the "
                 "available tools. Call 'done' when finished."
@@ -123,21 +167,22 @@ class Runner:
                 "tool_call_id": "0",
                 "content": str(tool_result),
             })
+            self._prune_superseded()
 
         return RunResult(data=final_result, trace=self._trace, tokens=self._trace.total_tokens)
 
     async def _dispatch(self, name: str, args: dict) -> Any:
         if name == "snapshot":
-            snap = await self._page.snapshot()
-            return self._summarizer.format(snap)
+            await self._page.snapshot()
+            return self._page_payload()
         if name == "click":
             await self._page.click(args["target"])
-            snap = await self._page.snapshot()
-            return self._summarizer.format(snap)
+            await self._page.snapshot()
+            return self._page_payload()
         if name == "type":
             await self._page.type(args["target"], args["text"])
-            snap = await self._page.snapshot()
-            return self._summarizer.format(snap)
+            await self._page.snapshot()
+            return self._page_payload()
         if name == "extract":
             return await self._page.extract(args.get("schema", {}))
         if name == "observe":

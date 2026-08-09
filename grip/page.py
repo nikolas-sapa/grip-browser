@@ -18,8 +18,7 @@ from grip.cdp.shadow import (
     SCROLL_BOTTOM_JS,
     TYPE_ELEMENT_JS,
 )
-from grip.compression.cache import ElementCache
-from grip.compression.diff import SnapshotDiff
+from grip.compression.delta import SnapshotDelta, build_delta
 from grip.compression.refs import RefRegistry
 from grip.compression.summarizer import Element, PageSnapshot, Summarizer
 from grip.errors.classifier import RAW_TEXT_PROBE_FLOOR, ErrorClassifier
@@ -27,7 +26,7 @@ from grip.errors.types import BrowserError, ErrorType, GripError, RecoveryAction
 from grip.reader import Block, Document
 from grip.resources import BLOCKED_RESOURCE_PATTERNS
 from grip.security.injection import InjectionDetector
-from grip.security.sanitizer import HiddenElementFilter, RawElement
+from grip.security.sanitizer import RawElement
 from grip.trace import Trace, TraceEntry
 
 
@@ -64,9 +63,8 @@ class Page:
         self._version = 0
         self._current_snapshot: PageSnapshot | None = None
         self._summarizer = Summarizer()
-        self._cache = ElementCache()
-        self._diff = SnapshotDiff()
-        self._filter = HiddenElementFilter()
+        self._previous_snapshot: PageSnapshot | None = None
+        self.delta: SnapshotDelta | None = None
         self._injector = InjectionDetector()
         self._classifier = ErrorClassifier()
         self._initialized = False
@@ -114,6 +112,11 @@ class Page:
         # handles, refs and indices are all scoped to it, so keeping it across a
         # navigation would let an action resolve against the previous page.
         self._current_snapshot = None
+        # Same reasoning for the delta baseline: a reload of the *same* URL would
+        # otherwise diff against a document whose handles no longer exist, and
+        # build_delta's url guard cannot see that case.
+        self._previous_snapshot = None
+        self.delta = None
         # Subscribe before navigating — a fast page can fire loadEventFired
         # before the navigate call returns.
         self._engine.on("Page.loadEventFired", on_load)
@@ -227,10 +230,9 @@ class Page:
         snapshot.tokens_estimated = self._summarizer.count_tokens(
             self._summarizer.format(snapshot)
         )
-        changed = self._diff.has_changed(snapshot)
-        snapshot.changed_from_previous = changed
-        self._diff.record(snapshot)
-        self._cache.store_many(snapshot.elements)
+        self.delta = build_delta(self._previous_snapshot, snapshot)
+        snapshot.changed_from_previous = self.delta is None or not self.delta.is_empty
+        self._previous_snapshot = snapshot
         self._current_snapshot = snapshot
 
         duration_ms = int((time.monotonic() - t0) * 1000)

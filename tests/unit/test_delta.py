@@ -14,7 +14,7 @@ _ELEMENT_FIELDS = {f.name for f in fields(Element)}
 
 def _el(ref: str, handle: str, text: str, tag: str = "button") -> Element:
     kwargs: dict[str, Any] = {
-        "index": 0, "snapshot_version": 1, "tag": tag, "role": tag, "text": text,
+        "index": 0, "tag": tag, "role": tag, "text": text,
         "placeholder": None, "in_shadow_dom": False, "cx": 0, "cy": 0, "ref": ref,
     }
     if "handle" in _ELEMENT_FIELDS:

@@ -1,0 +1,109 @@
+<h2>grip — Complete Design</h2>
+<p class="subtitle">A Python SDK for AI agents to interact with the web. Token-efficient, secure, built on CDP. Review each section and confirm in the terminal.</p>
+
+<!-- What it is -->
+<div class="section">
+  <div class="label">What it is</div>
+  <div style="background:#003d5c;color:white;border-radius:10px;padding:20px 24px;margin-top:10px;">
+    <div style="font-size:18px;font-weight:700;letter-spacing:-.3px;margin-bottom:8px;">grip</div>
+    <div style="font-size:13px;color:#b8d4e6;line-height:1.6;">
+      A Python SDK that gives AI agents a precise, token-efficient, secure way to read and interact with any website.<br>
+      <code style="background:rgba(255,255,255,.15);padding:2px 8px;border-radius:4px;margin-top:6px;display:inline-block;">pip install grip-browser</code>
+    </div>
+  </div>
+</div>
+
+<!-- Core API -->
+<div class="section">
+  <div class="label">Core API — what a developer writes</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:10px;">
+
+    <div style="border:1px solid #e0e0e0;border-radius:10px;overflow:hidden;">
+      <div style="background:#1e1e2e;padding:10px 14px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#585b70;font-weight:700;">Simple — let grip handle everything</div>
+      <div style="background:#1e1e2e;padding:16px;font-family:'SF Mono',monospace;font-size:12px;color:#cdd6f4;line-height:1.8;">
+        <span style="color:#89b4fa;">from</span> grip <span style="color:#89b4fa;">import</span> Browser<br><br>
+        browser = Browser(llm=my_llm)<br><br>
+        result = <span style="color:#89dceb;">await</span> browser.<span style="color:#a6e3a1;">run</span>(<br>
+        &nbsp;&nbsp;<span style="color:#a6e3a1;">"Find cheapest blue sneakers"</span>,<br>
+        &nbsp;&nbsp;url=<span style="color:#a6e3a1;">"amazon.com"</span><br>
+        )<br><br>
+        <span style="color:#6c7086;">print</span>(result.data)   <span style="color:#585b70;"># structured</span><br>
+        <span style="color:#6c7086;">print</span>(result.trace)  <span style="color:#585b70;"># full trace</span><br>
+        <span style="color:#6c7086;">print</span>(result.tokens) <span style="color:#585b70;"># always tracked</span>
+      </div>
+    </div>
+
+    <div style="border:1px solid #e0e0e0;border-radius:10px;overflow:hidden;">
+      <div style="background:#1e1e2e;padding:10px 14px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#585b70;font-weight:700;">Precise — full control for your agent loop</div>
+      <div style="background:#1e1e2e;padding:16px;font-family:'SF Mono',monospace;font-size:12px;color:#cdd6f4;line-height:1.8;">
+        page = <span style="color:#89dceb;">await</span> browser.<span style="color:#a6e3a1;">open</span>(<span style="color:#a6e3a1;">"amazon.com"</span>)<br><br>
+        <span style="color:#585b70;"># compact — not raw HTML</span><br>
+        state = <span style="color:#89dceb;">await</span> page.<span style="color:#a6e3a1;">snapshot</span>()<br><br>
+        <span style="color:#585b70;"># semantic — not CSS selectors</span><br>
+        <span style="color:#89dceb;">await</span> page.<span style="color:#a6e3a1;">click</span>(<span style="color:#a6e3a1;">"search bar"</span>)<br>
+        <span style="color:#89dceb;">await</span> page.<span style="color:#a6e3a1;">type</span>(<span style="color:#a6e3a1;">"blue sneakers"</span>)<br><br>
+        data = <span style="color:#89dceb;">await</span> page.<span style="color:#a6e3a1;">extract</span>({<br>
+        &nbsp;&nbsp;<span style="color:#a6e3a1;">"results"</span>: <span style="color:#a6e3a1;">"list[Product]"</span><br>
+        })
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Structured errors -->
+<div class="section">
+  <div class="label">Structured Errors — what the agent receives when something breaks</div>
+  <div style="background:#1e1e2e;border-radius:10px;padding:16px;margin-top:10px;font-family:'SF Mono',monospace;font-size:12px;color:#cdd6f4;line-height:1.8;">
+    <span style="color:#585b70;"># Instead of: "Error: element not found"</span><br>
+    <span style="color:#585b70;"># grip returns:</span><br><br>
+    BrowserError(<br>
+    &nbsp;&nbsp;type=<span style="color:#f38ba8;">ErrorType.ELEMENT_STALE</span>,<br>
+    &nbsp;&nbsp;message=<span style="color:#a6e3a1;">"Button ref stale after React re-render"</span>,<br>
+    &nbsp;&nbsp;confidence=<span style="color:#fab387;">0.94</span>,<br>
+    &nbsp;&nbsp;recovery=[<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;RecoveryAction.<span style="color:#89dceb;">RE_SNAPSHOT</span>,  <span style="color:#585b70;"># take fresh snapshot</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;RecoveryAction.<span style="color:#89dceb;">RETRY</span>         <span style="color:#585b70;"># retry the action</span><br>
+    &nbsp;&nbsp;]<br>
+    )
+  </div>
+</div>
+
+<!-- V1 scope -->
+<div class="section">
+  <div class="label">What ships in V1 vs later</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:10px;">
+
+    <div style="border:2px solid #1a7a1a;border-radius:10px;padding:18px;">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#1a7a1a;margin-bottom:12px;">V1 — Ships first</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> CDP engine (Chrome/Chromium launch + connect)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> Compression layer (semantic summaries, element cache, snapshot versioning)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> Security sanitizer (injection guard, hidden filter)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> Typed error recovery (6 error types)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> Full Shadow DOM access</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> Primitive API: snapshot, click, type, extract, observe</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> High-level: run(goal, llm)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> Observability trace (token counts, action log)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;"><span style="color:#1a7a1a;font-weight:700;flex-shrink:0;">✓</span> LLM-agnostic (works with any model)</div>
+      </div>
+    </div>
+
+    <div style="border:1px solid #e0e0e0;border-radius:10px;padding:18px;background:#f8f8f8;">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:12px;">V2 — After validation</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#666;"><span style="flex-shrink:0;">→</span> Vision fallback for canvas apps (Figma, Sheets)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#666;"><span style="flex-shrink:0;">→</span> Cloud browser support (Browserbase, Steel)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#666;"><span style="flex-shrink:0;">→</span> Advanced bot detection evasion</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#666;"><span style="flex-shrink:0;">→</span> TypeScript SDK</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#666;"><span style="flex-shrink:0;">→</span> WebMCP support (when Chrome ships it broadly)</div>
+        <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:#666;"><span style="flex-shrink:0;">→</span> Benchmark suite (realistic network faults)</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div style="padding:16px 20px;background:#fff8e1;border:1px solid #f9c840;border-radius:8px;font-size:13px;color:#5a4000;margin-top:8px;">
+  <strong>Does this look right?</strong> If yes, I'll write the full spec document and we move to implementation planning.
+</div>

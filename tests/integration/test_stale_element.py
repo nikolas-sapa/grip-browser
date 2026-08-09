@@ -77,6 +77,33 @@ async def test_duplicate_labels_resolve_to_distinct_elements():
 
 
 @pytest.mark.asyncio
+async def test_handle_survives_a_control_dropping_out_of_the_candidate_set():
+    """Handles are allocated per node, not per position. A control that goes
+    hidden keeps its stamp but stops being collected; a positional handle would
+    then be reissued to a live element further down and querySelector would
+    return the stale hidden node — the decoy hijack this change exists to close.
+    """
+    html = """
+    <button id="decoy" onclick="document.title='DECOY'">Delete</button>
+    <button id="real" onclick="document.title='REAL'">Delete</button>
+    """
+    async with Browser() as browser:
+        page = await browser.open(_fixture(html))
+        await page.snapshot()
+        await page._engine.send("Runtime.evaluate", {
+            "expression": "document.getElementById('decoy').style.opacity = '0'"
+        })
+        snap = await page.snapshot()
+        deletes = [e for e in snap.elements if e.text == "Delete"]
+        assert len(deletes) == 1, f"expected only the visible control, got {deletes}"
+        await page.click(deletes[0].ref)
+        result = await page._engine.send(
+            "Runtime.evaluate", {"expression": "document.title", "returnByValue": True}
+        )
+        assert result["result"]["value"] == "REAL"
+
+
+@pytest.mark.asyncio
 async def test_click_after_navigation_does_not_use_stale_snapshot():
     first = _fixture('<button onclick="document.title=\'OLD\'">OnlyOnFirst</button>')
     second = _fixture('<button onclick="document.title=\'NEW\'">Different</button>')

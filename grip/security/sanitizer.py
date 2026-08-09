@@ -22,20 +22,10 @@ class RawElement:
     handle: str = ""
 
 
-class HiddenElementFilter:
-    def is_visible(self, el: RawElement) -> bool:
-        if el.computed_display == "none":
-            return False
-        if el.computed_visibility == "hidden":
-            return False
-        try:
-            if float(el.computed_opacity) == 0.0:
-                return False
-        except (ValueError, TypeError):
-            pass
-        if el.aria_hidden:
-            return False
-        return not (el.width == 0 or el.height == 0)
-
-    def filter(self, elements: list[RawElement]) -> list[RawElement]:
-        return [el for el in elements if self.is_visible(el)]
+# HiddenElementFilter lived here and was deleted rather than fixed. It read
+# computed_display / computed_visibility / computed_opacity / aria_hidden /
+# width / height, and the discovery JS populates none of them — every element
+# reached it holding the dataclass defaults, so it could only ever answer
+# "visible". Page instantiated it and never called it either way. Visibility is
+# decided in the browser by gripIsHidden (grip/cdp/shadow.py), which is the only
+# place with the layout information to decide it.

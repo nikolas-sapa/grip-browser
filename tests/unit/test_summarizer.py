@@ -11,6 +11,16 @@ def make_raw(tag="button", role="button", text="Submit", cx=100, cy=50):
     )
 
 
+def test_summarizer_build_does_not_tokenize(monkeypatch):
+    import grip.compression.summarizer as mod
+    calls = []
+    monkeypatch.setattr(mod, "_count_tokens", lambda t: calls.append(t) or 0)
+    mod.Summarizer().build(
+        version=1, url="u", title="t", raw_elements=[], page_text="x"
+    )
+    assert calls == [], "build() tokenized; page.py recomputes and overwrites it"
+
+
 def test_summarizer_returns_page_snapshot():
     s = Summarizer()
     raw_elements = [make_raw()]
@@ -41,9 +51,12 @@ def test_snapshot_text_is_sanitized():
 
 
 def test_tokens_estimated_is_positive():
+    # build() no longer counts — page.py does, after refs are assigned, because a
+    # count taken before that tokenizes index-based refs it will never send.
     s = Summarizer()
     raw = [make_raw()]
     snapshot = s.build(1, "https://x.com", "X", raw, "Some content")
+    snapshot.tokens_estimated = s.count_tokens(s.format(snapshot))
     assert snapshot.tokens_estimated > 0
 
 

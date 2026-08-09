@@ -33,7 +33,6 @@ _TAG_ABBREV = {
 @dataclass
 class Element:
     index: int
-    snapshot_version: int
     tag: str
     role: str
     text: str
@@ -77,7 +76,6 @@ class Summarizer:
         elements = [
             Element(
                 index=i,
-                snapshot_version=version,
                 tag=el.tag,
                 role=el.role,
                 text=el.text,
@@ -91,15 +89,15 @@ class Summarizer:
             for i, el in enumerate(raw_elements)
         ]
         text_content = page_text.strip()
-        formatted = self._build_format_str(url, title, elements, text_content)
-        tokens = _count_tokens(formatted)
+        # No token count here: page.py recomputes it after refs are assigned, and
+        # this one was both discarded and wrong — it tokenized index-based refs.
         return PageSnapshot(
             version=version,
             url=url,
             title=title,
             elements=elements,
             text_content=text_content,
-            tokens_estimated=tokens,
+            tokens_estimated=0,
         )
 
     def format(self, snapshot: PageSnapshot) -> str:

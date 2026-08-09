@@ -15,8 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from grip.browser import Browser
 from grip.cdp.shadow import DISCOVER_ELEMENTS_JS, READ_CONTENT_JS
-from grip.compression.cache import ElementCache
-from grip.compression.diff import SnapshotDiff
+from grip.compression.delta import build_delta
 from grip.compression.refs import RefRegistry
 from grip.compression.summarizer import Summarizer
 from grip.security.sanitizer import RawElement
@@ -234,6 +233,7 @@ def _synthetic_raw_elements(n: int) -> list[RawElement]:
             width=100,
             height=20,
             href=f"/path/{i}" if tags[i % 4] == "a" else None,
+            handle=f"h{i}",
         )
         for i in range(n)
     ]
@@ -244,20 +244,16 @@ def bench_compression_pipeline() -> None:
     for n in (100, 1000, 5000):
         raw = _synthetic_raw_elements(n)
         summarizer = Summarizer()
-        cache = ElementCache()
-        diff = SnapshotDiff()
         refs = RefRegistry()
 
         t0 = time.monotonic()
         snap = summarizer.build(version=1, url="http://x", title="t", raw_elements=raw, page_text="hello " * 500)
         for el in snap.elements:
-            el.ref = refs.assign(el.tag, el.text)
+            el.ref = refs.assign(el.handle)
         snap.tokens_estimated = summarizer.count_tokens(summarizer.format(snap))
-        diff.has_changed(snap)
-        diff.record(snap)
-        cache.store_many(snap.elements)
+        build_delta(snap, snap)
         dt = time.monotonic() - t0
-        print(f"  n={n:5d} elements: {dt * 1000:7.2f}ms total (build+refs+tokens+diff+cache)")
+        print(f"  n={n:5d} elements: {dt * 1000:7.2f}ms total (build+refs+tokens+delta)")
 
 
 async def main() -> None:

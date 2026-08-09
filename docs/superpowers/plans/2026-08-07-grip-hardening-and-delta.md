@@ -1821,8 +1821,11 @@ Expected: PASS
 
 - [ ] **Step 5: Measure the win**
 
-Run: `.venv/bin/python benchmarks/bench_grip.py`
-Then run a 5-turn loop against a local fixture and record total prompt tokens before/after in the commit body. Expected: ~65% reduction at 5 turns. If the measured saving is under 50%, the content diff is falling back to whole-block replacement — check `_content_ops` is receiving word lists, not lines.
+`benchmarks/bench_grip.py` measures snapshot latency, not cumulative prompt tokens, so it cannot produce this number — write a separate measurement script in `~/scratch/`. Run a 5-turn loop against a local fixture and record total prompt tokens before/after in the commit body.
+
+Expect the cumulative reduction to grow with turn count: ~65% at 5 turns, ~89% at 20. The per-turn payload cut is the cleaner number (~75-79%).
+
+**Known floor on the 5-turn percentage:** the first full snapshot lives in the user message (`runner.py:86`) and `_prune_superseded` only scans `role == "tool"`, so roughly 628 tokens stay resident in every prompt. That is deliberate — the goal statement lives in that message and rewriting it to hoist the snapshot out would cost more than it saves. It is a constant, not a growth term, so the O(n) claim holds; it just caps the percentage at low turn counts. Report the measured number with that constant named rather than tuning the diff to chase a target.
 
 - [ ] **Step 6: Commit**
 

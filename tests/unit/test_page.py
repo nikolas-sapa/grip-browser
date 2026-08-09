@@ -21,7 +21,7 @@ def make_cdp_mock():
 
 def _el(index, handle, tag, text, placeholder=None, role=""):
     return Element(
-        index=index, snapshot_version=1, tag=tag, role=role or tag, text=text,
+        index=index, tag=tag, role=role or tag, text=text,
         placeholder=placeholder, in_shadow_dom=False, cx=0, cy=0,
         ref=f"e{index + 1}", handle=handle,
     )
@@ -137,6 +137,40 @@ async def test_goto_honours_its_own_timeout(monkeypatch):
     start = time.monotonic()
     await page.goto("https://slow.test", timeout=0.05)
     assert time.monotonic() - start < 2.0, "goto blocked past its timeout"
+
+
+@pytest.mark.asyncio
+async def test_second_snapshot_exposes_a_delta():
+    engine = make_cdp_mock()
+    # One Runtime.enable, then three canned responses per snapshot. Same URL both
+    # times — a URL change is the one case build_delta refuses to diff.
+    engine.send.side_effect = [
+        {},
+        {"result": {"value": "[]"}},
+        {"result": {"value": "hello"}},
+        {"targetInfo": {"title": "X", "url": "https://x.com"}},
+        {"result": {"value": "[]"}},
+        {"result": {"value": "hello"}},
+        {"targetInfo": {"title": "X", "url": "https://x.com"}},
+    ]
+    page = Page(engine=engine, trace=Trace())
+    await page.snapshot()
+    assert page.delta is None, "first snapshot has nothing to diff against"
+    await page.snapshot()
+    assert page.delta is not None
+    assert page.delta.is_empty, "unchanged page should produce an empty delta"
+
+
+def test_content_change_past_500_chars_is_detected():
+    """The retired fingerprint truncated at 500 chars while snapshots carry 8000."""
+    from grip.compression.delta import build_delta
+
+    base = "x " * 400
+    a = PageSnapshot(version=1, url="u", title="t", elements=[],
+                     text_content=base + "ORIGINAL", tokens_estimated=0)
+    b = PageSnapshot(version=2, url="u", title="t", elements=[],
+                     text_content=base + "MUTATED", tokens_estimated=0)
+    assert not build_delta(a, b).is_empty
 
 
 @pytest.mark.asyncio

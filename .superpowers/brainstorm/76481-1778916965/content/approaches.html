@@ -1,0 +1,77 @@
+<h2>How should we architect this?</h2>
+<p class="subtitle">Three approaches — each with a different build/quality tradeoff. Pick the one that feels right.</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Build on Playwright + smart compression layer</h3>
+      <p>Use Playwright (the industry-standard browser control library) underneath, but add an intelligent layer on top that compresses pages before they reach the LLM, caches elements so we don't re-read them, and sanitizes content against prompt injection.</p>
+      <p style="margin-top:10px;font-size:13px;color:#555;">Token savings come from <em>how we describe the page</em> to the LLM — not raw HTML, but a compact semantic summary. Playwright handles the actual browser mechanics.</p>
+      <div style="display:flex;gap:12px;margin-top:12px;">
+        <div style="flex:1;background:#f0faf0;border-radius:6px;padding:10px;font-size:12px;">
+          <strong style="color:#1a7a1a;">Pros</strong><br>
+          Fastest to build (4–6 weeks)<br>
+          Proven browser control<br>
+          Lowest risk
+        </div>
+        <div style="flex:1;background:#fdf0f0;border-radius:6px;padding:10px;font-size:12px;">
+          <strong style="color:#9a2020;">Cons</strong><br>
+          Shadow DOM partially blind<br>
+          Can't go fully CDP-native later without rewrite
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>CDP-native core (maximum control)</h3>
+      <p>Talk directly to Chrome's internal protocol (CDP) — the lowest level possible. No intermediary libraries. This gives full access to shadow DOM, precise element targeting, and maximum token efficiency because we control exactly what data flows to the LLM.</p>
+      <p style="margin-top:10px;font-size:13px;color:#555;">This is the approach Stagehand v3 took (and got 44% faster as a result). More engineering work upfront, but the cleanest architecture long-term.</p>
+      <div style="display:flex;gap:12px;margin-top:12px;">
+        <div style="flex:1;background:#f0faf0;border-radius:6px;padding:10px;font-size:12px;">
+          <strong style="color:#1a7a1a;">Pros</strong><br>
+          Maximum token efficiency<br>
+          Full shadow DOM access<br>
+          No upstream dependencies
+        </div>
+        <div style="flex:1;background:#fdf0f0;border-radius:6px;padding:10px;font-size:12px;">
+          <strong style="color:#9a2020;">Cons</strong><br>
+          2–3× more engineering<br>
+          Re-implements what Playwright gives free<br>
+          8–12 week build
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Playwright now, CDP-native later (recommended)</h3>
+      <p>Start with Playwright as the browser engine — ship fast, validate the compression layer, element caching, error recovery, and sanitizer work. Design the internal API so swapping to CDP later is a clean engine replacement, not a rewrite.</p>
+      <p style="margin-top:10px;font-size:13px;color:#555;">The token savings come primarily from the <em>representation layer</em> (how pages are described to the LLM), not the browser layer. So we can get 80% of the token efficiency from day one while keeping build risk low.</p>
+      <div style="display:flex;gap:12px;margin-top:12px;">
+        <div style="flex:1;background:#f0faf0;border-radius:6px;padding:10px;font-size:12px;">
+          <strong style="color:#1a7a1a;">Pros</strong><br>
+          Ship in 4–6 weeks<br>
+          80% token efficiency from day 1<br>
+          Upgrade path to CDP in v2
+        </div>
+        <div style="flex:1;background:#fdf0f0;border-radius:6px;padding:10px;font-size:12px;">
+          <strong style="color:#9a2020;">Cons</strong><br>
+          Shadow DOM partially limited in v1<br>
+          Requires discipline to keep layers clean
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:24px;padding:16px 20px;background:#fff8e1;border:1px solid #f9c840;border-radius:8px;font-size:13px;color:#5a4000;">
+  <strong>My recommendation: C.</strong> The biggest token waste is in how the page is <em>described</em> to the LLM — not in the browser layer. We can fix that immediately with Playwright. Shadow DOM support can be upgraded in v2 once we have users and momentum.
+</div>

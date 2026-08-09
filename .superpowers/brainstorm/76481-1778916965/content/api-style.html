@@ -1,0 +1,73 @@
+<h2>What should the developer API look like?</h2>
+<p class="subtitle">How a developer writes code to use the tool. This shapes everything about the library design.</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Primitive actions — low-level control</h3>
+      <p>Developers call individual actions directly. The LLM decides what to do; the library executes it precisely.</p>
+      <div style="margin-top:12px;background:#1e1e2e;border-radius:8px;padding:14px;font-family:'SF Mono',monospace;font-size:12px;color:#cdd6f4;line-height:1.6;">
+        <span style="color:#89b4fa;">browser</span> = <span style="color:#a6e3a1;">AgentBrowser</span>()<br>
+        page = <span style="color:#89dceb;">await</span> browser.<span style="color:#89b4fa;">open</span>(<span style="color:#a6e3a1;">"https://example.com"</span>)<br><br>
+        <span style="color:#6c7086;"># LLM gets a compact page summary</span><br>
+        state = <span style="color:#89dceb;">await</span> page.<span style="color:#89b4fa;">snapshot</span>()<br><br>
+        <span style="color:#6c7086;"># LLM decides what to do, calls these</span><br>
+        <span style="color:#89dceb;">await</span> page.<span style="color:#89b4fa;">click</span>(<span style="color:#a6e3a1;">"Submit button"</span>)<br>
+        <span style="color:#89dceb;">await</span> page.<span style="color:#89b4fa;">type</span>(<span style="color:#a6e3a1;">"Email field"</span>, <span style="color:#a6e3a1;">"user@email.com"</span>)<br>
+        <span style="color:#89dceb;">await</span> page.<span style="color:#89b4fa;">extract</span>({ <span style="color:#a6e3a1;">"price"</span>: <span style="color:#a6e3a1;">"str"</span>, <span style="color:#a6e3a1;">"title"</span>: <span style="color:#a6e3a1;">"str"</span> })
+      </div>
+      <div style="display:flex;gap:12px;margin-top:12px;">
+        <div style="flex:1;background:#f0faf0;border-radius:6px;padding:10px;font-size:12px;"><strong style="color:#1a7a1a;">Pros</strong><br>Maximum control<br>Works with any agent loop</div>
+        <div style="flex:1;background:#fdf0f0;border-radius:6px;padding:10px;font-size:12px;"><strong style="color:#9a2020;">Cons</strong><br>Developer writes more glue code</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>High-level task API — the library handles the loop</h3>
+      <p>Developer gives a goal in plain English. The library runs its own reasoning loop and returns the result.</p>
+      <div style="margin-top:12px;background:#1e1e2e;border-radius:8px;padding:14px;font-family:'SF Mono',monospace;font-size:12px;color:#cdd6f4;line-height:1.6;">
+        <span style="color:#89b4fa;">browser</span> = <span style="color:#a6e3a1;">AgentBrowser</span>(llm=my_llm)<br><br>
+        result = <span style="color:#89dceb;">await</span> browser.<span style="color:#89b4fa;">run</span>(<br>
+        &nbsp;&nbsp;<span style="color:#a6e3a1;">"Go to amazon.com and find "</span><br>
+        &nbsp;&nbsp;<span style="color:#a6e3a1;">"the cheapest blue sneakers under $80"</span><br>
+        )<br><br>
+        <span style="color:#89b4fa;">print</span>(result.data)  <span style="color:#6c7086;"># structured result</span><br>
+        <span style="color:#89b4fa;">print</span>(result.trace) <span style="color:#6c7086;"># full action trace</span>
+      </div>
+      <div style="display:flex;gap:12px;margin-top:12px;">
+        <div style="flex:1;background:#f0faf0;border-radius:6px;padding:10px;font-size:12px;"><strong style="color:#1a7a1a;">Pros</strong><br>Dead simple to use<br>5-line integration</div>
+        <div style="flex:1;background:#fdf0f0;border-radius:6px;padding:10px;font-size:12px;"><strong style="color:#9a2020;">Cons</strong><br>Less control<br>Competes with browser-use directly</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Both: primitives + high-level on top (recommended)</h3>
+      <p>Low-level primitives for developers who want control. A high-level <code>run()</code> built on top of those same primitives for developers who want simplicity. Same library, two entry points.</p>
+      <div style="margin-top:12px;background:#1e1e2e;border-radius:8px;padding:14px;font-family:'SF Mono',monospace;font-size:12px;color:#cdd6f4;line-height:1.6;">
+        <span style="color:#6c7086;"># Simple: let it handle everything</span><br>
+        result = <span style="color:#89dceb;">await</span> browser.<span style="color:#89b4fa;">run</span>(<span style="color:#a6e3a1;">"Find cheapest sneakers"</span>)<br><br>
+        <span style="color:#6c7086;"># Or: full control for your own agent loop</span><br>
+        state = <span style="color:#89dceb;">await</span> page.<span style="color:#89b4fa;">snapshot</span>()  <span style="color:#6c7086;"># compact</span><br>
+        action = my_llm.<span style="color:#89b4fa;">decide</span>(state)<br>
+        result = <span style="color:#89dceb;">await</span> page.<span style="color:#89b4fa;">execute</span>(action)
+      </div>
+      <div style="display:flex;gap:12px;margin-top:12px;">
+        <div style="flex:1;background:#f0faf0;border-radius:6px;padding:10px;font-size:12px;"><strong style="color:#1a7a1a;">Pros</strong><br>Serves both audiences<br>Primitives = differentiation<br>High-level = easy adoption</div>
+        <div style="flex:1;background:#fdf0f0;border-radius:6px;padding:10px;font-size:12px;"><strong style="color:#9a2020;">Cons</strong><br>Slightly more API surface<br>(manageable)</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:24px;padding:16px 20px;background:#fff8e1;border:1px solid #f9c840;border-radius:8px;font-size:13px;color:#5a4000;">
+  <strong>My recommendation: C.</strong> The primitives are what make this tool different from everything else — they're token-efficient, structured, and safe. The high-level <code>run()</code> is just glue on top. Build both, lead with the primitives in the docs.
+</div>

@@ -1,0 +1,3 @@
+{"type":"server-started","port":57009,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:57009","screen_dir":"/Users/nikolassapalidis/dev/agentbrowser/.superpowers/brainstorm/16112-1778972056/content","state_dir":"/Users/nikolassapalidis/dev/agentbrowser/.superpowers/brainstorm/16112-1778972056/state"}
+{"type":"screen-added","file":"/Users/nikolassapalidis/dev/agentbrowser/.superpowers/brainstorm/16112-1778972056/content/full-design.html"}
+{"type":"server-stopped","reason":"idle timeout"}
