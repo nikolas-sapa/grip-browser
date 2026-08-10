@@ -251,6 +251,20 @@ async with Browser(llm=llm, headless=True) as browser:
 
 grip handles the snapshot → decide → act loop automatically. You just provide the goal.
 
+### Snapshot delta
+
+Inside the run loop, grip sends the model a full snapshot on the first turn and a
+delta after that — only the elements and content that changed. On a 5-turn
+navigate/click loop over a 28-element page with a 25-result body, the per-turn
+page payload went from **628 tokens to 42**, a 75% cut. Method: `build_delta` +
+`format_delta` against `Summarizer.format`, counted with tiktoken `cl100k_base`.
+
+The larger effect is on the transcript rather than on any single turn. Superseded
+page states are not re-sent, so cumulative prompt cost over a run grows with the
+number of turns rather than with their square. The first snapshot stays resident
+in the user message alongside the goal, so roughly 628 tokens of that 5-turn run
+is a constant floor, not a growth term.
+
 ---
 
 ## Why not Playwright or Puppeteer?
@@ -383,6 +397,33 @@ pip install grip-browser[openai]
 # with Anthropic support
 pip install grip-browser[anthropic]
 ```
+
+---
+
+## Measured numbers
+
+Everything in this table was measured on this branch. Anything not in it is not
+claimed: cold-start time, memory, requests per second, challenge solve rates and
+tokens against another tool are all unmeasured, and quoting them would be a
+guess. The snapshot-size figures live in [Why Grip](#why-grip) with their own
+method note.
+
+| | Measured | How |
+|---|---|---|
+| Per-turn page payload, delta on | 628 → 42 tokens (75% cut) | 5-turn navigate/click loop, 28-element page, 25-result body; `build_delta` + `format_delta` vs `Summarizer.format`, tiktoken `cl100k_base` |
+| Cumulative prompt cost over a run | grows with turns, not turns² | superseded page states are not re-sent; first snapshot is a ~628-token constant, not a growth term |
+| Unit tests | 249 pass | `pytest tests/unit` |
+| gripsearch tests | 33 pass | `pytest` in `gripsearch/` |
+| Integration tests | 74 pass | real Chrome, live network |
+| Unit coverage | 84.18% | unit tests only; CI fails below 80 |
+| Lint | ruff 83 → 0 | both gates previously passed vacuously because neither was configured |
+| Types | mypy `--strict` 35 → 0 | as above |
+| example.com, live | open 0.80s, snapshot 0.01s, 1 element, 50 tokens | headless Chrome, single page |
+| Local file fixture | open 0.61s, snapshot 0.01s | `file://` page, no network |
+| Chrome profile directories stranded | 0 | across a 57-minute full-suite run |
+
+Test and lint counts are for this branch and will move. Re-run them rather than
+trusting the table if the number matters to you.
 
 ---
 
