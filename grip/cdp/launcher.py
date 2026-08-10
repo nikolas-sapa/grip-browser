@@ -35,6 +35,13 @@ _CACHED_CHROME_GLOBS = [
 
 
 _DEFAULT_LAUNCH_TIMEOUT = 10.0
+# How long the failure path waits for an exited child to be reaped before it
+# gives up and calls it "still running". Measured: a process that dies instantly
+# is usually reaped in ~3ms, but the tail reaches ~0.4s on a loaded machine, and
+# a 2-core CI runner is worse. Only ever paid on a launch that has already
+# failed, so a generous bound costs nothing that matters.
+_REAP_WAIT = 1.0
+
 # How much of Chrome's stderr to quote back when a launch times out. Enough for a
 # sandbox/GPU/profile-lock complaint, not enough to bury the message.
 _STDERR_TAIL_BYTES = 4000
@@ -180,14 +187,14 @@ class ChromeLauncher:
 
         poll() reports None for a child that has exited but not been reaped yet,
         so a bare poll() here would blame the scheduler's timing rather than
-        report the real exit code. A short bounded wait makes the diagnostic
-        deterministic; a genuinely-running Chrome just costs the caller 0.25s on
-        a path that is already failing.
+        report the real exit code. A bounded wait makes the diagnostic reliable;
+        a genuinely-running Chrome just costs the caller _REAP_WAIT on a path
+        that is already failing.
         """
         if self._process is None:
             return "process was never started"
         try:
-            code = self._process.wait(timeout=0.25)
+            code = self._process.wait(timeout=_REAP_WAIT)
         except subprocess.TimeoutExpired:
             return "process still running"
         return f"process exited with code {code}"

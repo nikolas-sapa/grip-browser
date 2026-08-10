@@ -174,23 +174,30 @@ def test_launch_timeout_error_reports_exit_code_and_stderr(monkeypatch, tmp_path
     assert launcher._stderr_path is None
 
 
-def test_dead_chrome_is_reported_accurately_when_the_deadline_expires_first(
-    monkeypatch, tmp_path
-):
-    """Same diagnostic, but with a deadline so short the poll loop never notices
-    the death: poll() reports None for an unreaped child, so without a bounded
-    wait before building the message this reports "still running / <empty>" for a
-    process that is neither. A diagnostic that depends on scheduler luck is worse
-    than none — it is the one people delete."""
-    import pytest
+def test_process_state_reports_the_real_exit_code_not_a_poll_race(monkeypatch, tmp_path):
+    """poll() returns None for a child that has exited but not been reaped, so a
+    bare poll() here would report "still running" for a dead Chrome depending on
+    scheduler timing. _process_state() waits for the reap instead.
 
-    exe = tmp_path / "fake-chrome"
-    exe.write_text("#!/bin/sh\necho 'chrome could not start' >&2\nexit 7\n")
-    exe.chmod(0o755)
+    Driven directly rather than through a very short launch_timeout: with a
+    deadline shorter than process startup, "still running" is sometimes simply
+    true, and a test asserting otherwise would be the flake it is meant to catch.
+    """
+    import subprocess
+
+    exe = tmp_path / "chrome"
+    exe.touch()
     monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    launcher = ChromeLauncher()
 
-    with pytest.raises(RuntimeError) as excinfo:
-        ChromeLauncher(launch_timeout=0.01).launch()
-    message = str(excinfo.value)
-    assert "exited with code 7" in message
-    assert "chrome could not start" in message
+    launcher._process = subprocess.Popen(["/bin/sh", "-c", "exit 7"])
+    assert "exited with code 7" in launcher._process_state()
+
+    # The other branch still has to be reachable: a live process must not be
+    # reported as dead just because the failure path waited on it.
+    launcher._process = subprocess.Popen(["/bin/sh", "-c", "sleep 30"])
+    try:
+        assert launcher._process_state() == "process still running"
+    finally:
+        launcher._process.kill()
+        launcher._process.wait()
