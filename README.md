@@ -254,16 +254,49 @@ grip handles the snapshot → decide → act loop automatically. You just provid
 ### Snapshot delta
 
 Inside the run loop, grip sends the model a full snapshot on the first turn and a
-delta after that — only the elements and content that changed. On a 5-turn
-navigate/click loop over a 28-element page with a 25-result body, the per-turn
-page payload went from **628 tokens to 42**, a 75% cut. Method: `build_delta` +
-`format_delta` against `Summarizer.format`, counted with tiktoken `cl100k_base`.
+delta after that — only the elements and content that changed.
 
-The larger effect is on the transcript rather than on any single turn. Superseded
-page states are not re-sent, so cumulative prompt cost over a run grows with the
-number of turns rather than with their square. The first snapshot stays resident
-in the user message alongside the goal, so roughly 628 tokens of that 5-turn run
-is a constant floor, not a growth term.
+Measured end to end, an agent driving grip spends **~18x fewer prompt tokens over
+a 6-turn run than the same agent dumping `outerHTML`** (16.9x–18.4x across repeat
+runs; 17.8x on the reported run, ranging 4.6x–41.8x across the four scenarios).
+That figure is the median of the per-scenario ratios over four real sites, six
+real turns each, counted with tiktoken `cl100k_base`.
+
+**Most of that win is compression, not the delta,** and it is worth being clear
+about which mechanism does what:
+
+| | median | per-scenario range |
+|---|---|---|
+| compression — grip snapshot vs raw HTML, per turn | **11.3x** | 2.9x – 22.0x |
+| delta — vs sending a full snapshot every turn, per turn | **1.0x** | 1.0x – 8.8x |
+| pruning — superseded page states dropped, cumulative | **1.4x** | 1.0x – 2.2x |
+| **end to end** — raw HTML vs grip delta + pruning, cumulative | **17.8x** | 4.6x – 41.8x |
+
+The 11.3x compression figure is the large term, and any serious
+accessibility-tree tool gets some version of it.
+
+The delta's per-turn median is only 1.0x because `build_delta` returns `None` on
+a URL change: on a navigation turn grip sends a full snapshot by design, and a
+realistic agent run is mostly navigation. Three of the four scenarios had 0–2
+same-document turns out of 6. **Where it pays is when an agent works within one
+page** — filling a form, driving an SPA. On the 8 turns across all scenarios
+where a delta could fire, repeat observations cost a median **9.1x** less, range
+**0.5x–175.0x**. The 0.5x is a real defect the benchmark surfaced: on a
+click-driven navigation where the reported URL lagged the document, grip diffed
+two unrelated pages and emitted a delta *larger* than the snapshot it replaced.
+It is documented, not smoothed away.
+
+Pruning is a separate mechanism from the delta and is what carries
+navigation-heavy runs: superseded page states are not re-sent, so cumulative
+prompt cost grows with the number of turns rather than with their square.
+
+Full method, per-scenario tables, stability across 20 runs and the things this
+does **not** measure (task success, latency, model quality) are in
+[`benchmarks/RESULTS_AB.md`](benchmarks/RESULTS_AB.md). Reproduce with:
+
+```
+.venv/bin/python benchmarks/bench_agent_ab.py
+```
 
 ---
 
@@ -410,8 +443,12 @@ method note.
 
 | | Measured | How |
 |---|---|---|
-| Per-turn page payload, delta on | 628 → 42 tokens (75% cut) | 5-turn navigate/click loop, 28-element page, 25-result body; `build_delta` + `format_delta` vs `Summarizer.format`, tiktoken `cl100k_base` |
-| Cumulative prompt cost over a run | grows with turns, not turns² | superseded page states are not re-sent; first snapshot is a ~628-token constant, not a growth term |
+| Prompt tokens over a 6-turn run, grip vs raw HTML | **17.8x fewer** (4.6x–41.8x per scenario; 16.9x–18.4x across repeat runs) | median of per-scenario ratios, 4 live sites × 6 real turns, tiktoken `cl100k_base`; [`benchmarks/RESULTS_AB.md`](benchmarks/RESULTS_AB.md) |
+| — of which compression, per turn | 11.3x (2.9x–22.0x) | grip snapshot vs `outerHTML` of the same DOM state, same run |
+| — of which delta, per turn | 1.0x (1.0x–8.8x) | vs sending a full snapshot every turn; `build_delta` returns `None` on navigation, so most turns send a full snapshot |
+| — of which pruning, cumulative | 1.4x (1.0x–2.2x) | superseded page states dropped from the transcript; independent of the delta |
+| Delta saving on same-document turns | 9.1x median (0.5x–175.0x) | the 8 turns of 24 where a delta fired; the 0.5x is the URL-lag defect documented in the results file |
+| Cumulative prompt cost over a run | grows with turns, not turns² | superseded page states are not re-sent |
 | Unit tests | 249 pass | `pytest tests/unit` |
 | gripsearch tests | 33 pass | `pytest` in `gripsearch/` |
 | Integration tests | 74 pass | real Chrome, live network |
