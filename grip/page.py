@@ -992,19 +992,28 @@ class Page:
         """
         self._assert_not_safe("enable_downloads")
         path = Path(directory)
-        path.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240 — local stat/mkdir, not I/O we need off-thread
+        # mode=0o700: a new download dir should not be world-readable/listable
+        # (umask would otherwise leave it at the process default). exist_ok=True
+        # means an already-existing dir keeps its own permissions — that's fine,
+        # this only tightens dirs it creates itself.
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)  # noqa: ASYNC240 — local stat/mkdir, not I/O we need off-thread
         path = path.resolve()  # noqa: ASYNC240
         await self._ensure_initialized()
         await self._engine.send("Page.enable")
+        # Listener must be registered before the enabling send below, not
+        # after: a download that completes while Browser.setDownloadBehavior
+        # is in flight would otherwise fire downloadProgress into a void and
+        # wait_for_download() would time out despite the file being on disk.
+        # Mirrors _ensure_fetch_interception()/_ensure_popup_blocking() above.
+        if not self._download_events_armed:
+            self._download_events_armed = True
+            self._download_queue = asyncio.Queue()
+            self._engine.on("Browser.downloadProgress", self._on_download_progress)
         await self._engine.send(
             "Browser.setDownloadBehavior",
             {"behavior": "allow", "downloadPath": str(path), "eventsEnabled": True},
         )
         self._download_dir = path
-        if not self._download_events_armed:
-            self._download_events_armed = True
-            self._download_queue = asyncio.Queue()
-            self._engine.on("Browser.downloadProgress", self._on_download_progress)
         return path
 
     def _on_download_progress(self, params: dict[str, Any]) -> None:

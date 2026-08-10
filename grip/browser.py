@@ -336,8 +336,13 @@ class Browser:
             # them world-readable. O_CREAT's mode applies only to a new inode,
             # and re-saving over an existing 0644 file is the common path —
             # fchmod on the fd we already hold tightens it with no path-race
-            # window.
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # window. O_NOFOLLOW refuses a pre-planted symlink at `path` rather
+            # than following it and writing the session blob somewhere else.
+            # O_EXCL is deliberately not added: re-saving over an existing
+            # session file is the normal, expected path here, not an error.
+            fd = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+            )
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as f:
                 json.dump({"cookies": cookies, "origins": origins}, f, indent=2)
@@ -366,16 +371,35 @@ class Browser:
         if isinstance(data, list):
             cookies: list[dict[str, Any]] = data
             origins: dict[str, dict[str, dict[str, str]]] = {}
-        else:
+        elif isinstance(data, dict):
             cookies = data.get("cookies", [])
             origins = data.get("origins", {})
+        else:
+            raise ValueError(
+                f"Session file has an unrecognized shape: {path} "
+                "(expected a cookie list or a {{cookies, origins}} object)"
+            )
+
+        if not isinstance(cookies, list):
+            raise ValueError(f"Session file 'cookies' must be a list: {path}")
+        if not isinstance(origins, dict):
+            raise ValueError(f"Session file 'origins' must be an object: {path}")
 
         await self._engine.send("Storage.setCookies", {"cookies": cookies})
 
         for origin, storage in origins.items():
+            if not isinstance(storage, dict):
+                raise ValueError(
+                    f"Session file 'origins[{origin!r}]' must be an object: {path}"
+                )
             local_items = storage.get("localStorage", {})
             if not local_items:
                 continue
+            if not isinstance(local_items, dict):
+                raise ValueError(
+                    f"Session file 'origins[{origin!r}].localStorage' must be "
+                    f"an object: {path}"
+                )
             # Restoring localStorage needs a live document at that origin —
             # same constraint as the read side. Reuse an already-open tab at
             # this origin if there is one; otherwise open one just for the

@@ -26,12 +26,12 @@ def _parse_args(raw: Any) -> dict[str, Any]:
         return {}
     try:
         return dict(json.loads(raw))
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         pass
     try:
         parsed = ast.literal_eval(raw)
         return dict(parsed) if isinstance(parsed, dict) else {}
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, RecursionError):
         return {}
 
 

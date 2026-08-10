@@ -792,6 +792,34 @@ async def test_enable_downloads_configures_browser_download_behavior(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_downloads_listener_armed_before_send_completes(tmp_path):
+    """Listener must be armed before Browser.setDownloadBehavior is sent, not
+    after — otherwise a download completing while that send is still in
+    flight fires downloadProgress into a void and wait_for_download() times
+    out despite the file being on disk. Simulates the race by firing a
+    "completed" event from inside the fake send() for setDownloadBehavior
+    itself."""
+    listeners: dict[str, list] = {}
+    expected = tmp_path / "race.bin"
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Browser.setDownloadBehavior":
+            for cb in listeners.get("Browser.downloadProgress", []):
+                cb({"state": "completed", "filePath": str(expected)})
+        return {}
+
+    engine = make_cdp_mock()
+    engine.send = fake_send
+    engine.on = lambda ev, cb: listeners.setdefault(ev, []).append(cb)
+    page = Page(engine=engine, trace=Trace())
+
+    await page.enable_downloads(tmp_path)
+
+    result = await asyncio.wait_for(page.wait_for_download(timeout=1), timeout=2)
+    assert result == expected
+
+
+@pytest.mark.asyncio
 async def test_wait_for_download_returns_path_once_progress_event_completes(tmp_path):
     listeners: dict[str, list] = {}
 

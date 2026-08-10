@@ -17,10 +17,10 @@ importable on a base install so `grip` never depends on the extra.
 from __future__ import annotations
 
 import contextlib
-import os
 from collections.abc import AsyncIterator
 from typing import Any
 
+from grip.adapters import adapter_from_env
 from grip.browser import Browser
 from grip.page import Page
 
@@ -45,27 +45,15 @@ def reset_state() -> None:
     _last_sent_version = 0
 
 
-def _llm_adapter_from_env() -> Any | None:
-    """Best-effort: only the 'run' tool needs an adapter, so a missing key isn't
-    a startup failure here — it only limits what 'run' can do. Mirrors grip.cli's
-    env-var convention (ANTHROPIC_API_KEY / OPENAI_API_KEY) without its
-    SystemExit-on-missing behaviour, which is wrong for a long-lived server.
-    """
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        from grip.adapters.anthropic import AnthropicAdapter
-
-        return AnthropicAdapter()
-    if os.environ.get("OPENAI_API_KEY"):
-        from grip.adapters.openai import OpenAIAdapter
-
-        return OpenAIAdapter()
-    return None
-
-
 async def _ensure_browser() -> Browser:
     global _browser
     if _browser is None:
-        _browser = Browser(llm=_llm_adapter_from_env())
+        # Best-effort: only the 'run' tool needs an adapter, so a missing key
+        # isn't a startup failure here — it only limits what 'run' can do.
+        # Uses grip.adapters.adapter_from_env(), same as grip.cli, but without
+        # its SystemExit-on-missing behaviour, which is wrong for a
+        # long-lived server.
+        _browser = Browser(llm=adapter_from_env())
     return _browser
 
 

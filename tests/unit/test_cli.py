@@ -121,10 +121,13 @@ def test_read_prints_document_text(capsys):
 def test_run_fails_fast_without_an_api_key(monkeypatch, capsys):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(SystemExit) as exc:
         main(["run", "buy milk", "--url", "https://example.com"])
     assert "ANTHROPIC_API_KEY" in str(exc.value.code)
     assert "OPENAI_API_KEY" in str(exc.value.code)
+    assert "GEMINI_API_KEY" in str(exc.value.code)
 
 
 def test_run_uses_anthropic_when_key_present(monkeypatch):

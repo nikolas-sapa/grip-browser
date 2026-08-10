@@ -15,12 +15,17 @@ import sys
 from typing import Any
 
 from grip import __version__
+from grip.adapters import adapter_from_env
 from grip.browser import Browser
 from grip.compression.summarizer import Summarizer
 from grip.errors.types import GripError
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
+# argparse's own parser.error() exits with 2 on a usage error (unknown flag,
+# missing required arg) — this constant documents that contract for callers
+# asserting on it. Not referenced by name inside main() because argparse exits
+# before main() gets a chance to translate anything itself.
 EXIT_USAGE_ERROR = 2
 
 
@@ -120,17 +125,14 @@ async def _cmd_screenshot(args: argparse.Namespace) -> int:
 def _llm_adapter_or_exit() -> Any:
     """Fail fast, naming the missing env var, instead of letting the adapter's
     own client raise a stack trace from three layers down."""
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        from grip.adapters.anthropic import AnthropicAdapter
-
-        return AnthropicAdapter()
-    if os.environ.get("OPENAI_API_KEY"):
-        from grip.adapters.openai import OpenAIAdapter
-
-        return OpenAIAdapter()
-    raise SystemExit(
-        "grip run needs an LLM API key: set ANTHROPIC_API_KEY or OPENAI_API_KEY."
-    )
+    llm = adapter_from_env()
+    if llm is None:
+        raise SystemExit(
+            "grip run needs an LLM API key: set ANTHROPIC_API_KEY, OPENAI_API_KEY "
+            "(optionally with OPENAI_BASE_URL for an OpenAI-compatible endpoint), "
+            "or GEMINI_API_KEY."
+        )
+    return llm
 
 
 async def _cmd_run(args: argparse.Namespace) -> int:
