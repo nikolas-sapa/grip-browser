@@ -158,8 +158,10 @@ export const DELTA_CAVEAT =
  */
 export const strippedTextCaveat = {
   ratio: "~1.4x",
-  pages: 8,
-  source: "evaluation/, 8-page set",
+  low: "0.5x",
+  high: "3.7x",
+  pages: 23,
+  source: "evaluation/, the 23 pages where both arms succeeded",
 } as const;
 
 /** A 200k context window, and what each approach does to it. */

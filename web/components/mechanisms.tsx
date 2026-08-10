@@ -78,7 +78,8 @@ export function Mechanisms() {
                   Compression is measured against raw HTML, which is the right
                   baseline if your agent would otherwise put the DOM in the
                   prompt. Against naively tag-stripped text the reduction is only{" "}
-                  {strippedTextCaveat.ratio} ({strippedTextCaveat.source}),
+                  {strippedTextCaveat.ratio} ({strippedTextCaveat.low} to{" "}
+                  {strippedTextCaveat.high}, {strippedTextCaveat.source}),
                   because most of what grip removes is markup rather than words.
                   Use whichever baseline matches what you already send.
                 </Method>
