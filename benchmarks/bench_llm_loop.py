@@ -43,12 +43,14 @@ states it again in the header.
 Usage:
     .venv/bin/python benchmarks/bench_llm_loop.py --dry-run
     .venv/bin/python benchmarks/bench_llm_loop.py            # full N=30, both arms
-                                                               # costs real money
     .venv/bin/python benchmarks/bench_llm_loop.py --n 4      # first 4 tasks only
 
-Requires OPENAI_API_KEY for anything beyond corpus validation. Requires the
-browser-use venv (see bench_browseruse.py's docstring for setup) for the
-browser-use arm.
+No OPENAI_API_KEY or ANTHROPIC_API_KEY is available in this environment (a
+Claude Code subscription is, an API key is not). Both arms are therefore
+routed through headless `claude -p` (benchmarks/claude_cli_llm.py) instead of
+a provider SDK — see that file's docstring for the two CLI flags that took
+hand-verification, not guessing, to get right. Requires the browser-use venv
+(see bench_browseruse.py's docstring for setup) for the browser-use arm.
 """
 from __future__ import annotations
 
@@ -57,6 +59,7 @@ import asyncio
 import http.server
 import json
 import os
+import shutil
 import socket
 import statistics
 import subprocess
@@ -66,25 +69,26 @@ import time
 from pathlib import Path
 from typing import Any
 
-from grip.adapters.base import LLMResponse, ToolCall
 from grip.browser import Browser
 from grip.cdp.launcher import find_chrome
 from grip.errors import GripError
 from grip.runner import Runner
 from grip.trace import Trace
 
-try:
-    import openai  # type: ignore[import-not-found]
-except ImportError:
-    openai = None
+from benchmarks.claude_cli_grip_adapter import ClaudeCLIAdapter
+from benchmarks.claude_cli_llm import CLAUDE_BIN, measure_baseline_overhead
 
 # ---------------------------------------------------------------------------
 # CONFIG — the constants that make the two arms comparable. Change these
 # together, never one at a time, or the arms stop being equal.
 # ---------------------------------------------------------------------------
 
-MODEL = "gpt-4o-mini"           # same model, both arms
-TEMPERATURE = 0.2                # same temperature, both arms
+MODEL = "sonnet"                 # same model alias, both arms — resolves to
+                                  # claude-sonnet-5 via the CLI at time of writing
+TEMPERATURE = 0.2                # NOT actually controllable: the `claude` CLI has
+                                  # no temperature flag. Left here only so the report
+                                  # header states honestly that it was not set, not
+                                  # that it was set to 0.2.
 MAX_STEPS = 20                   # same per-attempt turn ceiling, both arms
 RETRY_BUDGET = 2                 # up to RETRY_BUDGET+1 attempts per task per arm
 IN_LOOP_MAX_FAILURES = 3         # consecutive tool errors before an attempt gives up
@@ -94,15 +98,12 @@ USE_VISION = False                # non-negotiable: grip has no image channel; a
                                   # vision-on browser-use run would be paying for a
                                   # channel grip cannot use, which is not a fair cost
                                   # comparison. RESULTS_BROWSERUSE.md made the same call.
-LLM_TIMEOUT_SECONDS = 60.0
-
-# $ per 1M tokens. A snapshot at time of writing, NOT fetched live — verify
-# against the provider's pricing page before trusting a real run's dollar
-# figures, prices change more often than this file does.
-PRICE_TABLE = {
-    "gpt-4o-mini": {"in": 0.15, "out": 0.60},
-    "gpt-4o": {"in": 2.50, "out": 10.00},
-}
+# 60s was the original (API) budget. A single trivial CLI call already takes
+# ~7-8s cold; a real turn with page-state + tool-schema content will run
+# longer. Raised so a slow-but-fine turn isn't misrecorded as a shim timeout
+# failure (Runner.run silently `break`s on TimeoutError). Feeds both arms:
+# grip directly, and browser-use's bu_task_timeout below.
+LLM_TIMEOUT_SECONDS = 120.0
 
 CORPUS_DIR = Path(__file__).parent / "corpus"
 FIXTURES_DIR = CORPUS_DIR / "fixtures"
@@ -110,7 +111,24 @@ TASKS_PATH = CORPUS_DIR / "tasks.json"
 
 SCRATCH = Path.home() / "scratch" / "browseruse"
 BU_PYTHON = SCRATCH / ".venv" / "bin" / "python"
-BU_TIMEOUT_SECONDS = 1800
+# 1800s (30min) was sized for API calls. A CLI round-trip is ~10-30x slower
+# per turn (subprocess + full session bootstrap each call, see
+# claude_cli_llm.py's docstring on why --resume isn't used to avoid that).
+# This is a safety ceiling for the WHOLE task list run sequentially in one
+# subprocess, not a per-call budget — sized generously; see
+# RESULTS_LLM_LOOP.md for the measured per-turn time this was set against.
+BU_TIMEOUT_SECONDS = 21600  # 6h
+
+# Spliced verbatim into TASK_SCRIPT so the browser-use arm runs the exact
+# same CLI-calling code as the grip arm (see claude_cli_llm.py's docstring).
+# The `from __future__ import annotations` line is stripped: it's only valid
+# as a module's first statement, and here it lands mid-file after
+# TASK_SCRIPT's own imports — dropping it doesn't change runtime behavior,
+# it only affects annotation evaluation, which nothing here depends on.
+_CLI_SHIM_SRC = "\n".join(
+    line for line in (Path(__file__).parent / "claude_cli_llm.py").read_text().splitlines()
+    if line.strip() != "from __future__ import annotations"
+)
 
 RESULTS_DIR = CORPUS_DIR / "results"
 
@@ -184,77 +202,16 @@ class FixtureServer:
 
 
 # ---------------------------------------------------------------------------
-# Cost accounting: shared price table, so a "cost" column means the same
-# thing on both arms rather than two different estimation methods.
+# Cost accounting: both arms now report a real dollar figure straight from
+# the CLI's own total_cost_usd (see claude_cli_llm.py) instead of a static
+# price table — there is no PRICE_TABLE anymore because there is no token
+# count to multiply against one; the CLI bills its own way (see
+# RESULTS_LLM_LOOP.md for the fixed-overhead-per-call caveat this creates).
 # ---------------------------------------------------------------------------
-
-def _cost(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
-    p = PRICE_TABLE.get(model)
-    if p is None:
-        return None
-    return prompt_tokens / 1e6 * p["in"] + completion_tokens / 1e6 * p["out"]
-
 
 # ---------------------------------------------------------------------------
 # grip arm
 # ---------------------------------------------------------------------------
-
-class _UsageTrackingOpenAIAdapter:
-    """Duck-types grip.adapters.base.LLMAdapter. Wraps the openai client
-    directly rather than grip.adapters.openai.OpenAIAdapter, because that
-    adapter's complete() discards response.usage and Runner's own Trace
-    entries hardcode tokens_consumed=0 (see grip/runner.py) — there is
-    currently no path in grip itself that records billed tokens, so this
-    benchmark cannot reuse one and has to keep its own ledger.
-    """
-
-    def __init__(self, model: str, temperature: float) -> None:
-        if openai is None:
-            raise ImportError("pip install openai")
-        self._client = openai.AsyncOpenAI()
-        self._model = model
-        self._temperature = temperature
-        self.calls: list[dict[str, int]] = []
-
-    async def complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
-    ) -> LLMResponse:
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "temperature": self._temperature,
-        }
-        if tools:
-            kwargs["tools"] = tools
-        response = await self._client.chat.completions.create(**kwargs)
-        if response.usage:
-            self.calls.append({
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-            })
-        choice = response.choices[0]
-        msg = choice.message
-        if msg.tool_calls:
-            tc = msg.tool_calls[0]
-            return LLMResponse(
-                content=None,
-                tool_call=ToolCall(
-                    name=tc.function.name, arguments=json.loads(tc.function.arguments)
-                ),
-            )
-        return LLMResponse(content=msg.content, tool_call=None)
-
-    def totals(self) -> dict[str, Any]:
-        prompt = sum(c["prompt_tokens"] for c in self.calls)
-        completion = sum(c["completion_tokens"] for c in self.calls)
-        return {
-            "prompt_tokens": prompt,
-            "completion_tokens": completion,
-            "total_tokens": prompt + completion,
-            "cost_usd": _cost(self._model, prompt, completion),
-            "llm_calls": len(self.calls),
-        }
-
 
 class _AttemptAborted(Exception):
     """Raised when a single attempt hits IN_LOOP_MAX_FAILURES consecutive
@@ -306,7 +263,7 @@ async def _grip_state(page) -> Any:
 async def run_grip_task(task: dict, url: str) -> dict:
     result: dict[str, Any] = {"arm": "grip", "task_id": task["id"], "attempts": []}
     for attempt in range(RETRY_BUDGET + 1):
-        adapter = _UsageTrackingOpenAIAdapter(MODEL, TEMPERATURE)
+        adapter = ClaudeCLIAdapter(MODEL, LLM_TIMEOUT_SECONDS)
         t0 = time.monotonic()
         attempt_row: dict[str, Any] = {"attempt": attempt + 1}
         try:
@@ -350,6 +307,7 @@ async def run_grip_task(task: dict, url: str) -> dict:
     result["success"] = any(a["success"] for a in result["attempts"])
     result["attempts_used"] = len(result["attempts"])
     result["total_tokens"] = sum(a["total_tokens"] for a in result["attempts"])
+    result["llm_calls"] = sum(a["llm_calls"] for a in result["attempts"])
     result["total_cost_usd"] = sum(
         a["cost_usd"] for a in result["attempts"] if a["cost_usd"] is not None
     ) if all(a["cost_usd"] is not None for a in result["attempts"]) else None
@@ -379,7 +337,7 @@ import time
 from browser_use import Agent
 from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
-from browser_use.llm.openai.chat import ChatOpenAI
+from browser_use.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 MODEL = %(model)r
 TEMPERATURE = %(temperature)r
@@ -387,6 +345,107 @@ MAX_STEPS = %(max_steps)r
 RETRY_BUDGET = %(retry_budget)r
 MAX_FAILURES = %(max_failures)r
 USE_VISION = %(use_vision)r
+LLM_TIMEOUT = %(llm_timeout)r
+
+
+# --- benchmarks/claude_cli_llm.py, spliced in verbatim ---------------------
+# Embedded rather than imported: this process runs in the isolated
+# browser-use venv (see bench_browseruse.py's docstring) and cannot
+# `import benchmarks.*`. Splicing the literal source, not reimplementing it,
+# is what keeps the CLI-calling code identical between the two arms.
+%(cli_shim_src)s
+# --- end claude_cli_llm.py --------------------------------------------------
+
+
+CLI_LEDGER = []  # cleared per attempt; summed into that attempt's row below
+
+
+class ChatClaudeCLI:
+    """Minimal browser_use.llm.base.BaseChatModel implementation backed by
+    the same call_claude_cli() the grip arm uses (benchmarks/
+    claude_cli_grip_adapter.py). browser_use.Agent calls
+    llm.ainvoke(messages, output_format=<pydantic model>) and expects the
+    completion validated into that model back — there is no tool-call
+    protocol here the way there is on the grip side, it's structured output.
+    calculate_cost is deliberately left off Agent() (see run_one below):
+    browser-use's own cost table is keyed by real provider model names and
+    has no entry for this CLI shim's model alias, so it would silently
+    report None/0 rather than error. Cost is tracked in CLI_LEDGER instead,
+    straight from the CLI's own total_cost_usd, the same source of truth
+    the grip arm uses.
+    """
+
+    model = MODEL
+    _verified_api_keys = True
+
+    @property
+    def provider(self):
+        return "claude-cli"
+
+    @property
+    def name(self):
+        return MODEL
+
+    @property
+    def model_name(self):
+        # for legacy support: browser_use.llm.base.BaseChatModel defines
+        # this as a Protocol default (`return self.model`), but Protocol
+        # default method bodies only apply to explicit subclasses, not to
+        # structurally-conforming classes like this one — so it must be
+        # implemented here too. Used by agent/cloud_events.py's telemetry
+        # event (`agent.llm.model_name`).
+        return self.model
+
+    def _flatten(self, messages):
+        system = None
+        turns = []
+        for m in messages:
+            if m.role == "system":
+                system = m.text
+            else:
+                turns.append("%%s: %%s" %% (m.role.upper(), m.text))
+        return system, "\n\n".join(turns)
+
+    async def ainvoke(self, messages, output_format=None, **kwargs):
+        system, transcript = self._flatten(messages)
+        if output_format is not None:
+            schema = json.dumps(output_format.model_json_schema())
+            transcript += (
+                "\n\n---\nRespond with ONLY a single JSON object matching "
+                "this JSON schema exactly, no prose, no markdown fence:\n" + schema
+            )
+        result = await call_claude_cli(
+            transcript, model=MODEL, system_prompt=system, timeout=LLM_TIMEOUT,
+        )
+        CLI_LEDGER.append({
+            "cost_usd": result.cost_usd,
+            "wall_seconds": result.wall_seconds,
+            "prompt_tokens": (
+                result.input_tokens + result.cache_creation_tokens + result.cache_read_tokens
+            ),
+            "completion_tokens": result.output_tokens,
+        })
+        usage = ChatInvokeUsage(
+            prompt_tokens=(
+                result.input_tokens + result.cache_creation_tokens + result.cache_read_tokens
+            ),
+            prompt_cached_tokens=result.cache_read_tokens,
+            prompt_cache_creation_tokens=result.cache_creation_tokens,
+            prompt_image_tokens=None,
+            completion_tokens=result.output_tokens,
+            total_tokens=(
+                result.input_tokens + result.cache_creation_tokens
+                + result.cache_read_tokens + result.output_tokens
+            ),
+        )
+        if output_format is None:
+            return ChatInvokeCompletion(completion=result.text, usage=usage)
+        obj = parse_json_object(result.text)
+        if obj is None:
+            raise RuntimeError(
+                "claude-cli: no parseable JSON for output_format " + output_format.__name__
+            )
+        return ChatInvokeCompletion(completion=output_format.model_validate(obj), usage=usage)
 
 
 async def eval_js(session, expression):
@@ -402,11 +461,12 @@ async def eval_js(session, expression):
 
 
 async def run_one(task, chrome):
-    llm = ChatOpenAI(model=MODEL, temperature=TEMPERATURE)
+    llm = ChatClaudeCLI()
     attempts = []
     success = False
     for attempt in range(RETRY_BUDGET + 1):
         t0 = time.monotonic()
+        CLI_LEDGER.clear()
         session = BrowserSession(
             browser_profile=BrowserProfile(headless=True, executable_path=chrome)
         )
@@ -416,8 +476,11 @@ async def run_one(task, chrome):
             browser_session=session,
             use_vision=USE_VISION,
             max_failures=MAX_FAILURES,
-            calculate_cost=True,
-            initial_actions=[{"go_to_url": {"url": task["url"]}}],
+            calculate_cost=False,  # see ChatClaudeCLI docstring: no price-table entry
+            # browser-use renamed this action go_to_url -> navigate (params:
+            # url, new_tab) in the installed version; the old key raises a
+            # bare KeyError out of _convert_initial_actions before step 1.
+            initial_actions=[{"navigate": {"url": task["url"]}}],
         )
         row = {"attempt": attempt + 1}
         # Agent.run()'s finally block always calls self.close(), which tears
@@ -435,7 +498,11 @@ async def run_one(task, chrome):
             )
             verify_raw = await eval_js(agent.browser_session, task["verify"])
             state_raw = await eval_js(agent.browser_session, "window.__bench_state()")
-            usage = history.usage
+            # Cost/tokens come from CLI_LEDGER (every real claude-cli call made
+            # during this attempt, including browser-use's own summarizer/judge
+            # calls if any), not history.usage: browser-use's own accounting is
+            # keyed by a model-name price table this CLI shim isn't in.
+            ledger_costs = [c["cost_usd"] for c in CLI_LEDGER if c["cost_usd"] is not None]
             row.update({
                 "success": bool(verify_raw),
                 "verify_raw": verify_raw,
@@ -443,15 +510,21 @@ async def run_one(task, chrome):
                 "turns": history.number_of_steps(),
                 "aborted": None,
                 "done_result": history.final_result(),
-                "prompt_tokens": usage.total_prompt_tokens if usage else None,
-                "completion_tokens": usage.total_completion_tokens if usage else None,
-                "total_tokens": usage.total_tokens if usage else None,
-                "cost_usd": usage.total_cost if usage else None,
+                "llm_calls": len(CLI_LEDGER),
+                "prompt_tokens": sum(c["prompt_tokens"] for c in CLI_LEDGER),
+                "completion_tokens": sum(c["completion_tokens"] for c in CLI_LEDGER),
+                "total_tokens": sum(
+                    c["prompt_tokens"] + c["completion_tokens"] for c in CLI_LEDGER
+                ),
+                "cost_usd": (
+                    sum(ledger_costs) if len(ledger_costs) == len(CLI_LEDGER) and CLI_LEDGER
+                    else None
+                ),
             })
         except Exception as e:
             row.update({
                 "success": False, "verify_raw": None, "final_state": None,
-                "turns": 0, "aborted": "%s: %s" % (type(e).__name__, e),
+                "turns": 0, "aborted": "%%s: %%s" %% (type(e).__name__, e),
                 "done_result": None, "prompt_tokens": 0, "completion_tokens": 0,
                 "total_tokens": 0, "cost_usd": 0.0,
             })
@@ -476,6 +549,7 @@ async def run_one(task, chrome):
         "attempts": attempts,
         "attempts_used": len(attempts),
         "total_tokens": sum(a["total_tokens"] or 0 for a in attempts),
+        "llm_calls": sum(a.get("llm_calls", 0) for a in attempts),
         "total_cost_usd": (
             sum(a["cost_usd"] for a in attempts)
             if all(a["cost_usd"] is not None for a in attempts) else None
@@ -496,9 +570,9 @@ async def main():
         except Exception as e:
             results.append({
                 "arm": "browseruse", "task_id": task["id"], "success": False,
-                "attempts": [], "attempts_used": 0, "total_tokens": 0,
+                "attempts": [], "attempts_used": 0, "total_tokens": 0, "llm_calls": 0,
                 "total_cost_usd": None, "total_wall_seconds": 0.0, "turns": 0,
-                "harness_error": "%s: %s" % (type(e).__name__, e),
+                "harness_error": "%%s: %%s" %% (type(e).__name__, e),
             })
     open(out_path, "w").write(json.dumps(results))
 
@@ -529,7 +603,9 @@ def run_browseruse_tasks(
     script_path.write_text(TASK_SCRIPT % {
         "model": MODEL, "temperature": TEMPERATURE, "max_steps": MAX_STEPS,
         "retry_budget": RETRY_BUDGET, "max_failures": IN_LOOP_MAX_FAILURES,
-        "use_vision": USE_VISION, "bu_task_timeout": LLM_TIMEOUT_SECONDS * MAX_STEPS,
+        "use_vision": USE_VISION, "llm_timeout": LLM_TIMEOUT_SECONDS,
+        "bu_task_timeout": LLM_TIMEOUT_SECONDS * MAX_STEPS,
+        "cli_shim_src": _CLI_SHIM_SRC,
     })
     tasks_with_urls = [{**t, "url": f"{fixture_base}/{t['file']}"} for t in tasks]
     with tempfile.TemporaryDirectory() as tmp:
@@ -613,7 +689,29 @@ def _ratio_stats(grip_rows: list[dict], bu_rows: list[dict], key: str) -> dict[s
     }
 
 
-def compute_verdict(grip_rows: list[dict], bu_rows: list[dict]) -> dict[str, Any]:
+def _with_adjusted_cost(rows: list[dict], baseline_cost: float | None) -> list[dict]:
+    """Returns rows with a `content_cost_usd` field added: total_cost_usd
+    minus (fixed per-call CLI overhead * calls made), i.e. an estimate of
+    what this task would have cost with --resume-style caching or a real API
+    with the same task content. `baseline_cost` is measured once per run
+    (measure_baseline_overhead) against the exact same CLI flags every real
+    call used. If baseline_cost is unavailable, content_cost_usd == None on
+    every row and callers must treat the adjusted pass as unavailable too."""
+    out = []
+    for r in rows:
+        r = dict(r)
+        cost, calls = r.get("total_cost_usd"), r.get("llm_calls")
+        if baseline_cost is None or cost is None or calls is None:
+            r["content_cost_usd"] = None
+        else:
+            r["content_cost_usd"] = cost - baseline_cost * calls
+        out.append(r)
+    return out
+
+
+def compute_verdict(
+    grip_rows: list[dict], bu_rows: list[dict], cost_key: str = "total_cost_usd"
+) -> dict[str, Any]:
     g_succ = [r for r in grip_rows if r["success"]]
     b_succ = [r for r in bu_rows if r["success"]]
     g_rate = len(g_succ) / len(grip_rows) if grip_rows else 0.0
@@ -632,10 +730,10 @@ def compute_verdict(grip_rows: list[dict], bu_rows: list[dict]) -> dict[str, Any
         }
 
     def cost_per_success(rows: list[dict]) -> float | None:
-        succ = [r for r in rows if r["success"] and r.get("total_cost_usd") is not None]
+        succ = [r for r in rows if r["success"] and r.get(cost_key) is not None]
         if not succ:
             return None
-        total_cost = sum(r["total_cost_usd"] for r in rows if r.get("total_cost_usd") is not None)
+        total_cost = sum(r[cost_key] for r in rows if r.get(cost_key) is not None)
         n_succ = sum(1 for r in rows if r["success"])
         return total_cost / n_succ if n_succ else None
 
@@ -661,8 +759,12 @@ def compute_verdict(grip_rows: list[dict], bu_rows: list[dict]) -> dict[str, Any
     }
 
 
-def report(grip_rows: list[dict], bu_rows: list[dict], bu_error: str) -> dict[str, Any]:
-    print(f"\nmodel: {MODEL}  temperature: {TEMPERATURE}  max_steps: {MAX_STEPS}  "
+def report(
+    grip_rows: list[dict], bu_rows: list[dict], bu_error: str, baseline_cost: float | None = None
+) -> dict[str, Any]:
+    print(f"\nmodel: {MODEL} (via headless `claude -p`, no API key available)  "
+          f"temperature: NOT CONTROLLABLE (no CLI flag; left at whatever the CLI "
+          f"defaults to, same on both arms)  max_steps: {MAX_STEPS}  "
           f"retry_budget: {RETRY_BUDGET} (up to {RETRY_BUDGET + 1} attempts)  "
           f"use_vision: {USE_VISION}")
     print(
@@ -672,13 +774,64 @@ def report(grip_rows: list[dict], bu_rows: list[dict], bu_error: str) -> dict[st
         "set registers as a failure, not an efficiency loss. See module "
         "docstring."
     )
+    if baseline_cost is not None:
+        print(
+            f"\nCLI COST CONFOUND (new to this run, disclosed not fixed): every "
+            f"single LLM turn on both arms pays a fixed ~${baseline_cost:.4f} "
+            f"CLI-session overhead (system prompt + tool-schema cache creation), "
+            f"measured directly via a trivial no-content call with the exact "
+            f"same flags. Both arms pay it equally (same flags, same model), so "
+            f"the comparison between arms is not biased by it, but 'cost' below "
+            f"is NOT comparable to a real API's per-token price. AS-BILLED cost "
+            f"is what the CLI reports; CONTENT-ONLY subtracts "
+            f"baseline_cost * llm_calls per task as an estimate of task-content "
+            f"cost with the overhead stripped out."
+        )
+    else:
+        print(
+            "\nCLI COST CONFOUND: baseline overhead measurement failed or was "
+            "skipped; AS-BILLED cost figures below include an unknown fixed "
+            "per-call CLI overhead that could not be subtracted out."
+        )
     if bu_error:
         print(f"\nbrowser-use arm error: {bu_error}")
 
-    print(f"\n{'task':<12} {'grip ok':>8} {'bu ok':>6} {'grip $':>9} {'bu $':>9} "
-          f"{'grip turns':>11} {'bu turns':>9} {'grip s':>8} {'bu s':>8}")
+    # STARTUP FAILURES: a task whose browser-use arm never ran (harness_error
+    # from the outer subprocess loop, or every attempt aborted before
+    # producing a turn) is NOT the same thing as browser-use running the
+    # task and losing. Silently scoring it "no, 0 turns" like a normal loss
+    # is exactly the bug this block exists to prevent — flag it loudly
+    # instead, both in the table (STARTUP-ERR, not "no") and as its own list.
+    def _bu_startup_failed(r: dict) -> str | None:
+        if r.get("harness_error"):
+            return r["harness_error"]
+        attempts = r.get("attempts") or []
+        if attempts and all(a.get("turns", 0) == 0 and a.get("aborted") for a in attempts):
+            return attempts[-1]["aborted"]
+        return None
+
+    startup_failures = [
+        (r["task_id"], _bu_startup_failed(r)) for r in bu_rows if _bu_startup_failed(r)
+    ]
+    if startup_failures:
+        print(f"\n*** browser-use FAILED TO START on {len(startup_failures)} task(s) "
+              f"(never took a turn — this is a harness/API crash, not a loss): ***")
+        for tid, err in startup_failures:
+            print(f"    {tid}: {err}")
+
+    # NOTE on the columns below: "turns" is the LAST attempt's turn count
+    # (or the successful attempt's, if any succeeded), but "$" and "s" are
+    # SUMMED across every retry attempt for the task. On any task with
+    # RETRY_BUDGET > 0 and no success, $/turns or s/turns overstates
+    # per-turn cost/time by however many attempts were burned — divide by
+    # llm_calls (also summed across attempts, printed here) instead if you
+    # want a real per-call rate.
+    print(f"\n{'task':<12} {'grip ok':>8} {'bu ok':>11} {'grip $':>9} {'bu $':>9} "
+          f"{'g calls':>8} {'b calls':>8} "
+          f"{'g turns*':>9} {'b turns*':>9} {'grip s':>8} {'bu s':>8}")
     by_g = {r["task_id"]: r for r in grip_rows}
     by_b = {r["task_id"]: r for r in bu_rows}
+    startup_failed_ids = {tid for tid, _ in startup_failures}
     def _money(r: dict | None) -> str:
         if not r or r.get("total_cost_usd") is None:
             return "-"
@@ -690,13 +843,21 @@ def report(grip_rows: list[dict], bu_rows: list[dict], bu_error: str) -> dict[st
     for tid in sorted(set(by_g) | set(by_b)):
         g, b = by_g.get(tid), by_b.get(tid)
         g_ok = "yes" if g and g["success"] else ("no" if g else "-")
-        b_ok = "yes" if b and b["success"] else ("no" if b else "-")
+        if tid in startup_failed_ids:
+            b_ok = "STARTUP-ERR"
+        else:
+            b_ok = "yes" if b and b["success"] else ("no" if b else "-")
         g_turns = g["turns"] if g else "-"
         b_turns = b["turns"] if b else "-"
+        g_calls = g.get("llm_calls", "-") if g else "-"
+        b_calls = b.get("llm_calls", "-") if b else "-"
         print(
-            f"{tid:<12} {g_ok:>8} {b_ok:>6} {_money(g):>9} {_money(b):>9} "
-            f"{g_turns!s:>11} {b_turns!s:>9} {_secs(g):>8} {_secs(b):>8}"
+            f"{tid:<12} {g_ok:>8} {b_ok:>11} {_money(g):>9} {_money(b):>9} "
+            f"{g_calls!s:>8} {b_calls!s:>8} "
+            f"{g_turns!s:>9} {b_turns!s:>9} {_secs(g):>8} {_secs(b):>8}"
         )
+    print("  (*turns = last/successful attempt only, not summed like $/calls/s — "
+          "see note above)")
 
     print(
         "\nmedians (median_of_ratios | ratio_of_medians; "
@@ -712,12 +873,44 @@ def report(grip_rows: list[dict], bu_rows: list[dict], bu_error: str) -> dict[st
               f"ratio_of_medians={s['ratio_of_medians']:.2f}x  "
               f"range {s['min_ratio']:.2f}x-{s['max_ratio']:.2f}x")
 
-    verdict = compute_verdict(grip_rows, bu_rows)
-    print(f"\n--- VERDICT: {verdict['verdict']} ---")
-    for k, v in verdict.items():
+    as_billed = compute_verdict(grip_rows, bu_rows, cost_key="total_cost_usd")
+    print(
+        f"\n--- VERDICT (AS-BILLED cost, includes fixed CLI overhead): "
+        f"{as_billed['verdict']} ---"
+    )
+    for k, v in as_billed.items():
         if k != "verdict":
             print(f"  {k}: {v}")
-    return verdict
+
+    content_only: dict[str, Any] | None = None
+    if baseline_cost is not None:
+        adj_grip = _with_adjusted_cost(grip_rows, baseline_cost)
+        adj_bu = _with_adjusted_cost(bu_rows, baseline_cost)
+        content_only = compute_verdict(adj_grip, adj_bu, cost_key="content_cost_usd")
+        print(
+            f"\n--- VERDICT (CONTENT-ONLY cost, overhead subtracted): "
+            f"{content_only['verdict']} ---"
+        )
+        for k, v in content_only.items():
+            if k != "verdict":
+                print(f"  {k}: {v}")
+
+    # Headline: whichever framing is less flattering to grip, per this repo's
+    # convention (RESULTS_AB.md) of leading with the least flattering number
+    # rather than cherry-picking. Success-rate-only WEDGE/NO WEDGE (clause_b)
+    # is unaffected by the cost confound either way.
+    candidates = [as_billed] + ([content_only] if content_only else [])
+    headline = min(
+        candidates, key=lambda v: {"WEDGE": 2, "NO WEDGE": 1, "INCONCLUSIVE": 0}[v["verdict"]]
+    )
+    print(f"\n=== HEADLINE VERDICT: {headline['verdict']} ===")
+    if content_only and as_billed["verdict"] != content_only["verdict"]:
+        print(
+            "  (AS-BILLED and CONTENT-ONLY framings disagree — the cost clause "
+            "is sensitive to the CLI overhead confound; see both verdicts above "
+            "before trusting either one alone.)"
+        )
+    return {"as_billed": as_billed, "content_only": content_only, "headline": headline}
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +918,10 @@ def report(grip_rows: list[dict], bu_rows: list[dict], bu_error: str) -> dict[st
 # ---------------------------------------------------------------------------
 
 async def run_full(tasks: list[dict]) -> None:
+    print("measuring baseline CLI overhead (one trivial call, same flags as every real turn)...")
+    baseline_cost = await measure_baseline_overhead(MODEL)
+    print(f"baseline overhead: {baseline_cost}")
+
     server = FixtureServer()
     base = server.start()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -733,26 +930,33 @@ async def run_full(tasks: list[dict]) -> None:
     grip_rows: list[dict] = []
     try:
         with raw_path.open("w") as f:
-            for task in tasks:
+            for i, task in enumerate(tasks):
                 url = server.url_for(task)
+                t0 = time.monotonic()
                 row = await run_grip_task(task, url)
                 grip_rows.append(row)
                 f.write(json.dumps(row) + "\n")
                 f.flush()
+                print(
+                    f"[grip {i + 1}/{len(tasks)}] {task['id']} "
+                    f"{'OK' if row['success'] else 'FAIL'} in {time.monotonic() - t0:.1f}s"
+                )
 
             chrome = find_chrome() or ""
+            print(f"grip arm done. starting browser-use arm ({len(tasks)} tasks)...")
             bu_rows, bu_error = run_browseruse_tasks(tasks, base, chrome)
             for row in bu_rows:
                 f.write(json.dumps(row) + "\n")
     finally:
         server.stop()
 
-    verdict = report(grip_rows, bu_rows, bu_error)
+    verdict = report(grip_rows, bu_rows, bu_error, baseline_cost)
     summary_path = RESULTS_DIR / f"summary_{ts}.json"
     summary_path.write_text(json.dumps({
         "config": {
-            "model": MODEL, "temperature": TEMPERATURE, "max_steps": MAX_STEPS,
-            "retry_budget": RETRY_BUDGET, "use_vision": USE_VISION,
+            "model": MODEL, "temperature": "not controllable via CLI",
+            "max_steps": MAX_STEPS, "retry_budget": RETRY_BUDGET, "use_vision": USE_VISION,
+            "baseline_cli_overhead_usd": baseline_cost,
         },
         "verdict": verdict, "n_tasks": len(tasks),
         "grip_rows": grip_rows, "browseruse_rows": bu_rows, "browseruse_error": bu_error,
@@ -778,17 +982,18 @@ async def run_dry_run() -> None:
             print(f"  FAIL {r['task_id']}: {r}")
 
     print("\n--- dry-run stage 2: both-arms smoke test on 2 tasks ---")
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not os.access(CLAUDE_BIN, os.X_OK) and shutil.which("claude") is None:
         print(
-            "OPENAI_API_KEY not set: skipping. A fake/stubbed LLM would validate "
+            "claude CLI not found: skipping. A fake/stubbed LLM would validate "
             "grip's plumbing but tell you nothing about browser-use's Agent, which "
             "requires a real chat model — so this stage is either a real (cheap) "
-            "API call or explicitly not run. It was NOT run."
+            "CLI call or explicitly not run. It was NOT run."
         )
         return
     smoke_tasks = load_tasks(limit=2)
-    print(f"running real API calls against: {[t['id'] for t in smoke_tasks]} "
-          f"(model={MODEL}, max 1 attempt each, ~$0.01-0.05 total at gpt-4o-mini rates)")
+    print(f"running real `claude -p` calls against: {[t['id'] for t in smoke_tasks]} "
+          f"(model={MODEL}, max 1 attempt each; each turn pays the fixed CLI "
+          f"session overhead measured in run_full, see measure_baseline_overhead)")
     server = FixtureServer()
     base = server.start()
     try:

@@ -1,0 +1,217 @@
+{
+  "config": {
+    "model": "sonnet",
+    "temperature": "not controllable via CLI",
+    "max_steps": 20,
+    "retry_budget": 2,
+    "use_vision": false,
+    "baseline_cli_overhead_usd": 0.0689355
+  },
+  "verdict": {
+    "as_billed": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "both arms below 80% success (grip 0%, browser-use 0%); cost-per-success is dominated by the failure denominator and not trustworthy"
+    },
+    "content_only": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "both arms below 80% success (grip 0%, browser-use 0%); cost-per-success is dominated by the failure denominator and not trustworthy"
+    },
+    "headline": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "both arms below 80% success (grip 0%, browser-use 0%); cost-per-success is dominated by the failure denominator and not trustworthy"
+    }
+  },
+  "n_tasks": 2,
+  "grip_rows": [
+    {
+      "arm": "grip",
+      "task_id": "form-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "full_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "5550101",
+            "role": "",
+            "newsletter": false,
+            "notes": "",
+            "submitted": false
+          },
+          "turns": 20,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 313.42546437499914,
+          "prompt_tokens": 375947,
+          "completion_tokens": 1818,
+          "total_tokens": 377765,
+          "cost_usd": 1.62551405,
+          "llm_calls": 20,
+          "cli_wall_seconds": 311.6168154590032
+        },
+        {
+          "attempt": 2,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "full_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "5550101",
+            "role": "",
+            "newsletter": true,
+            "notes": "",
+            "submitted": false
+          },
+          "turns": 20,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 370.23077875000126,
+          "prompt_tokens": 316608,
+          "completion_tokens": 1331,
+          "total_tokens": 317939,
+          "cost_usd": 1.3528602,
+          "llm_calls": 20,
+          "cli_wall_seconds": 367.8642622509997
+        },
+        {
+          "attempt": 3,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "full_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "5550101",
+            "role": "",
+            "newsletter": false,
+            "notes": "",
+            "submitted": false
+          },
+          "turns": 11,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 330.1486855000003,
+          "prompt_tokens": 251552,
+          "completion_tokens": 1584,
+          "total_tokens": 253136,
+          "cost_usd": 0.9801916,
+          "llm_calls": 11,
+          "cli_wall_seconds": 208.1544439149984
+        }
+      ],
+      "success": false,
+      "attempts_used": 3,
+      "total_tokens": 948840,
+      "llm_calls": 51,
+      "total_cost_usd": 3.9585658500000003,
+      "total_wall_seconds": 1013.8049286250007,
+      "turns": 11
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "filter": "all",
+            "sort": "none",
+            "page": 2,
+            "selected": null
+          },
+          "turns": 20,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 559.2789782500004,
+          "prompt_tokens": 567554,
+          "completion_tokens": 3756,
+          "total_tokens": 571310,
+          "cost_usd": 2.5469769,
+          "llm_calls": 20,
+          "cli_wall_seconds": 557.4762275850026
+        },
+        {
+          "attempt": 2,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "filter": "all",
+            "sort": "none",
+            "page": 1,
+            "selected": null
+          },
+          "turns": 20,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 227.4195586249989,
+          "prompt_tokens": 308027,
+          "completion_tokens": 1059,
+          "total_tokens": 309086,
+          "cost_usd": 1.5609426,
+          "llm_calls": 20,
+          "cli_wall_seconds": 225.6852406679991
+        },
+        {
+          "attempt": 3,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "filter": "all",
+            "sort": "none",
+            "page": 1,
+            "selected": null
+          },
+          "turns": 16,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 540.1299365000013,
+          "prompt_tokens": 487615,
+          "completion_tokens": 2988,
+          "total_tokens": 490603,
+          "cost_usd": 2.2825658,
+          "llm_calls": 17,
+          "cli_wall_seconds": 538.2700080850027
+        }
+      ],
+      "success": false,
+      "attempts_used": 3,
+      "total_tokens": 1370999,
+      "llm_calls": 57,
+      "total_cost_usd": 6.3904853,
+      "total_wall_seconds": 1326.8284733750006,
+      "turns": 16
+    }
+  ],
+  "browseruse_rows": [
+    {
+      "arm": "browseruse",
+      "task_id": "form-01",
+      "success": false,
+      "attempts": [],
+      "attempts_used": 0,
+      "total_tokens": 0,
+      "llm_calls": 0,
+      "total_cost_usd": null,
+      "total_wall_seconds": 0.0,
+      "turns": 0,
+      "harness_error": "KeyError: 'go_to_url'"
+    },
+    {
+      "arm": "browseruse",
+      "task_id": "spa-01",
+      "success": false,
+      "attempts": [],
+      "attempts_used": 0,
+      "total_tokens": 0,
+      "llm_calls": 0,
+      "total_cost_usd": null,
+      "total_wall_seconds": 0.0,
+      "turns": 0,
+      "harness_error": "KeyError: 'go_to_url'"
+    }
+  ],
+  "browseruse_error": ""
+}

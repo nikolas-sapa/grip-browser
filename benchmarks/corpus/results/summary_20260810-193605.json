@@ -1,0 +1,118 @@
+{
+  "config": {
+    "model": "sonnet",
+    "temperature": "not controllable via CLI",
+    "max_steps": 20,
+    "retry_budget": 2,
+    "use_vision": false,
+    "baseline_cli_overhead_usd": 0.07138950000000001
+  },
+  "verdict": {
+    "as_billed": {
+      "verdict": "WEDGE",
+      "clause": "cost-per-success >=1.5x at equal-or-higher success",
+      "grip_success_rate": 1.0,
+      "browseruse_success_rate": 1.0,
+      "grip_cost_per_success": 0.7170438,
+      "browseruse_cost_per_success": 2.6392511,
+      "cost_ratio_bu_over_grip": 3.6807390287734165
+    },
+    "content_only": {
+      "verdict": "WEDGE",
+      "clause": "cost-per-success >=1.5x at equal-or-higher success",
+      "grip_success_rate": 1.0,
+      "browseruse_success_rate": 1.0,
+      "grip_cost_per_success": 0.0031487999999999516,
+      "browseruse_cost_per_success": 2.2823036,
+      "cost_ratio_bu_over_grip": 724.8169461382225
+    },
+    "headline": {
+      "verdict": "WEDGE",
+      "clause": "cost-per-success >=1.5x at equal-or-higher success",
+      "grip_success_rate": 1.0,
+      "browseruse_success_rate": 1.0,
+      "grip_cost_per_success": 0.7170438,
+      "browseruse_cost_per_success": 2.6392511,
+      "cost_ratio_bu_over_grip": 3.6807390287734165
+    }
+  },
+  "n_tasks": 1,
+  "grip_rows": [
+    {
+      "arm": "grip",
+      "task_id": "form-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "5550101",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 10,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 112.36295579199941,
+          "prompt_tokens": 194677,
+          "completion_tokens": 1374,
+          "total_tokens": 196051,
+          "cost_usd": 0.7170438,
+          "llm_calls": 10,
+          "cli_wall_seconds": 109.21144554199782
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 196051,
+      "llm_calls": 10,
+      "total_cost_usd": 0.7170438,
+      "total_wall_seconds": 112.36295579199941,
+      "turns": 10
+    }
+  ],
+  "browseruse_rows": [
+    {
+      "arm": "browseruse",
+      "task_id": "form-01",
+      "success": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "5550101",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Filled form on form_01.html: full name 'Ada Lovelace', email 'ada@example.com', phone '5550101', role 'Engineer', newsletter checkbox checked. Clicked Review & Submit; page now displays 'Submitted.' confirming successful submission.",
+          "llm_calls": 5,
+          "prompt_tokens": 438330,
+          "completion_tokens": 2939,
+          "total_tokens": 441269,
+          "cost_usd": 2.6392511,
+          "wall_seconds": 447.8655861249972
+        }
+      ],
+      "attempts_used": 1,
+      "total_tokens": 441269,
+      "llm_calls": 5,
+      "total_cost_usd": 2.6392511,
+      "total_wall_seconds": 447.8655861249972,
+      "turns": 7
+    }
+  ],
+  "browseruse_error": ""
+}

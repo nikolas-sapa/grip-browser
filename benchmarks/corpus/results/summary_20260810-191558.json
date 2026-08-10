@@ -1,0 +1,253 @@
+{
+  "config": {
+    "model": "sonnet",
+    "temperature": "not controllable via CLI",
+    "max_steps": 20,
+    "retry_budget": 2,
+    "use_vision": false,
+    "baseline_cli_overhead_usd": 0.0727695
+  },
+  "verdict": {
+    "as_billed": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "both arms below 80% success (grip 50%, browser-use 0%); cost-per-success is dominated by the failure denominator and not trustworthy"
+    },
+    "content_only": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "both arms below 80% success (grip 50%, browser-use 0%); cost-per-success is dominated by the failure denominator and not trustworthy"
+    },
+    "headline": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "both arms below 80% success (grip 50%, browser-use 0%); cost-per-success is dominated by the failure denominator and not trustworthy"
+    }
+  },
+  "n_tasks": 2,
+  "grip_rows": [
+    {
+      "arm": "grip",
+      "task_id": "form-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "5550101",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Form submitted successfully. Filled Full name (Ada Lovelace), Email (ada@example.com), Phone (5550101), Role (Engineer), checked newsletter subscription, clicked Review & Submit. Page shows 'Submitted.'",
+          "wall_seconds": 66.50118945899885,
+          "prompt_tokens": 168640,
+          "completion_tokens": 980,
+          "total_tokens": 169620,
+          "cost_usd": 0.61340155,
+          "llm_calls": 7,
+          "cli_wall_seconds": 65.0930553750004
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 169620,
+      "llm_calls": 7,
+      "total_cost_usd": 0.61340155,
+      "total_wall_seconds": 66.50118945899885,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "filter": "Toys",
+            "sort": "desc",
+            "page": 1,
+            "selected": null
+          },
+          "turns": 20,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 199.2921272909989,
+          "prompt_tokens": 546572,
+          "completion_tokens": 2518,
+          "total_tokens": 549090,
+          "cost_usd": 1.75433935,
+          "llm_calls": 20,
+          "cli_wall_seconds": 197.59216558399567
+        },
+        {
+          "attempt": 2,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "filter": "Toys",
+            "sort": "desc",
+            "page": 1,
+            "selected": null
+          },
+          "turns": 20,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 346.9158117499974,
+          "prompt_tokens": 572198,
+          "completion_tokens": 3014,
+          "total_tokens": 575212,
+          "cost_usd": 2.23161565,
+          "llm_calls": 20,
+          "cli_wall_seconds": 345.1111997070002
+        },
+        {
+          "attempt": 3,
+          "success": false,
+          "verify_raw": false,
+          "final_state": {
+            "filter": "Toys",
+            "sort": "desc",
+            "page": 1,
+            "selected": null
+          },
+          "turns": 8,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 243.61421779199736,
+          "prompt_tokens": 371285,
+          "completion_tokens": 3806,
+          "total_tokens": 375091,
+          "cost_usd": 1.35161585,
+          "llm_calls": 9,
+          "cli_wall_seconds": 241.7225179989946
+        }
+      ],
+      "success": false,
+      "attempts_used": 3,
+      "total_tokens": 1499393,
+      "llm_calls": 49,
+      "total_cost_usd": 5.3375708500000005,
+      "total_wall_seconds": 789.8221568329936,
+      "turns": 8
+    }
+  ],
+  "browseruse_rows": [
+    {
+      "arm": "browseruse",
+      "task_id": "form-01",
+      "success": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": false,
+          "verify_raw": null,
+          "final_state": null,
+          "turns": 0,
+          "aborted": "AttributeError: 'ChatClaudeCLI' object has no attribute 'model_name'",
+          "done_result": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "wall_seconds": 0.5804222500009928
+        },
+        {
+          "attempt": 2,
+          "success": false,
+          "verify_raw": null,
+          "final_state": null,
+          "turns": 0,
+          "aborted": "AttributeError: 'ChatClaudeCLI' object has no attribute 'model_name'",
+          "done_result": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "wall_seconds": 0.31065154099997017
+        },
+        {
+          "attempt": 3,
+          "success": false,
+          "verify_raw": null,
+          "final_state": null,
+          "turns": 0,
+          "aborted": "AttributeError: 'ChatClaudeCLI' object has no attribute 'model_name'",
+          "done_result": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "wall_seconds": 0.417910625001241
+        }
+      ],
+      "attempts_used": 3,
+      "total_tokens": 0,
+      "llm_calls": 0,
+      "total_cost_usd": 0.0,
+      "total_wall_seconds": 1.308984416002204,
+      "turns": 0
+    },
+    {
+      "arm": "browseruse",
+      "task_id": "spa-01",
+      "success": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": false,
+          "verify_raw": null,
+          "final_state": null,
+          "turns": 0,
+          "aborted": "AttributeError: 'ChatClaudeCLI' object has no attribute 'model_name'",
+          "done_result": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "wall_seconds": 0.7229359170014504
+        },
+        {
+          "attempt": 2,
+          "success": false,
+          "verify_raw": null,
+          "final_state": null,
+          "turns": 0,
+          "aborted": "AttributeError: 'ChatClaudeCLI' object has no attribute 'model_name'",
+          "done_result": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "wall_seconds": 0.42171916699953726
+        },
+        {
+          "attempt": 3,
+          "success": false,
+          "verify_raw": null,
+          "final_state": null,
+          "turns": 0,
+          "aborted": "AttributeError: 'ChatClaudeCLI' object has no attribute 'model_name'",
+          "done_result": null,
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "total_tokens": 0,
+          "cost_usd": 0.0,
+          "wall_seconds": 0.46418879100019694
+        }
+      ],
+      "attempts_used": 3,
+      "total_tokens": 0,
+      "llm_calls": 0,
+      "total_cost_usd": 0.0,
+      "total_wall_seconds": 1.6088438750011846,
+      "turns": 0
+    }
+  ],
+  "browseruse_error": ""
+}
