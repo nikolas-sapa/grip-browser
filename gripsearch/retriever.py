@@ -40,6 +40,8 @@ class Retriever:
         headless: bool = True,
         stealth: bool = True,
         model: SynthesisModel | None = None,
+        allow_private: bool = False,
+        allow_file: bool = False,
     ) -> None:
         self._source = source
         self._n = sources_per_query
@@ -54,10 +56,21 @@ class Retriever:
         # Opt-in: no model, no synthesis. Injected rather than constructed so
         # any client (real or fake-for-tests) works without an SDK dependency.
         self._model = model
+        # Default False, matching grip's NavigationPolicy: a retriever pointed at
+        # candidate URLs it did not author must not be reachable to a loopback
+        # admin server or file://. Opt-in exists because indexing an internal
+        # docs host or a local fixture server is a legitimate, deliberate use.
+        self._allow_private = allow_private
+        self._allow_file = allow_file
         self._browser: Browser | None = None
 
     async def __aenter__(self) -> Self:
-        self._browser = Browser(headless=self._headless, stealth=self._stealth)
+        self._browser = Browser(
+            headless=self._headless,
+            stealth=self._stealth,
+            allow_private=self._allow_private,
+            allow_file=self._allow_file,
+        )
         await self._browser.__aenter__()
         return self
 

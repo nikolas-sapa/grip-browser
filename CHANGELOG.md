@@ -71,6 +71,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Hidden text reached the model.** Visibility was tested with
   `getComputedStyle().opacity`, which does not inherit, so a child of an
   `opacity:0` parent passed as visible. Uses `checkVisibility()` now.
+
+  Two consequences worth knowing, both deliberate. Elements positioned fully
+  off-canvas to the left or top are now treated as hidden — that is the fix for
+  the off-screen decoy, where an invisible control sharing a visible one's label
+  absorbed clicks meant for it. Only *fully* off-canvas counts; below-the-fold
+  elements are still collected, since treating them as hidden would gut
+  snapshots of long pages. The visible cost is that 1×1 accessibility skip links
+  (`Jump to content` and friends) no longer appear in snapshots. Separately,
+  `color: transparent` reads as hidden **except** when paired with
+  `background-clip: text`, which is how gradient-text CTAs are built — without
+  that exception the primary button on many sites would vanish from snapshots.
 - **Chrome and its profile directory leaked** when a connect failed, when
   `close()` hit a raising `disconnect()`, and once per extra caller when several
   coroutines opened the first tab concurrently — the pattern the README itself
