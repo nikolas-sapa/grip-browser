@@ -1,9 +1,9 @@
 # grip
 
 [![PyPI version](https://img.shields.io/pypi/v/grip-browser?style=flat-square&color=0B0B0D&labelColor=0B0B0D)](https://pypi.org/project/grip-browser/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-0B0B0D?style=flat-square&labelColor=0B0B0D)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0B0B0D?style=flat-square&labelColor=0B0B0D)](https://github.com/nikolas-sapa/grip-browser/blob/main/LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/grip-browser?style=flat-square&color=0B0B0D&labelColor=0B0B0D)](https://pypi.org/project/grip-browser/)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-0B0B0D?style=flat-square&labelColor=0B0B0D)](CONTRIBUTING.md)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-0B0B0D?style=flat-square&labelColor=0B0B0D)](https://github.com/nikolas-sapa/grip-browser/blob/main/CONTRIBUTING.md)
 [![CI](https://img.shields.io/github/actions/workflow/status/nikolas-sapa/grip-browser/test.yml?style=flat-square&label=tests&color=0B0B0D&labelColor=0B0B0D)](https://github.com/nikolas-sapa/grip-browser/actions)
 
 **Token-efficient, CDP-native browser SDK for AI agents.**
@@ -24,11 +24,11 @@ pip install grip-browser
 
 Agents don't need the DOM. They need to know what's on the page and what they can act on. Grip sends the model only the interactive elements and visible text — structured, indexed, and fuzzy-matchable.
 
-Measured across 8 real pages (Wikipedia, GitHub, react.dev, BBC, Hacker News, Python docs, arXiv, example.com) on 2026-08-10: **grip's snapshot is a median 16.0x smaller than the page's raw HTML** — that is the median of the per-page ratios, and per page it runs from 3.3x on example.com, which is already tiny, to 68.4x on GitHub. The underlying medians are 58,912 tokens of raw HTML (range 167–459,193) against 1,998 tokens of grip snapshot (range 50–19,946). Per-page tables: [`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md).
+Measured across 8 real pages (Wikipedia, GitHub, react.dev, BBC, Hacker News, Python docs, arXiv, example.com) on 2026-08-10: **grip's snapshot is a median 16.0x smaller than the page's raw HTML** — that is the median of the per-page ratios, and per page it runs from 3.3x on example.com, which is already tiny, to 68.4x on GitHub. The underlying medians are 58,912 tokens of raw HTML (range 167–459,193) against 1,998 tokens of grip snapshot (range 50–19,946). Per-page tables: [`benchmarks/RESULTS_COMPETITORS.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_COMPETITORS.md).
 
 The spread is the point: quoting the median alone is wrong for most individual pages by a large factor in one direction or the other.
 
-That 16.0x is against **raw HTML**, which is the right comparison if your agent would otherwise put the DOM in the prompt. Against naively tag-stripped text — what a retrieval API sends a model — the reduction is only about **1.4x**, because most of what grip removes is markup rather than words. That 1.4x is a separate, older measurement: median characters over the 23 pages of the 33-page reach corpus where both arms returned content, range 0.5x–3.7x, and it has not been re-run against the 8-page corpus above. Both numbers are measured; use whichever matches what you would otherwise send. Method and data: [`evaluation/`](evaluation/).
+That 16.0x is against **raw HTML**, which is the right comparison if your agent would otherwise put the DOM in the prompt. Against naively tag-stripped text — what a retrieval API sends a model — the reduction is only about **1.4x**, because most of what grip removes is markup rather than words. That 1.4x is a separate, older measurement: median characters over the 23 pages of the 33-page reach corpus where both arms returned content, range 0.5x–3.7x, and it has not been re-run against the 8-page corpus above. Both numbers are measured; use whichever matches what you would otherwise send. Method and data: [`evaluation/`](https://github.com/nikolas-sapa/grip-browser/tree/main/evaluation).
 
 ### Grip vs Playwright MCP vs Puppeteer
 
@@ -48,7 +48,7 @@ Puppeteer's `page.content()`. Puppeteer has no single canonical observation, so 
 the HTML and accessibility-tree payloads are shown. On Hacker News, Playwright MCP's
 snapshot came out *larger* than the raw HTML it describes — an accessibility tree is
 not automatically a compression. Per-page tables, ratios and method:
-[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md).
+[`benchmarks/RESULTS_COMPETITORS.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_COMPETITORS.md).
 
 This measures payload size only. It says nothing about task success, latency,
 reliability or cross-browser support.
@@ -95,7 +95,7 @@ size alone would be choosing on the wrong axis.
 
 Per-page tables, both statistics, the 40,000-character cap, variance across
 three runs and what this does not measure:
-[`benchmarks/RESULTS_BROWSERUSE.md`](benchmarks/RESULTS_BROWSERUSE.md).
+[`benchmarks/RESULTS_BROWSERUSE.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_BROWSERUSE.md).
 
 ### When to use Grip
 
@@ -356,7 +356,7 @@ prompt cost grows with the number of turns rather than with their square.
 
 Full method, per-scenario tables, stability across 20 runs and the things this
 does **not** measure (task success, latency, model quality) are in
-[`benchmarks/RESULTS_AB.md`](benchmarks/RESULTS_AB.md). Reproduce with:
+[`benchmarks/RESULTS_AB.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_AB.md). Reproduce with:
 
 ```
 .venv/bin/python benchmarks/bench_agent_ab.py
@@ -377,7 +377,7 @@ does **not** measure (task success, latency, model quality) are in
 | Screenshot token tracking | No | No | Yes |
 
 Token figures: 8 real pages, tiktoken `cl100k_base`, 2026-08-10 —
-[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md). Payload size
+[`benchmarks/RESULTS_COMPETITORS.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_COMPETITORS.md). Payload size
 is one axis: Playwright and Puppeteer are broader general-purpose automation frameworks
 and this table says nothing about task success, latency or cross-browser support.
 
@@ -526,13 +526,34 @@ pip install grip-browser[mcp]
 
 ---
 
+## CLI
+
+`grip` installs a command-line entry point — one subcommand per flow, no
+shared session across invocations (each command opens a Browser, does its
+thing, closes it):
+
+```bash
+grip open https://example.com          # launch, navigate, print snapshot, exit
+grip snapshot https://example.com      # one-shot open+snapshot+print (pipe-friendly)
+grip read https://example.com          # print citable prose blocks
+grip screenshot https://example.com -o shot.jpg
+grip run "find the pricing page" --url https://example.com   # needs an LLM API key
+grip doctor                            # check Python version, Chrome, grip version
+```
+
+`--headed`, `--timeout` and `--json` apply across subcommands. `grip run`
+picks an adapter from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+(`OPENAI_BASE_URL` for an OpenAI-compatible endpoint), or `GEMINI_API_KEY`.
+
+---
+
 ## MCP Server
 
 `grip-mcp` runs grip as a stdio MCP server — eight tools (`open`, `goto`,
 `snapshot`, `click`, `type`, `read`, `screenshot`, `run`), the same delta
 compression as the SDK, and no session registry (one browser, one page, per
 process). Copy-paste config for Claude Code, Claude Desktop, and Cursor, plus
-the full tool reference: **[docs/mcp.md](docs/mcp.md)**.
+the full tool reference: **[docs/mcp.md](https://github.com/nikolas-sapa/grip-browser/blob/main/docs/mcp.md)**.
 
 ---
 
@@ -542,20 +563,20 @@ Everything in this table was measured on this branch. Anything not in it is not
 claimed: cold-start time, memory, requests per second and challenge solve rates
 are all unmeasured, and quoting them would be a guess. Tokens against other
 tools ARE measured — Playwright MCP and Puppeteer, in
-[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md), and
+[`benchmarks/RESULTS_COMPETITORS.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_COMPETITORS.md), and
 browser-use, which comes out *smaller* than grip at the median, in
-[`benchmarks/RESULTS_BROWSERUSE.md`](benchmarks/RESULTS_BROWSERUSE.md). The
+[`benchmarks/RESULTS_BROWSERUSE.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_BROWSERUSE.md). The
 snapshot-size figures live in [Why Grip](#why-grip) with their own method note.
 
 | | Measured | How |
 |---|---|---|
-| Prompt tokens over a 6-turn run, grip vs raw HTML | **17.8x fewer** (4.6x–41.8x per scenario; 16.9x–18.4x across repeat runs) | median of per-scenario ratios, 4 live sites × 6 real turns, tiktoken `cl100k_base`; [`benchmarks/RESULTS_AB.md`](benchmarks/RESULTS_AB.md) |
+| Prompt tokens over a 6-turn run, grip vs raw HTML | **17.8x fewer** (4.6x–41.8x per scenario; 16.9x–18.4x across repeat runs) | median of per-scenario ratios, 4 live sites × 6 real turns, tiktoken `cl100k_base`; [`benchmarks/RESULTS_AB.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_AB.md) |
 | — of which compression, per turn | 11.3x (2.9x–22.0x) | grip snapshot vs `outerHTML` of the same DOM state, same run |
 | — of which delta, per turn | 1.0x (1.0x–8.8x) | vs sending a full snapshot every turn; `build_delta` returns `None` on navigation, so most turns send a full snapshot |
 | — of which pruning, cumulative | 1.4x (1.0x–2.2x) | superseded page states dropped from the transcript; independent of the delta |
 | Delta saving on same-document turns | 9.1x median (0.5x–175.0x) | the 8 turns of 24 where a delta fired; the 0.5x is the URL-lag defect documented in the results file |
 | Cumulative prompt cost over a run | grows with turns, not turns² | superseded page states are not re-sent |
-| Unit tests | 249 pass | `pytest tests/unit` |
+| Unit tests | 318 pass | `pytest tests/unit` |
 | gripsearch tests | 33 pass | `pytest` in `gripsearch/` |
 | Integration tests | 74 pass | real Chrome, live network |
 | Unit coverage | 84.18% | unit tests only; CI fails below 80 |
@@ -572,13 +593,13 @@ trusting the table if the number matters to you.
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev
+Contributions are welcome. See [CONTRIBUTING.md](https://github.com/nikolas-sapa/grip-browser/blob/main/CONTRIBUTING.md) for dev
 setup, running tests, and lint/type-check commands. Please also read the
-[Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? See
-[SECURITY.md](SECURITY.md) instead of opening a public issue.
+[Code of Conduct](https://github.com/nikolas-sapa/grip-browser/blob/main/CODE_OF_CONDUCT.md). Found a security issue? See
+[SECURITY.md](https://github.com/nikolas-sapa/grip-browser/blob/main/SECURITY.md) instead of opening a public issue.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/nikolas-sapa/grip-browser/blob/main/LICENSE).

@@ -4,6 +4,58 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] - 2026-08-10
+
+### Security
+
+- **`NavigationPolicy` was enforced only in `Browser.open()`.** `Page.goto()`
+  had no check, and redirects were never re-checked, so `allow_private=False`
+  was bypassable. It is now enforced via CDP Fetch interception at
+  `RequestStage.Request` — a refused request fails before Chrome resolves DNS
+  or opens a connection — and is armed for the page lifetime rather than
+  re-applied per navigation.
+- **The private-address block missed IPv4 spellings Chrome accepts but
+  Python's `ipaddress` rejects:** `2130706433`, `0177.0.0.1`, `0x7f000001`,
+  `127.1`. All are now canonicalized before the check.
+- **Popup targets (`window.open`) are closed on attach under a restrictive
+  policy,** since a new CDP target carries none of the parent's interception.
+- Known limits, stated rather than hidden: WebSocket handshakes are not
+  intercepted (CDP's Fetch domain does not cover them); DNS rebinding remains
+  out of scope.
+
+### Changed — breaking
+
+- `window.open()` now fails under a restrictive policy, which is the default.
+- Session file format changed to `{"cookies": [...], "origins": {...}}`. Old
+  bare-list (cookie-only) files still load.
+
+### Added
+
+- `grip` CLI: `open`, `snapshot`, `read`, `screenshot`, `run`, `doctor`.
+- File upload/download: `Page.upload()`, `Page.enable_downloads()`,
+  `Page.wait_for_download()`.
+- localStorage in `save_session`/`load_session` (was cookies-only).
+- `Browser.pages` / `Browser.get_page()`; MCP `list_tabs`/`switch_tab`/`close_tab`.
+- Gemini adapter; `base_url` on the OpenAI adapter for Ollama/vLLM/LM
+  Studio/OpenRouter; `adapter_from_env()`.
+- MCP: `goto`, `screenshot`, `run` tools (5 -> 8), install docs at `docs/mcp.md`.
+
+### Fixed
+
+- The MCP server never closed the `Browser` — the clean stdio-exit path
+  stranded Chrome and its profile dir.
+- The snapshot/delta protocol was implemented twice against private page
+  state; now one `Page.payload()`.
+- `enable_downloads()` registered its listener after enabling events, so a
+  download completing in that window was dropped and `wait_for_download()`
+  timed out with the file already on disk.
+- Adapter selection was duplicated in `cli.py` and `mcp/server.py`, so `grip
+  run` and the MCP run tool could not reach Gemini or OpenAI-compatible
+  endpoints.
+- `assert self._llm is not None` in `Browser.run()` vanished under `python -O`.
+- CI: stealth tests pinned Chrome-build-dependent booleans; the workflow
+  claimed offline while seven tests hit live URLs.
+
 ## [0.5.1] - 2026-08-10
 
 ### Fixed
