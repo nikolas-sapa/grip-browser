@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from grip.cdp.engine import CDPEngine
-from grip.cdp.launcher import ChromeLauncher
+from grip.cdp.launcher import ChromeLauncher, default_launch_timeout
 from grip.page import Page
 from grip.security.policy import NavigationPolicy
 from grip.trace import Trace
@@ -47,7 +47,7 @@ def _expand_macro(url: str, **kwargs: str) -> str:
     return template.format(query=query)
 
 
-async def fetch_browser_ws_url(port: int) -> str:
+async def fetch_browser_ws_url(port: int, timeout: float | None = None) -> str:
     """Browser-level CDP endpoint. Unlike a page endpoint it survives tabs
     opening and closing, and it is the only place Target.createTarget works."""
     import time
@@ -60,7 +60,9 @@ async def fetch_browser_ws_url(port: int) -> str:
             parsed: dict[str, Any] = json.loads(resp.read())
             return parsed
 
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + (
+        timeout if timeout is not None else default_launch_timeout()
+    )
     while time.monotonic() < deadline:
         try:
             info = await asyncio.to_thread(_do_fetch)
@@ -85,6 +87,7 @@ class Browser:
         allow_file: bool = False,
         user_data_dir: str | None = None,
         cdp_url: str | None = None,
+        launch_timeout: float | None = None,
     ) -> None:
         self._llm = llm
         self._headless = headless
@@ -97,6 +100,7 @@ class Browser:
         )
         self._user_data_dir = user_data_dir
         self._cdp_url = cdp_url
+        self._launch_timeout = launch_timeout
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
@@ -127,9 +131,12 @@ class Browser:
                 await engine.connect(self._cdp_url)
                 self._engine = engine
                 return
-            launcher = ChromeLauncher(user_data_dir=self._user_data_dir)
-            # launch() polls for the DevTools port for up to 10s; on the loop that
-            # stalls every other tab.
+            launcher = ChromeLauncher(
+                user_data_dir=self._user_data_dir,
+                launch_timeout=self._launch_timeout,
+            )
+            # launch() polls for the DevTools port until launch_timeout; on the
+            # loop that stalls every other tab.
             await asyncio.to_thread(
                 launcher.launch,
                 headless=self._headless,
@@ -141,7 +148,9 @@ class Browser:
             # __aexit__ never runs and close() is never called.
             try:
                 self._port = launcher.port
-                ws_url = await fetch_browser_ws_url(self._port)
+                ws_url = await fetch_browser_ws_url(
+                    self._port, timeout=launcher.launch_timeout
+                )
                 engine = CDPEngine()
                 await engine.connect(ws_url)
             except BaseException:

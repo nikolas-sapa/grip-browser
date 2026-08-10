@@ -343,3 +343,44 @@ async def test_read_tool_returns_prose_not_a_document_repr():
     payloads = [unfenced(m["content"]) for m in runner._messages if m.get("role") == "tool"]
     assert "the page body says things" in payloads[0]
     assert "Document(" not in payloads[0]
+
+
+def _payload_with(delta, snapshot, last_sent):
+    runner = Runner(llm=MagicMock(), page=MagicMock(), trace=Trace())
+    runner._page._current_snapshot = snapshot
+    runner._page.delta = delta
+    runner._last_sent_version = last_sent
+    return runner, runner._page_payload()
+
+
+def test_a_delta_costlier_than_its_snapshot_is_not_sent():
+    """A delta exists to save tokens. One that does not has no reason to be sent,
+    whatever went wrong upstream — this is the backstop under the document-identity
+    guard, not a substitute for it."""
+    from grip.compression.delta import SnapshotDelta
+
+    snapshot = PageSnapshot(
+        version=2, url="https://x.test", title="T", elements=[],
+        text_content="short body", tokens_estimated=0,
+    )
+    fat = SnapshotDelta(
+        version=2, previous_version=1,
+        content_ops=[f"+{i}: {'word' * 10}" for i in range(40)],
+    )
+    runner, out = _payload_with(fat, snapshot, last_sent=1)
+    assert out.startswith("PAGE:"), "sent a delta that cost more than the full page"
+    # The baseline has to follow what was actually sent, or the next delta is
+    # written against a version the model never received.
+    assert runner._last_sent_version == 2
+
+
+def test_a_delta_cheaper_than_its_snapshot_is_still_sent():
+    from grip.compression.delta import SnapshotDelta
+
+    snapshot = PageSnapshot(
+        version=2, url="https://x.test", title="T", elements=[],
+        text_content=" ".join(f"word{i}" for i in range(200)), tokens_estimated=0,
+    )
+    lean = SnapshotDelta(version=2, previous_version=1, removed=["e3"])
+    _, out = _payload_with(lean, snapshot, last_sent=1)
+    assert out.startswith("DELTA")

@@ -34,6 +34,29 @@ _CACHED_CHROME_GLOBS = [
 ]
 
 
+_DEFAULT_LAUNCH_TIMEOUT = 10.0
+# How much of Chrome's stderr to quote back when a launch times out. Enough for a
+# sandbox/GPU/profile-lock complaint, not enough to bury the message.
+_STDERR_TAIL_BYTES = 4000
+
+
+def default_launch_timeout() -> float:
+    """Seconds to wait for Chrome's DevTools port, from GRIP_CHROME_LAUNCH_TIMEOUT.
+
+    A loaded CI runner cold-starting Chrome can take well over the local default,
+    so this is tunable without a code change. Garbage values fall back rather than
+    raising: a bad env var should not turn every launch into a crash.
+    """
+    raw = os.environ.get("GRIP_CHROME_LAUNCH_TIMEOUT")
+    if not raw:
+        return _DEFAULT_LAUNCH_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_LAUNCH_TIMEOUT
+    return value if value > 0 else _DEFAULT_LAUNCH_TIMEOUT
+
+
 def _find_cached_chrome() -> str | None:
     for pattern in _CACHED_CHROME_GLOBS:
         # Path.glob only takes a relative pattern, so an absolute one has to be
@@ -63,7 +86,11 @@ def find_chrome() -> str | None:
 
 
 class ChromeLauncher:
-    def __init__(self, user_data_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        user_data_dir: str | None = None,
+        launch_timeout: float | None = None,
+    ) -> None:
         exe = find_chrome()
         if not exe:
             raise RuntimeError(
@@ -71,7 +98,11 @@ class ChromeLauncher:
             )
         self.executable = exe
         self.port: int = 0
+        self.launch_timeout = (
+            launch_timeout if launch_timeout is not None else default_launch_timeout()
+        )
         self._process: subprocess.Popen[bytes] | None = None
+        self._stderr_path: str | None = None
         self._user_data_dir: str | None = user_data_dir
         # Only delete what we created. A caller pointing at their own profile is
         # doing it to keep logins, service workers and IndexedDB across runs —
@@ -112,30 +143,99 @@ class ChromeLauncher:
             # is a maintained arms race this project is not entering.
             args.append("--disable-blink-features=AutomationControlled")
             args.append(f"--user-agent={_STEALTH_UA}")
-        # No shell, and argv[0] is a path this module found or the operator set
-        # via CHROME_EXECUTABLE — not page-derived input.
-        self._process = subprocess.Popen(  # noqa: S603
-            args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self.port = self._read_port()
+        # stderr goes to a file rather than DEVNULL or a pipe: a pipe nobody drains
+        # deadlocks a chatty Chrome, and DEVNULL is why a launch timeout used to
+        # report nothing but "timed out". Nothing reads this on the happy path.
+        stderr_fd, self._stderr_path = tempfile.mkstemp(prefix="grip_chrome_stderr_")
+        try:
+            # No shell, and argv[0] is a path this module found or the operator set
+            # via CHROME_EXECUTABLE — not page-derived input.
+            self._process = subprocess.Popen(  # noqa: S603
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_fd,
+            )
+        finally:
+            os.close(stderr_fd)
+        try:
+            self.port = self._read_port()
+        except BaseException:
+            # launch() raising means the caller never got a launcher to close, so
+            # the half-started Chrome and its temp profile are ours to clean up.
+            self.terminate()
+            raise
         return self.port
+
+    def _stderr_tail(self) -> str:
+        if not self._stderr_path:
+            return ""
+        try:
+            data = Path(self._stderr_path).read_bytes()
+        except OSError:
+            return ""
+        return data[-_STDERR_TAIL_BYTES:].decode("utf-8", "replace").strip()
+
+    def _process_state(self) -> str:
+        """Alive-or-dead, for the launch-failure message only.
+
+        poll() reports None for a child that has exited but not been reaped yet,
+        so a bare poll() here would blame the scheduler's timing rather than
+        report the real exit code. A short bounded wait makes the diagnostic
+        deterministic; a genuinely-running Chrome just costs the caller 0.25s on
+        a path that is already failing.
+        """
+        if self._process is None:
+            return "process was never started"
+        try:
+            code = self._process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            return "process still running"
+        return f"process exited with code {code}"
 
     def _read_port(self) -> int:
         import time
         assert self._user_data_dir is not None  # set by launch() just before this is called
         port_file = Path(self._user_data_dir) / "DevToolsActivePort"
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + self.launch_timeout
+
+        def _port_now() -> int | None:
+            if not port_file.exists():
+                return None
+            # Chrome creates this file before writing to it, so existence is not
+            # readability — keep polling until the port line is complete.
+            first_line = port_file.read_text().strip().split("\n")[0].strip()
+            return int(first_line) if first_line.isdigit() else None
+
+        died = False
         while time.monotonic() < deadline:
-            if port_file.exists():
-                # Chrome creates this file before writing to it, so existence is
-                # not readability — keep polling until the port line is complete.
-                first_line = port_file.read_text().strip().split("\n")[0].strip()
-                if first_line.isdigit():
-                    return int(first_line)
+            if (port := _port_now()) is not None:
+                return port
+            # A dead Chrome is never going to write the port file, so waiting out
+            # the whole deadline only makes a real failure slower to report — and
+            # with a CI timeout of 60s, much slower. One last read covers the
+            # write-then-exit ordering.
+            if self._process is not None and self._process.poll() is not None:
+                if (port := _port_now()) is not None:
+                    return port
+                died = True
+                break
             time.sleep(0.05)
-        raise RuntimeError("Timed out waiting for Chrome DevTools port")
+        # State first: it waits briefly for a reap, and a child's last stderr
+        # writes are only guaranteed visible once it is actually gone.
+        state = self._process_state()
+        stderr = self._stderr_tail()
+        waited = (
+            "Chrome died before writing it"
+            if died
+            else f"waited {self.launch_timeout:g}s"
+        )
+        raise RuntimeError(
+            f"Chrome DevTools port never appeared — {waited} ({state}).\n"
+            f"  executable: {self.executable}\n"
+            f"  port file:  {port_file} (exists={port_file.exists()})\n"
+            f"  chrome stderr: {stderr or '<empty>'}\n"
+            "Raise GRIP_CHROME_LAUNCH_TIMEOUT if the machine is just slow."
+        )
 
     async def aterminate(self) -> None:
         """terminate() does a 5s process wait and an rmtree; both freeze the loop.
@@ -153,6 +253,9 @@ class ChromeLauncher:
                 self._process.kill()
                 self._process.wait(timeout=5)
             self._process = None
+        if self._stderr_path:
+            Path(self._stderr_path).unlink(missing_ok=True)
+            self._stderr_path = None
         if self._user_data_dir and self._owns_user_data_dir:
             shutil.rmtree(self._user_data_dir, ignore_errors=True)
             self._user_data_dir = None

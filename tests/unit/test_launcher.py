@@ -121,3 +121,76 @@ def test_stale_chrome_executable_is_not_trusted(monkeypatch):
     monkeypatch.setenv("CHROME_EXECUTABLE", "/nonexistent/chrome")
     found = find_chrome()
     assert found != "/nonexistent/chrome"
+
+
+def test_launch_timeout_reads_env(monkeypatch, tmp_path):
+    from grip.cdp.launcher import default_launch_timeout
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+
+    monkeypatch.delenv("GRIP_CHROME_LAUNCH_TIMEOUT", raising=False)
+    assert default_launch_timeout() == 10.0
+    monkeypatch.setenv("GRIP_CHROME_LAUNCH_TIMEOUT", "45")
+    assert ChromeLauncher().launch_timeout == 45.0
+    # Junk and non-positive values fall back: a bad env var must not turn every
+    # launch into a crash or a zero-length deadline.
+    for bad in ("banana", "0", "-3", ""):
+        monkeypatch.setenv("GRIP_CHROME_LAUNCH_TIMEOUT", bad)
+        assert default_launch_timeout() == 10.0
+    # An explicit argument still wins over the environment.
+    monkeypatch.setenv("GRIP_CHROME_LAUNCH_TIMEOUT", "45")
+    assert ChromeLauncher(launch_timeout=2.5).launch_timeout == 2.5
+
+
+def test_launch_timeout_error_reports_exit_code_and_stderr(monkeypatch, tmp_path):
+    """The timeout used to say only "timed out", which is a debugging dead end.
+    It has to say whether Chrome is alive and what Chrome itself complained about."""
+    import time
+
+    import pytest
+
+    exe = tmp_path / "fake-chrome"
+    exe.write_text("#!/bin/sh\necho 'chrome could not start' >&2\nexit 7\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+
+    # A generous deadline on purpose: the launch must fail as soon as the process
+    # dies, not by running out the clock, so this asserts on elapsed time too.
+    launcher = ChromeLauncher(launch_timeout=30)
+    start = time.monotonic()
+    with pytest.raises(RuntimeError) as excinfo:
+        launcher.launch()
+    elapsed = time.monotonic() - start
+    assert elapsed < 10, "a dead Chrome should fail fast, not wait out the deadline"
+    message = str(excinfo.value)
+    assert "exited with code 7" in message
+    assert "chrome could not start" in message
+    assert "GRIP_CHROME_LAUNCH_TIMEOUT" in message
+    # A failed launch cleans up after itself — nothing else is holding the
+    # process or the temp profile, because launch() never returned a launcher.
+    assert launcher._process is None
+    assert launcher._stderr_path is None
+
+
+def test_dead_chrome_is_reported_accurately_when_the_deadline_expires_first(
+    monkeypatch, tmp_path
+):
+    """Same diagnostic, but with a deadline so short the poll loop never notices
+    the death: poll() reports None for an unreaped child, so without a bounded
+    wait before building the message this reports "still running / <empty>" for a
+    process that is neither. A diagnostic that depends on scheduler luck is worse
+    than none — it is the one people delete."""
+    import pytest
+
+    exe = tmp_path / "fake-chrome"
+    exe.write_text("#!/bin/sh\necho 'chrome could not start' >&2\nexit 7\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        ChromeLauncher(launch_timeout=0.01).launch()
+    message = str(excinfo.value)
+    assert "exited with code 7" in message
+    assert "chrome could not start" in message

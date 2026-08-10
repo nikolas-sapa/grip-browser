@@ -73,8 +73,9 @@ async def test_concurrent_connect_launches_one_chrome(monkeypatch):
 
     class FakeLauncher:
         port = 9222
+        launch_timeout = 10.0
 
-        def __init__(self, user_data_dir=None):
+        def __init__(self, user_data_dir=None, launch_timeout=None):
             pass
 
         def launch(self, **kwargs):
@@ -99,8 +100,9 @@ async def test_connect_failure_terminates_chrome(monkeypatch):
 
     class FakeLauncher:
         port = 9222
+        launch_timeout = 10.0
 
-        def __init__(self, user_data_dir=None):
+        def __init__(self, user_data_dir=None, launch_timeout=None):
             pass
 
         def launch(self, **kwargs):
@@ -109,7 +111,7 @@ async def test_connect_failure_terminates_chrome(monkeypatch):
         def terminate(self):
             terminated.append(1)
 
-    async def boom(port):
+    async def boom(port, timeout=None):
         raise RuntimeError("no endpoint")
 
     monkeypatch.setattr("grip.browser.ChromeLauncher", FakeLauncher)
@@ -159,8 +161,9 @@ async def test_launch_runs_off_the_event_loop(monkeypatch):
 
     class SlowLauncher:
         port = 9222
+        launch_timeout = 10.0
 
-        def __init__(self, user_data_dir=None):
+        def __init__(self, user_data_dir=None, launch_timeout=None):
             pass
 
         def launch(self, **kwargs):
@@ -187,6 +190,7 @@ async def test_cdp_url_skips_launching_chrome(monkeypatch):
 
     class FakeLauncher:
         port = 9222
+        launch_timeout = 10.0
 
         def launch(self, **kwargs):
             launched.append(1)
@@ -276,8 +280,9 @@ async def test_user_data_dir_reaches_the_launcher(monkeypatch):
 
     class RecordingLauncher:
         port = 9222
+        launch_timeout = 10.0
 
-        def __init__(self, user_data_dir=None):
+        def __init__(self, user_data_dir=None, launch_timeout=None):
             seen["dir"] = user_data_dir
 
         def launch(self, **kwargs):

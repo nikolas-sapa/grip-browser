@@ -43,6 +43,11 @@ jobs:
       # a browser binary, which ubuntu-latest runners ship. Without one they skip
       # (tests/conftest.py) rather than fail.
       - name: Run integration and gripsearch tests
+        # Each test launches its own Chrome, and a cold start on a 2-core runner
+        # under load blows well past the 10s local default. The knob exists so CI
+        # can be patient without making every developer's failure slower.
+        env:
+          GRIP_CHROME_LAUNCH_TIMEOUT: "60"
         run: pytest tests/integration/ tests/gripsearch/ -v
 
   lint:

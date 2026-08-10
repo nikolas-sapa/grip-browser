@@ -183,6 +183,7 @@ async def test_missing_snapshot_is_reported_not_answered_with_an_empty_page():
 async def test_snapshot_returns_the_delta_on_turn_two():
     """grip's differentiator: turn 2+ sends only what changed."""
     from grip.compression.delta import SnapshotDelta
+    from grip.compression.summarizer import PageSnapshot
     from grip.mcp import server
 
     server.reset_state()
@@ -190,7 +191,14 @@ async def test_snapshot_returns_the_delta_on_turn_two():
     class FakePage:
         def __init__(self):
             self.delta = None
-            self._current_snapshot = "SNAP"
+            # A real snapshot, not a sentinel: the payload path renders it to
+            # decide whether the delta is actually cheaper than sending it.
+            self._current_snapshot = PageSnapshot(
+                version=2, url="https://x.test", title="SNAPSHOT-TITLE",
+                elements=[], text_content="a page body long enough that dropping "
+                "one element is plainly the cheaper thing to send",
+                tokens_estimated=0,
+            )
 
         async def snapshot(self):
             self.delta = SnapshotDelta(version=2, previous_version=1, removed=["e3"])
@@ -201,5 +209,41 @@ async def test_snapshot_returns_the_delta_on_turn_two():
     # standing on: it was shown version 1.
     server._last_sent_version = 1
     out = await server.call_tool("snapshot", {})
-    assert "SNAP" not in out, "turn 2 must not resend the full snapshot"
+    assert "SNAPSHOT-TITLE" not in out, "turn 2 must not resend the full snapshot"
     server.reset_state()
+
+
+@pytest.mark.asyncio
+async def test_a_delta_costlier_than_its_snapshot_is_not_sent():
+    """The server carries its own copy of the payload decision, so it needs its
+    own proof that an oversized delta falls back to the full page."""
+    from grip.compression.delta import SnapshotDelta
+    from grip.compression.summarizer import PageSnapshot
+    from grip.mcp import server
+
+    server.reset_state()
+
+    class _FatDeltaPage:
+        def __init__(self):
+            self._current_snapshot = PageSnapshot(
+                version=2, url="https://x.test", title="T", elements=[],
+                text_content="short body", tokens_estimated=0,
+            )
+            self.delta = SnapshotDelta(
+                version=2, previous_version=1,
+                content_ops=[f"+{i}: {'word' * 10}" for i in range(40)],
+            )
+
+        async def snapshot(self):
+            return self._current_snapshot
+
+    server._page = _FatDeltaPage()
+    server._last_sent_version = 1
+    try:
+        out = await server.call_tool("snapshot", {})
+        assert out.startswith("PAGE:"), "sent a delta that cost more than the full page"
+        # The baseline follows what was actually sent, or the next delta is
+        # written against a version the client never received.
+        assert server._last_sent_version == 2
+    finally:
+        server.reset_state()
