@@ -337,6 +337,7 @@ REAL_URLS = [
 ]
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_discover_elements_matches_baseline_on_real_pages():
     checked = 0

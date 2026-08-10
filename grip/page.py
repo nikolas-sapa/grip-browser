@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import math
 import random
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ from grip.challenge import (
     is_solvable,
     needs_vision,
 )
-from grip.compression.delta import SnapshotDelta, build_delta
+from grip.compression.delta import SnapshotDelta, build_delta, format_delta, is_worth_sending
 from grip.compression.refs import RefRegistry
 from grip.compression.summarizer import Element, PageSnapshot, Summarizer
 from grip.errors.classifier import RAW_TEXT_PROBE_FLOOR, ErrorClassifier
@@ -41,6 +42,7 @@ from grip.input import RESOLVE_POINT_JS, bezier_path, move_delay, press_dwell
 from grip.reader import Block, Document
 from grip.resources import BLOCKED_RESOURCE_PATTERNS
 from grip.security.injection import InjectionDetector
+from grip.security.policy import NavigationPolicy, enforce as enforce_navigation
 from grip.security.sanitizer import RawElement
 from grip.trace import Trace, TraceEntry
 
@@ -60,6 +62,45 @@ def _same_document(current: str, requested: str) -> bool:
     if not current or not requested:
         return False
     return current.rstrip("/") == requested.rstrip("/")
+
+
+def render_payload(
+    snap: PageSnapshot | None,
+    delta: SnapshotDelta | None,
+    last_sent_version: int,
+    summarizer: Summarizer,
+) -> tuple[str, int]:
+    """Free function behind `Page.payload()`, kept separate so callers that
+    don't hold a real Page (tests, and formerly two independent copies of this
+    exact branch in grip.mcp.server and Runner) can exercise the decision
+    directly against a snapshot/delta pair instead of a full Page double.
+
+    Returns (text, new_last_sent_version).
+    """
+    if snap is None:
+        # Every path here snapshots first, so this is a bug in the caller, not a
+        # page state. Raising is what a server can afford: it turns into one
+        # error result the client can act on and the process keeps serving,
+        # whereas formatting nothing would answer with an empty page as if it
+        # were the truth.
+        raise RuntimeError(
+            "payload() called before any snapshot; the page has no state to send"
+        )
+    rendered_snapshot = summarizer.format(snap)
+    # A delta is only readable against a baseline the client actually received.
+    # click()/type() snapshot implicitly when the ref cache is cold (which is the
+    # state goto() leaves behind), advancing the page's baseline without emitting
+    # anything. "A delta exists" is therefore not the same question as "the
+    # client can apply it", and getting that wrong describes refs it has never
+    # seen.
+    if delta is not None and delta.previous_version == last_sent_version:
+        rendered_delta = format_delta(delta)
+        # Falling through to the snapshot has to move the baseline to the
+        # snapshot's version, not the delta's: the client is being shown the
+        # full page, and the next delta must be written against that.
+        if is_worth_sending(rendered_delta, rendered_snapshot):
+            return rendered_delta, delta.version
+    return rendered_snapshot, snap.version
 
 
 @dataclass
@@ -84,12 +125,18 @@ class Page:
         safe: bool = False,
         closer: Callable[[str], Awaitable[None]] | None = None,
         block_resources: bool = False,
+        policy: NavigationPolicy | None = None,
     ) -> None:
         self._engine = engine
         self._trace = trace
         self._target_id = target_id
         self._safe = safe
         self._closer = closer
+        # Fail-closed default: a Page built without going through Browser.open()
+        # (a direct construction, or a future call site that forgets to thread
+        # the Browser's policy through) still refuses private/file/metadata
+        # targets rather than silently allowing everything.
+        self._policy = policy if policy is not None else NavigationPolicy()
         self._closed = False
         self._version = 0
         self._current_snapshot: PageSnapshot | None = None
@@ -108,6 +155,26 @@ class Page:
         # the last position instead of teleporting to the target every time.
         self._pointer_x = 0
         self._pointer_y = 0
+        # Fetch-domain interception (see _ensure_fetch_interception): enabled
+        # once, for the page's lifetime, not re-armed per goto(). Set by
+        # goto() while it is in flight so the persistent Fetch handler below
+        # can report a refused top-level document back to the call that is
+        # actually waiting on it.
+        self._fetch_enabled = False
+        self._doc_refusal_hook: Callable[[str], None] | None = None
+        # Popup blocking (see _ensure_popup_blocking): armed once per page
+        # lifetime, from goto()'s gather — same "once, not per-navigation"
+        # reasoning as _fetch_enabled above.
+        self._popup_block_armed = False
+        # Fire-and-forget tasks spawned from synchronous CDP event handlers
+        # (_on_fetch_paused, _on_target_attached) below, which cannot await
+        # directly. asyncio only holds a weak reference to a task started via
+        # ensure_future/create_task, so without this the task can be
+        # garbage-collected mid-flight — silently dropping a
+        # Fetch.continueRequest/failRequest or a Target.closeTarget/
+        # runIfWaitingForDebugger call and hanging the request/target it was
+        # meant to resolve.
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -122,6 +189,170 @@ class Page:
         if not self._initialized:
             await self._engine.send("Runtime.enable")
             self._initialized = True
+        # Covers pages reached without goto() (remote CDP attach, an adopted
+        # target) — goto() is the common path but not the only entry point,
+        # and post-load page JS is exactly what Finding 1 is about.
+        await self._ensure_fetch_interception()
+
+    async def _ensure_fetch_interception(self) -> None:
+        """Pause every request the browser is about to send, so a refused one
+        never leaves — as opposed to the old Network.requestWillBeSent
+        observer, which only ever saw a request Chrome had already issued
+        (DNS resolved, connection opened) and could at best race a
+        Page.stopLoading against it after the fact.
+
+        Enabled once for the page's lifetime, not per-navigation: a listener
+        that only lived inside goto() protected the initial URL and its
+        redirect chain but nothing page JS did after load fired — fetch()/XHR,
+        window.location, a delayed iframe. Fetch.enable applies to
+        sub-resources and later navigations on this target too, so one
+        registration covers all of it.
+
+        window.open() is NOT covered here — it creates a brand-new CDP target
+        with its own independent Fetch-domain state, and Fetch.enable on this
+        target does nothing for it. See _ensure_popup_blocking() for that gap.
+
+        Gated on the policy actually being able to refuse anything: a
+        Fetch-domain round trip per request is a real cost, and an
+        allow_private=True caller has already opted out of restriction, so
+        there is nothing for interception to buy them.
+        """
+        if self._fetch_enabled or self._policy.allow_private:
+            return
+        self._fetch_enabled = True
+        self._engine.on("Fetch.requestPaused", self._on_fetch_paused)
+        await self._engine.send(
+            "Fetch.enable",
+            {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+        )
+
+    def _spawn_bg(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Schedule `coro` and keep a strong reference until it finishes.
+
+        Used from synchronous CDP event handlers, which cannot await. A bare
+        asyncio.ensure_future() is only weakly referenced by the loop, so the
+        task can be garbage-collected before it runs — see the _bg_tasks
+        comment in __init__.
+        """
+        task = asyncio.ensure_future(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def _on_fetch_paused(self, params: dict[str, Any]) -> None:
+        """Fetch.requestPaused handler: the request is already suspended in
+        the browser, so a refusal here is preventive, not a race. Runs
+        synchronously (CDPEngine dispatches listeners inline) and hands the
+        actual continue/fail CDP call off to the event loop — the browser is
+        happy to wait on a paused request across a task switch."""
+        request_id = params.get("requestId", "")
+        url = params.get("request", {}).get("url", "")
+        reason = self._policy.check(url)
+        if reason is None:
+            self._spawn_bg(self._continue_fetch(request_id))
+            return
+        # Sub-resources are blocked silently — a page legitimately pulls in
+        # many third-party resources, and a refused image or ad script is not
+        # something the caller needs to fail loudly over. The top-level
+        # document is different: goto() should not return as if a blocked
+        # page had loaded, so a waiting goto() is told directly rather than
+        # relying on it to notice a blank/errored page on its own.
+        #
+        # "Document" alone is not enough to mean "the top-level document" — a
+        # blocked IFRAME navigation also pauses with resourceType "Document",
+        # and treating that as the main navigation would raise
+        # NAVIGATION_REFUSED out of goto() for what was only a sub-frame
+        # block. The main frame's id equals this target's id, so comparing
+        # against it tells the two apart. self._target_id can be empty for a
+        # Page built without going through Browser.open() (see __init__); in
+        # that case there is no id to compare against, so this falls back to
+        # the old behaviour rather than silently never firing the hook.
+        is_main_frame = not self._target_id or params.get("frameId") == self._target_id
+        if (
+            params.get("resourceType") == "Document"
+            and self._doc_refusal_hook is not None
+            and is_main_frame
+        ):
+            self._doc_refusal_hook(url)
+        self._spawn_bg(self._fail_fetch(request_id))
+
+    async def _continue_fetch(self, request_id: str) -> None:
+        # Best-effort: the target can vanish (navigation superseded it, tab
+        # closed) between the pause and this call, which is not a bug here.
+        with contextlib.suppress(Exception):
+            await self._engine.send("Fetch.continueRequest", {"requestId": request_id})
+
+    async def _fail_fetch(self, request_id: str) -> None:
+        with contextlib.suppress(Exception):
+            await self._engine.send(
+                "Fetch.failRequest",
+                {"requestId": request_id, "errorReason": "AccessDenied"},
+            )
+
+    async def _ensure_popup_blocking(self) -> None:
+        """window.open() (and an <a target="_blank"> click) creates a brand-new
+        CDP target with its own Fetch-domain state; Fetch.enable above never
+        touches it, so page JS could otherwise pop
+        `window.open('http://169.254.169.254/latest/meta-data/')` into a new
+        tab with zero policy enforcement.
+
+        Chosen fix: block the popup outright rather than arm interception on
+        it. Arming interception on a second target properly would mean
+        session-scoped command routing plus demuxing Fetch.requestPaused by
+        session — real work CDPEngine has never had to do, since every Page
+        has owned exactly one target/one websocket. Page never follows a
+        popup anyway (nothing here reads `Target.createTarget`'s result for
+        anything but the tab this Page already is), so a popup that never
+        opens costs nothing this class provides today.
+
+        Target.setAutoAttach, sent on this target's own connection, scopes
+        the attach to targets *this* target opens — popups and OOPIF
+        (out-of-process) iframes both arrive this way. waitForDebuggerOnStart
+        is what makes the block airtight: Chrome pauses the new target before
+        it runs any JS or issues its initial navigation, and it stays paused
+        until something calls Runtime.runIfWaitingForDebugger — closing it
+        instead means the popup never gets far enough to request anything.
+
+        Gated the same as Fetch interception: nothing to enforce once the
+        caller has opted into allow_private.
+        """
+        if self._popup_block_armed or self._policy.allow_private:
+            return
+        self._popup_block_armed = True
+        self._engine.on("Target.attachedToTarget", self._on_target_attached)
+        await self._engine.send(
+            "Target.setAutoAttach",
+            {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
+        )
+
+    def _on_target_attached(self, params: dict[str, Any]) -> None:
+        """Every child target this page's target opens arrives here, paused.
+
+        Only `type == "page"` is a popup — a real new tab/window from
+        window.open() or target=_blank. Everything else auto-attach can hand
+        us (an OOPIF, a worker) is a normal part of rendering this page and
+        has to be resumed immediately or it hangs forever; it is not
+        something Page ever intended to block.
+        """
+        target_info = params.get("targetInfo", {})
+        session_id = params.get("sessionId", "")
+        if target_info.get("type") == "page":
+            target_id = target_info.get("targetId", "")
+            if target_id:
+                self._spawn_bg(self._close_popup_target(target_id))
+            return
+        self._spawn_bg(self._resume_attached_target(session_id))
+
+    async def _close_popup_target(self, target_id: str) -> None:
+        # Deliberately never Runtime.runIfWaitingForDebugger first — resuming
+        # it, even briefly, is exactly the race this exists to avoid.
+        with contextlib.suppress(Exception):
+            await self._engine.send("Target.closeTarget", {"targetId": target_id})
+
+    async def _resume_attached_target(self, session_id: str) -> None:
+        with contextlib.suppress(Exception):
+            await self._engine.send(
+                "Runtime.runIfWaitingForDebugger", {}, session_id=session_id
+            )
 
     async def goto(self, url: str, timeout: float = 30.0) -> None:
         """Navigate this tab and wait for the load event.
@@ -131,6 +362,12 @@ class Page:
         30s and goto(timeout=1) could block for a minute and a half.
         """
         load_event = asyncio.Event()
+        # Set once the top-level document is refused by the Fetch-domain
+        # handler below — the initial URL (checked synchronously two lines
+        # down) or any redirect leg, since each leg pauses again before it is
+        # sent. Preventive: by the time this fires, Fetch.failRequest has
+        # already kept the request from ever reaching the target host.
+        refused_url: str | None = None
 
         def on_load(_params: dict[str, Any]) -> None:
             load_event.set()
@@ -142,6 +379,12 @@ class Page:
             if params.get("type") == "Document":
                 self._status_code = params.get("response", {}).get("status", 0)
 
+        def on_document_refused(request_url: str) -> None:
+            nonlocal refused_url
+            if refused_url is None:
+                refused_url = request_url
+                load_event.set()
+
         self._status_code = 0
         # The cached snapshot describes the document we are leaving. Element
         # handles, refs and indices are all scoped to it, so keeping it across a
@@ -152,10 +395,14 @@ class Page:
         # build_delta's url guard cannot see that case.
         self._previous_snapshot = None
         self.delta = None
+        enforce_navigation(self._policy, url)
         # Subscribe before navigating — a fast page can fire loadEventFired
         # before the navigate call returns.
         self._engine.on("Page.loadEventFired", on_load)
         self._engine.on("Network.responseReceived", on_response)
+        # Only this goto() cares about a refused top-level document; the
+        # Fetch handler itself lives for the page's whole lifetime.
+        self._doc_refusal_hook = on_document_refused
         try:
             async with asyncio.timeout(timeout):
                 # Runtime goes up with the other two rather than lazily in
@@ -165,6 +412,8 @@ class Page:
                     self._engine.send("Page.enable"),
                     self._engine.send("Network.enable"),
                     self._engine.send("Runtime.enable"),
+                    self._ensure_fetch_interception(),
+                    self._ensure_popup_blocking(),
                 )
                 self._initialized = True
                 if self._block_resources:
@@ -189,6 +438,9 @@ class Page:
         finally:
             self._engine.off("Page.loadEventFired", on_load)
             self._engine.off("Network.responseReceived", on_response)
+            self._doc_refusal_hook = None
+        if refused_url is not None:
+            enforce_navigation(self._policy, refused_url)
 
     async def _already_at(self, url: str) -> bool:
         """True only if this target is *already* showing a finished `url`.
@@ -352,6 +604,24 @@ class Page:
             duration_ms=duration_ms,
         ))
         return snapshot
+
+    def payload(self, last_sent_version: int) -> tuple[str, int]:
+        """Render the current snapshot as a delta against `last_sent_version`, or
+        as a full snapshot if there is no delta, the delta isn't readable against
+        that baseline, or the delta doesn't actually save anything.
+
+        The single home for a decision every caller needs: grip.mcp.server and
+        Runner both send "what changed since the client last saw the page", and
+        used to carry two copies of this exact algorithm (same branches, same
+        comments) reaching into `_current_snapshot`/`delta` independently. One
+        drifting out of sync with the other was only a matter of time.
+
+        Returns (text, new_last_sent_version) — the caller owns tracking what its
+        client actually holds; the page doesn't know how many clients are asking.
+        """
+        return render_payload(
+            self._current_snapshot, self.delta, last_sent_version, self._summarizer
+        )
 
     async def read(
         self,

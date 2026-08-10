@@ -17,6 +17,7 @@ class ErrorType(Enum):
     NAVIGATION_FAILED = "navigation_failed"
     CANVAS_ELEMENT = "canvas_element"
     SAFE_MODE_VIOLATION = "safe_mode_violation"
+    NAVIGATION_REFUSED = "navigation_refused"
 
 
 class RecoveryAction(Enum):

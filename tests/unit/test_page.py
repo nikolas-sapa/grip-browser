@@ -8,6 +8,7 @@ from grip.errors import GripError
 from grip.errors.types import ErrorType
 from grip.page import Page
 from grip.cdp.engine import CDPEngine
+from grip.security.policy import NavigationPolicy
 from grip.trace import Trace
 
 
@@ -41,6 +42,7 @@ async def test_snapshot_returns_page_snapshot():
     engine = make_cdp_mock()
     engine.send.side_effect = [
         {},   # Runtime.enable
+        {},   # Fetch.enable
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "button", "role": "button", "text": "Buy",
@@ -64,7 +66,8 @@ async def test_snapshot_returns_page_snapshot():
 async def test_snapshot_increments_version():
     engine = make_cdp_mock()
     engine.send.side_effect = [
-        {},
+        {},   # Runtime.enable
+        {},   # Fetch.enable
         {"result": {"value": "[]"}},
         {"result": {"value": ""}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
@@ -195,11 +198,343 @@ async def test_goto_honours_its_own_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_goto_refuses_private_ip_target_directly():
+    """No engine interaction at all — enforce_navigation raises on the URL the
+    caller handed us before any CDP call, closing the "call Page.goto()
+    directly and skip Browser.open()'s check" bypass."""
+    page = _bare_page()  # default NavigationPolicy(): allow_private=False
+    with pytest.raises(GripError) as exc:
+        await page.goto("http://127.0.0.1:8080/admin", timeout=0.05)
+    assert exc.value.error.type is ErrorType.NAVIGATION_REFUSED
+
+
+def _fetch_engine():
+    """A CDPEngine double that plays along with Fetch-domain interception:
+    `on()` records listeners, `send()` records every call it was given
+    (method + params) so a test can assert what was — and wasn't — told to
+    the browser, which is the only way a unit test can see "the request was
+    never allowed to leave": there is no real network here, so proving a
+    refusal is preventive means proving `Fetch.continueRequest` was never
+    sent for it, not just that goto() raised.
+
+    Also records every call that carried a `session_id` (method, session_id)
+    separately in `session_sent` — used by the popup-blocking tests to prove
+    a resumed target was resumed on the *right* child session, not the
+    page's own.
+    """
+    engine = make_cdp_mock()
+    listeners: dict[str, list] = {}
+    sent: list[tuple[str, dict]] = []
+    session_sent: list[tuple[str, str]] = []
+
+    def fake_on(event, cb):
+        listeners.setdefault(event, []).append(cb)
+
+    async def fake_send(method, params=None, session_id=None):
+        sent.append((method, params or {}))
+        if session_id is not None:
+            session_sent.append((method, session_id))
+        if method == "Runtime.evaluate":
+            return {"result": {"value": None}}
+        return {}
+
+    engine.on = fake_on
+    engine.off = lambda *a: None
+    engine.send = fake_send
+    return engine, listeners, sent, session_sent
+
+
+def _fire_paused(listeners, url, request_id, resource_type="Document", frame_id=None):
+    params = {"requestId": request_id, "request": {"url": url}, "resourceType": resource_type}
+    if frame_id is not None:
+        params["frameId"] = frame_id
+    for cb in listeners.get("Fetch.requestPaused", []):
+        cb(params)
+
+
+def _fire_attached(listeners, session_id, target_id, target_type, opener_id=""):
+    for cb in listeners.get("Target.attachedToTarget", []):
+        cb({
+            "sessionId": session_id,
+            "targetInfo": {"targetId": target_id, "type": target_type, "openerId": opener_id},
+            "waitingForDebugger": True,
+        })
+
+
+@pytest.mark.asyncio
+async def test_goto_refuses_redirect_to_private_ip(monkeypatch):
+    """A public URL that 302s to a private/metadata target must be refused too
+    — the redirect leg pauses again at the Fetch domain and is failed before
+    it is ever sent, not merely re-checked after Chrome already issued it."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        # Simulate the redirect leg pausing before it leaves the browser,
+        # the moment Page.navigate would trigger it.
+        _fire_paused(listeners, "http://169.254.169.254/latest/meta-data/", "r-redirect")
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    with pytest.raises(GripError) as exc:
+        await page.goto("https://public.test/", timeout=1.0)
+    assert exc.value.error.type is ErrorType.NAVIGATION_REFUSED
+    await asyncio.sleep(0)  # let the fire-and-forget Fetch.failRequest land
+
+    fail_calls = [p for m, p in sent if m == "Fetch.failRequest"]
+    continue_calls = [p for m, p in sent if m == "Fetch.continueRequest"]
+    assert any(c.get("requestId") == "r-redirect" for c in fail_calls), (
+        "the redirect leg must be told to fail"
+    )
+    assert not any(c.get("requestId") == "r-redirect" for c in continue_calls), (
+        "the redirect leg must never be told to continue — that is what would "
+        "let it reach the internal host"
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_load_fetch_to_private_ip_is_blocked(monkeypatch):
+    """Finding 1: page JS calling fetch() *after* load must still be blocked.
+    Interception has to survive goto() returning — this fails on the old
+    Network.requestWillBeSent listener, which was torn down in goto()'s
+    finally the moment the load event fired."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)  # completes normally
+
+    # Only now, after goto() has returned, does page JS issue the request.
+    _fire_paused(listeners, "http://10.0.0.5/internal", "r-postload", resource_type="Fetch")
+    await asyncio.sleep(0)
+
+    fail_calls = [p for m, p in sent if m == "Fetch.failRequest"]
+    continue_calls = [p for m, p in sent if m == "Fetch.continueRequest"]
+    assert any(c.get("requestId") == "r-postload" for c in fail_calls)
+    assert not any(c.get("requestId") == "r-postload" for c in continue_calls)
+
+
+@pytest.mark.asyncio
+async def test_blocked_subresource_does_not_raise_out_of_goto(monkeypatch):
+    """A sub-resource (e.g. an <img> pointed at a private host) is blocked
+    without turning into an exception out of goto() — pages legitimately pull
+    in many third-party resources, and only the top-level document should
+    fail the navigation."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        _fire_paused(listeners, "http://192.168.1.1/beacon", "r-sub", resource_type="Image")
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)  # must not raise
+    await asyncio.sleep(0)
+
+    fail_calls = [p for m, p in sent if m == "Fetch.failRequest"]
+    assert any(c.get("requestId") == "r-sub" for c in fail_calls)
+
+
+@pytest.mark.asyncio
+async def test_goto_allows_private_target_and_its_redirect_when_opted_in(monkeypatch):
+    """allow_private=True permits both a direct private-IP target and a
+    redirect leg landing on one — and skips Fetch interception entirely,
+    since a permissive policy has nothing left for it to enforce."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy(allow_private=True))
+
+    async def navigate_side_effect():
+        _fire_paused(listeners, "http://127.0.0.1:9000/internal", "r-priv")
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    # Nothing fires Page.loadEventFired in this fake, so goto() rides out its
+    # own short timeout — the point being it does not raise NAVIGATION_REFUSED.
+    await page.goto("http://127.0.0.1:8080/", timeout=0.05)
+
+    assert not any(m == "Fetch.enable" for m, _ in sent), (
+        "allow_private=True should not pay for interception it can't use"
+    )
+    assert not any(m == "Target.setAutoAttach" for m, _ in sent), (
+        "allow_private=True has nothing left for popup blocking to enforce either"
+    )
+
+
+@pytest.mark.asyncio
+async def test_popup_target_is_closed_from_its_paused_state(monkeypatch):
+    """FIX 1: window.open()/target=_blank spins up a brand-new CDP target with
+    its own Fetch-domain state that Fetch.enable on this target never touches.
+    Chosen fix — block it outright — verified by never resuming it: only
+    Target.closeTarget for it, never Runtime.runIfWaitingForDebugger."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        _fire_attached(listeners, "popup-session", "popup-target", "page", opener_id="T1")
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert any(
+        m == "Target.setAutoAttach" and p.get("waitForDebuggerOnStart") is True
+        for m, p in sent
+    ), "auto-attach must pause the new target before it can run any JS"
+    close_calls = [p for m, p in sent if m == "Target.closeTarget"]
+    assert any(c.get("targetId") == "popup-target" for c in close_calls)
+    assert not any(m == "Runtime.runIfWaitingForDebugger" for m, _ in sent), (
+        "the popup must never be resumed — even briefly — before it is closed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_popup_attached_target_is_resumed_not_closed(monkeypatch):
+    """An OOPIF (out-of-process iframe) or worker also arrives through the same
+    auto-attach — those are ordinary parts of rendering this page, not popups,
+    and must be resumed on their own session or they hang forever."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        _fire_attached(listeners, "iframe-session", "iframe-target", "iframe")
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert not any(m == "Target.closeTarget" for m, _ in sent), (
+        "an iframe/worker target must not be treated as a popup"
+    )
+    assert ("Runtime.runIfWaitingForDebugger", "iframe-session") in session_sent, (
+        "it must be resumed on its own child session, not the page's own"
+    )
+
+
+@pytest.mark.asyncio
+async def test_subframe_document_block_does_not_raise_out_of_goto(monkeypatch):
+    """FIX 2: a blocked IFRAME navigation also pauses with resourceType
+    "Document". Only the main frame (frameId == this target's id) may raise
+    NAVIGATION_REFUSED out of goto() — a sub-frame block behaves like a
+    sub-resource block, silently."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), target_id="T1", policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        _fire_paused(
+            listeners, "http://169.254.169.254/latest/meta-data/", "r-iframe",
+            frame_id="some-other-frame",
+        )
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)  # must not raise
+    await asyncio.sleep(0)
+
+    fail_calls = [p for m, p in sent if m == "Fetch.failRequest"]
+    assert any(c.get("requestId") == "r-iframe" for c in fail_calls), (
+        "the sub-frame request must still be refused"
+    )
+
+
+@pytest.mark.asyncio
+async def test_main_frame_document_block_still_raises_out_of_goto(monkeypatch):
+    """The counterpart to the sub-frame test above: a block on the main frame
+    (frameId == target_id) must still surface as NAVIGATION_REFUSED."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), target_id="T1", policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        _fire_paused(
+            listeners, "http://169.254.169.254/latest/meta-data/", "r-main",
+            frame_id="T1",
+        )
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    with pytest.raises(GripError) as exc:
+        await page.goto("https://public.test/", timeout=1.0)
+    assert exc.value.error.type is ErrorType.NAVIGATION_REFUSED
+
+
+@pytest.mark.asyncio
 async def test_second_snapshot_exposes_a_delta():
     engine = make_cdp_mock()
-    # One Runtime.enable, then three canned responses per snapshot. Same URL both
-    # times — a URL change is the one case build_delta refuses to diff.
+    # One Runtime.enable, one Fetch.enable, then three canned responses per
+    # snapshot. Same URL both times — a URL change is the one case build_delta
+    # refuses to diff.
     engine.send.side_effect = [
+        {},
         {},
         {"result": {"value": "[]"}},
         {"result": {"value": "hello"}},
@@ -252,6 +587,7 @@ def _injected_engine(title, el_text, el_placeholder, page_text, el_role="textbox
     engine = make_cdp_mock()
     engine.send.side_effect = [
         {},   # Runtime.enable
+        {},   # Fetch.enable
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "input", "role": el_role, "text": el_text,

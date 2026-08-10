@@ -503,7 +503,20 @@ pip install grip-browser[openai]
 
 # with Anthropic support
 pip install grip-browser[anthropic]
+
+# as an MCP server
+pip install grip-browser[mcp]
 ```
+
+---
+
+## MCP Server
+
+`grip-mcp` runs grip as a stdio MCP server — eight tools (`open`, `goto`,
+`snapshot`, `click`, `type`, `read`, `screenshot`, `run`), the same delta
+compression as the SDK, and no session registry (one browser, one page, per
+process). Copy-paste config for Claude Code, Claude Desktop, and Cursor, plus
+the full tool reference: **[docs/mcp.md](docs/mcp.md)**.
 
 ---
 

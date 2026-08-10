@@ -9,20 +9,20 @@ importable on a base install so `grip` never depends on the extra.
 """
 from __future__ import annotations
 
+import contextlib
+import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 from grip.browser import Browser
-from grip.compression.delta import format_delta, is_worth_sending
-from grip.compression.summarizer import Summarizer
 from grip.page import Page
 
-TOOL_NAMES = ("open", "snapshot", "click", "type", "read")
+TOOL_NAMES = ("open", "goto", "snapshot", "click", "type", "read", "screenshot", "run")
 
 _browser: Browser | None = None
 _page: Page | None = None
-_summarizer = Summarizer()
 # The page version the client actually holds, which is not the page's own
-# baseline — see _payload.
+# baseline — see Page.payload().
 _last_sent_version = 0
 
 
@@ -35,44 +35,34 @@ def reset_state() -> None:
     _last_sent_version = 0
 
 
+def _llm_adapter_from_env() -> Any | None:
+    """Best-effort: only the 'run' tool needs an adapter, so a missing key isn't
+    a startup failure here — it only limits what 'run' can do. Mirrors grip.cli's
+    env-var convention (ANTHROPIC_API_KEY / OPENAI_API_KEY) without its
+    SystemExit-on-missing behaviour, which is wrong for a long-lived server.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        from grip.adapters.anthropic import AnthropicAdapter
+
+        return AnthropicAdapter()
+    if os.environ.get("OPENAI_API_KEY"):
+        from grip.adapters.openai import OpenAIAdapter
+
+        return OpenAIAdapter()
+    return None
+
+
 async def _ensure_browser() -> Browser:
     global _browser
     if _browser is None:
-        _browser = Browser()
+        _browser = Browser(llm=_llm_adapter_from_env())
     return _browser
 
 
-def _payload(page: Page) -> str:
-    # grip's differentiator: after the first snapshot a turn sends only what
-    # changed, not the page again.
-    global _last_sent_version
-    snap = page._current_snapshot
-    delta = page.delta
-    if snap is None:
-        # Every path here snapshots first, so this is a bug in the caller, not a
-        # page state. Raising is what a server can afford: main()'s _safe wrapper
-        # turns it into one ERROR tool result the client can act on and the
-        # process keeps serving, whereas formatting nothing would answer with an
-        # empty page as if it were the truth.
-        raise RuntimeError(
-            "_payload called before any snapshot; the page has no state to send"
-        )
-    rendered_snapshot = _summarizer.format(snap)
-    # A delta is only readable against a baseline the client actually received.
-    # click()/type() snapshot implicitly when the ref cache is cold (which is the
-    # state goto() leaves behind), advancing the page's baseline without emitting
-    # anything. "A delta exists" is therefore not the same question as "the client
-    # can apply it", and getting that wrong describes refs it has never seen.
-    if delta is not None and delta.previous_version == _last_sent_version:
-        rendered_delta = format_delta(delta)
-        # Falling through to the snapshot has to move the baseline to the
-        # snapshot's version, not the delta's: the client is being shown the full
-        # page, and the next delta must be written against that.
-        if is_worth_sending(rendered_delta, rendered_snapshot):
-            _last_sent_version = delta.version
-            return rendered_delta
-    _last_sent_version = snap.version
-    return rendered_snapshot
+def _require_page() -> Page:
+    if _page is None:
+        raise RuntimeError("call 'open' with a url first")
+    return _page
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> str:
@@ -83,24 +73,73 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> str:
         # A fresh page is a fresh baseline: nothing the client holds describes it.
         _last_sent_version = 0
         await _page.snapshot()
-        return _payload(_page)
-    if _page is None:
-        return "ERROR: call 'open' with a url first"
+        text, _last_sent_version = _page.payload(_last_sent_version)
+        return text
+    if name == "run":
+        browser = await _ensure_browser()
+        if browser._llm is None:
+            raise RuntimeError(
+                "the 'run' tool needs an LLM API key: set ANTHROPIC_API_KEY or "
+                "OPENAI_API_KEY"
+            )
+        from grip.runner import Runner
+
+        _page = await browser.open(arguments["url"])
+        _last_sent_version = 0
+        runner = Runner(llm=browser._llm, page=_page, trace=browser.trace)
+        result = await runner.run(arguments["goal"])
+        # The page is left open on whatever it ended on, and future snapshot/
+        # click/type calls should build on it, so the client's baseline is
+        # whatever the runner itself last sent, not zero.
+        _last_sent_version = runner._last_sent_version
+        return str(result.data)
+    page = _require_page()
+    if name == "goto":
+        await page.goto(arguments["url"])
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return text
     if name == "snapshot":
-        await _page.snapshot()
-        return _payload(_page)
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return text
     if name == "click":
-        await _page.click(arguments["target"])
-        await _page.snapshot()
-        return _payload(_page)
+        await page.click(arguments["target"])
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return text
     if name == "type":
-        await _page.type(arguments["target"], arguments["text"])
-        await _page.snapshot()
-        return _payload(_page)
+        await page.type(arguments["target"], arguments["text"])
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return text
     if name == "read":
-        doc = await _page.read()
+        doc = await page.read()
         return str(doc.text)
-    return f"ERROR: unknown tool {name!r}"
+    if name == "screenshot":
+        shot = await page.screenshot()
+        return shot.b64
+    raise ValueError(f"unknown tool {name!r}")
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
+    """Closes the Browser on every clean shutdown of the stdio transport.
+
+    Entered/exited by MCPServer.run_stdio_async around the whole session, so a
+    client disconnecting (stdin EOF) or the process receiving SIGTERM both
+    unwind through here. Before this, `reset_state()` only dropped the Python
+    handle — the Chrome process and its temp profile dir were never told to
+    stop, so even the clean-exit path leaked a browser.
+    """
+    try:
+        yield {}
+    finally:
+        global _browser, _page
+        if _browser is not None:
+            await _browser.close()
+        _browser = None
+        _page = None
 
 
 def main() -> None:
@@ -114,37 +153,57 @@ def main() -> None:
             'pip install "grip-browser[mcp]"'
         ) from e
 
-    server = MCPServer("grip")
+    server = MCPServer("grip", lifespan=_lifespan)
 
-    async def _safe(tool_name: str, **arguments: Any) -> str:
-        # An MCP tool must answer, not kill the server: a stale ref or a refused
-        # navigation is information the client can act on, a traceback is not.
-        try:
-            return await call_tool(tool_name, arguments)
-        except Exception as e:
-            return f"ERROR: {type(e).__name__}: {e}"
-
+    # Tool functions raise on failure rather than formatting an "ERROR: ..."
+    # string. MCPServer's real dispatch path (_handle_call_tool, used by
+    # server.run()) catches exactly this and turns it into a proper MCP tool
+    # result with is_error=True — the client can tell a failure from content by
+    # the protocol field instead of by pattern-matching text.
+    #
     # The signatures are the tool schemas — MCPServer derives inputSchema from
     # the annotations, so each wrapper is one line over the shared dispatch.
     @server.tool(name="open", description="Open a URL and return its snapshot.")
     async def _open(url: str) -> str:
-        return await _safe("open", url=url)
+        return await call_tool("open", {"url": url})
+
+    @server.tool(name="goto", description="Navigate the current page to a URL.")
+    async def _goto(url: str) -> str:
+        return await call_tool("goto", {"url": url})
 
     @server.tool(name="snapshot", description="Re-snapshot; returns only what changed.")
     async def _snapshot() -> str:
-        return await _safe("snapshot")
+        return await call_tool("snapshot", {})
 
     @server.tool(name="click", description="Click an element by description or ref.")
     async def _click(target: str) -> str:
-        return await _safe("click", target=target)
+        return await call_tool("click", {"target": target})
 
     @server.tool(name="type", description="Type text into an input.")
     async def _type(target: str, text: str) -> str:
-        return await _safe("type", target=target, text=text)
+        return await call_tool("type", {"target": target, "text": text})
 
     @server.tool(name="read", description="Read the page as citable prose blocks.")
     async def _read() -> str:
-        return await _safe("read")
+        return await call_tool("read", {})
+
+    @server.tool(
+        name="screenshot",
+        description="Capture a JPEG screenshot of the current page, base64-encoded.",
+    )
+    async def _screenshot() -> str:
+        return await call_tool("screenshot", {})
+
+    @server.tool(
+        name="run",
+        description=(
+            "Drive the browser toward a goal autonomously (snapshot/click/type/"
+            "read in a loop) and return the final result. Requires "
+            "ANTHROPIC_API_KEY or OPENAI_API_KEY in the server's environment."
+        ),
+    )
+    async def _run(goal: str, url: str) -> str:
+        return await call_tool("run", {"goal": goal, "url": url})
 
     server.run("stdio")
 

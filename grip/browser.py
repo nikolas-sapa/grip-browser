@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Self
 from grip.cdp.engine import CDPEngine
 from grip.cdp.launcher import ChromeLauncher, default_launch_timeout
 from grip.page import Page
-from grip.security.policy import NavigationPolicy
+from grip.security.policy import NavigationPolicy, enforce as enforce_navigation
 from grip.trace import Trace
 
 if TYPE_CHECKING:
@@ -181,8 +181,7 @@ class Browser:
             # a non-http scheme cannot be laundered into an allowed one.
             url = "https://" + url
 
-        if reason := self._policy.check(url):
-            raise ValueError(f"navigation refused: {reason}")
+        enforce_navigation(self._policy, url)
 
         result = await self._engine.send("Target.createTarget", {"url": "about:blank"})
         target_id = result["targetId"]
@@ -196,6 +195,7 @@ class Browser:
             safe=self._safe,
             closer=self._close_target,
             block_resources=self._block_resources,
+            policy=self._policy,
         )
         self._pages.append(page)
         try:
@@ -234,7 +234,8 @@ class Browser:
 
     async def run(self, goal: str, url: str) -> RunResult:
         from grip.runner import Runner
-        assert self._llm is not None, "Browser.run() requires an llm adapter"
+        if self._llm is None:
+            raise RuntimeError("Browser.run() requires an llm adapter")
         page = await self.open(url)
         runner = Runner(llm=self._llm, page=page, trace=self.trace)
         return await runner.run(goal)

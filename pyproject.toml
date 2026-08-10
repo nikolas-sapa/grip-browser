@@ -30,6 +30,7 @@ anthropic = ["anthropic>=0.25"]
 mcp = ["mcp>=2.0.0"]
 
 [project.scripts]
+grip = "grip.cli:main"
 grip-mcp = "grip.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
@@ -80,3 +81,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "network: hits live, real-world URLs rather than a local fixture; excluded from the default CI run (-m 'not network').",
+]

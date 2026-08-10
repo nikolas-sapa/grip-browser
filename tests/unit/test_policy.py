@@ -57,6 +57,45 @@ def test_other_about_pages_stay_refused():
         assert NavigationPolicy().check(url) is not None, url
 
 
+def test_alternate_ipv4_encodings_of_loopback_refused():
+    """Chrome/inet_aton accept decimal, octal, hex, and short dotted-quad
+    spellings of an IP that ipaddress.ip_address rejects outright — those
+    used to fall through the except ValueError branch as "must be a DNS
+    name" and sail straight past the loopback check."""
+    encodings = [
+        "2130706433",       # decimal
+        "0177.0.0.1",       # octal
+        "0x7f000001",       # hex
+        "127.1",            # short dotted-quad
+        "127.0.1",          # short dotted-quad, 3-part
+        "0x7f.1",           # mixed hex + short dotted-quad
+    ]
+    for host in encodings:
+        assert NavigationPolicy().check(f"http://{host}/") is not None, host
+        assert NavigationPolicy(allow_private=True).check(f"http://{host}/") is None, host
+
+
+def test_decimal_metadata_ip_refused_even_with_allow_private():
+    """169.254.169.254 spelled as a decimal integer must still hit the
+    unconditional metadata-host block, not just the private-range check."""
+    assert NavigationPolicy(allow_private=True).check("http://2852039166/") is not None
+
+
+def test_real_hostname_still_allowed():
+    assert NavigationPolicy().check("http://example.com/") is None
+
+
+def test_numeric_looking_hostname_not_misparsed_as_ip():
+    """123abc.com is not a valid inet_aton IP and must stay a DNS name."""
+    assert NavigationPolicy().check("http://123abc.com/") is None
+
+
+def test_ipv6_and_zero_forms_still_refused():
+    for host in ("[::1]", "[::ffff:127.0.0.1]", "[fc00::1]"):
+        assert NavigationPolicy().check(f"http://{host}/") is not None, host
+    assert NavigationPolicy().check("http://0.0.0.0/") is not None
+
+
 def test_browser_threads_allow_private_into_its_policy():
     """The tests' fixture servers rely on Browser(allow_private=True) actually
     reaching the policy — a constructor that silently dropped the flag would

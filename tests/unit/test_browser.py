@@ -5,6 +5,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from grip.browser import Browser
 from grip.cdp.engine import CDPEngine
+from grip.errors import GripError
+from grip.errors.types import ErrorType
 from grip.trace import Trace
 
 
@@ -178,10 +180,14 @@ async def test_launch_runs_off_the_event_loop(monkeypatch):
     monkeypatch.setattr(CDPEngine, "connect", _async_noop)
 
     browser = Browser()
-    start = time.monotonic()
     await asyncio.gather(browser._connect(), ticker())
     assert len(ticks) == 5
-    assert ticks[-1] - start < 0.12, "event loop was blocked during launch"
+    # An absolute wall-clock budget flakes on a loaded/2-core runner. What this
+    # test actually cares about is that launch()'s blocking sleep(0.15) ran off
+    # the event loop, so the ticker's own ~0.01s cadence never got starved —
+    # checked via the gaps between consecutive ticks, not total elapsed time.
+    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    assert max(gaps) < 0.1, f"event loop was blocked during launch: gaps={gaps}"
 
 
 @pytest.mark.asyncio
@@ -242,24 +248,27 @@ async def test_open_refuses_a_file_url_by_default(monkeypatch):
     used to come straight back through read()."""
     monkeypatch.setattr(CDPEngine, "connect", _async_noop)
     browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
-    with pytest.raises(ValueError, match="navigation refused"):
+    with pytest.raises(GripError, match="navigation refused") as exc:
         await browser.open("file:///etc/passwd")
+    assert exc.value.error.type is ErrorType.NAVIGATION_REFUSED
 
 
 @pytest.mark.asyncio
 async def test_open_refuses_loopback_by_default(monkeypatch):
     monkeypatch.setattr(CDPEngine, "connect", _async_noop)
     browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
-    with pytest.raises(ValueError, match="navigation refused"):
+    with pytest.raises(GripError, match="navigation refused") as exc:
         await browser.open("http://127.0.0.1:8080/admin")
+    assert exc.value.error.type is ErrorType.NAVIGATION_REFUSED
 
 
 @pytest.mark.asyncio
 async def test_open_refuses_cloud_metadata_by_default(monkeypatch):
     monkeypatch.setattr(CDPEngine, "connect", _async_noop)
     browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
-    with pytest.raises(ValueError, match="metadata"):
+    with pytest.raises(GripError, match="metadata") as exc:
         await browser.open("http://169.254.169.254/latest/meta-data/")
+    assert exc.value.error.type is ErrorType.NAVIGATION_REFUSED
 
 
 @pytest.mark.asyncio
@@ -268,8 +277,9 @@ async def test_a_bare_domain_still_reaches_the_policy_as_https(monkeypatch):
     monkeypatch.setattr(CDPEngine, "connect", _async_noop)
     browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
     assert browser._policy.check("https://example.com") is None
-    with pytest.raises(ValueError, match="navigation refused"):
+    with pytest.raises(GripError, match="navigation refused") as exc:
         await browser.open("localhost:3000")
+    assert exc.value.error.type is ErrorType.NAVIGATION_REFUSED
 
 
 @pytest.mark.asyncio
