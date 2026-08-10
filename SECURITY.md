@@ -81,13 +81,18 @@ legitimate reason to reduce automation fingerprinting (e.g. testing your
 own site's behavior) and the operator's terms of service permit automated
 access.
 
-**Its effect is unmeasured.** A competitor measured the equivalent
-page-world approach against live reCAPTCHA and found it made detection
-easier rather than harder, so the flag is not documented as beneficial.
-`evaluation/stealth_measurement.py` counts detection signals in both modes
-and is the script that settles it; it needs a host with outbound network.
-Until it has been run, treat `stealth=True` as unproven in either
-direction.
+**Measured once, 2026-08-10** (`evaluation/stealth_measurement.py`, single
+run): reported tells fell from 10 to 4 on bot.sannysoft.com and from 3 to 0
+on CreepJS. Those probes count the signals they choose to report, so this is
+not evidence of being undetectable — a detector that scores rather than lists
+may weigh signals those pages never surface. It was **not** run against any
+live anti-bot system (no reCAPTCHA, no Cloudflare challenge, no commercial
+bot manager), it is one machine / one Chrome build / one IP with unknown
+run-to-run variance, and it says nothing about TLS/JA3. Fewer tells also does
+not mean a site will admit you: IP reputation usually decides that and
+neither flag affects it. (The competitor result that made detection *easier*
+concerned page-world init-script shims, a different mechanism from these two
+launch flags.)
 
 ### Challenge solving
 

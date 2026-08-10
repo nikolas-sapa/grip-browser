@@ -4,6 +4,67 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.1] - 2026-08-10
+
+### Fixed
+
+- **A delta could cost more than the page it replaced.** On a click-driven
+  navigation where the reported URL trailed the document, `build_delta` did not
+  see a URL change, diffed two unrelated pages, and emitted a wholesale
+  replacement — 5,701 tokens where the full snapshot was 2,963, in 6 of 22 runs.
+  Two independent guards now bound it: a delta that is not meaningfully smaller
+  than the snapshot loses to it at the point the payload is chosen, and a
+  restamped-document check compares the elements behind shared handles, since a
+  handle stamped per document names a different element after a restart. Found
+  by grip's own benchmark, not by a user.
+- **A launch failure said only "timed out".** Chrome's stderr went to
+  `/dev/null`, so a failed launch could not say why. The error now carries the
+  process state, exit code, port-file path and the tail of Chrome's own
+  complaint, and distinguishes a Chrome that died before writing the port from
+  one still running when the deadline passed. The deadline is configurable via
+  `GRIP_CHROME_LAUNCH_TIMEOUT`, because ten seconds is tight for a cold Chrome
+  on a loaded CI runner.
+- **A reused profile kept the previous run's `DevToolsActivePort`,** so
+  `_read_port` could return a dead port instead of waiting for the one Chrome
+  was about to write — a defect in the persistent-profile feature added in
+  0.5.0.
+- **`find_chrome()` trusted `CHROME_EXECUTABLE` without checking it existed,**
+  so a stale value produced an opaque `Popen` failure instead of the clear
+  "Chrome/Chromium not found" error.
+
+### Changed — measured claims corrected
+
+0.5.0 shipped with numbers that were more confident than the measurement
+supported. All of them came from a synthetic single-page loop or a run whose
+data was never saved. Re-measured against four live sites and eight real pages:
+
+- The snapshot delta was described as a **75% per-turn saving**. Its median
+  per-turn contribution across a mixed run is **1.0x**, because `build_delta`
+  returns `None` on a URL change and a realistic agent run is mostly navigation.
+  Where it does fire — inside one document, filling a form, driving an SPA — it
+  is a **9.1x median** saving, range 0.5x–175x.
+- The honest end-to-end figure is **~18x fewer prompt tokens over a six-turn
+  run** (16.9x–18.4x across repeat runs), and it is dominated by compression,
+  not by the delta.
+- Compression against raw HTML was stated as **19x**. That figure came from a
+  run whose data no longer exists. Re-measured on the same corpus by the same
+  statistic: **16.0x**, median of per-page ratios, range 3.3x–68.4x.
+- Competitor cells that read "not measured" are measured: grip 1,998 tokens
+  median against Playwright MCP 11,597, Puppeteer's accessibility tree 27,489
+  and `page.content()` 58,280. grip is smallest on 8 of 8 pages.
+
+Every figure now carries its statistic, its date and its range. Full method in
+`benchmarks/RESULTS_AB.md` and `benchmarks/RESULTS_COMPETITORS.md`.
+
+### Changed — tests
+
+- Two tests passed only on a machine with no Chrome in `PATH`, which is why the
+  0.5.0 branch stayed green locally while CI failed. One mocked `subprocess.run`
+  after the code had moved to `shutil.which`; the other asserted something
+  vacuously true where `find_chrome()` returns `None`. The lint job also linted
+  a dependency set users never install, so five decorator errors only appeared
+  on CI.
+
 ## [0.5.0] - 2026-08-10
 
 ### Correction to this entry

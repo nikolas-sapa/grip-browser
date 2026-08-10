@@ -224,15 +224,28 @@ and `human=True` is for challenge flows.
 Chrome under CDP sets `navigator.webdriver` and puts `HeadlessChrome` in the user
 agent. `Browser(stealth=True)` removes both. It is off by default because grip is a
 general-purpose SDK and silently masking automation would surprise anyone using it
-for ordinary testing. **Whether that flag helps is unmeasured.** A competitor
-measured the equivalent page-world approach against live reCAPTCHA and found it
-made detection *easier*, not harder, so grip does not claim a benefit it has not
-observed. `evaluation/stealth_measurement.py` is the script that settles it; it
-needs a host with outbound network, which the development sandbox is not:
+for ordinary testing. Measured once, on 2026-08-10, with
+`evaluation/stealth_measurement.py`:
 
 ```
+probe                                     stealth=False  stealth=True
+https://bot.sannysoft.com/                10 tells        4 tells
+https://abrahamjuliot.github.io/creepjs/   3 tells        0 tells
+
 .venv/bin/python -m evaluation.stealth_measurement
 ```
+
+Read that narrowly. These probes count the signals they choose to report, so
+fewer tells is not "undetectable" — a service that scores rather than lists may
+weigh signals these pages never surface. It was **not** tested against any live
+anti-bot system: no reCAPTCHA, no Cloudflare challenge, no commercial bot
+manager. It is one run on one machine, one Chrome build and one IP, so
+run-to-run variance is unknown. It says nothing about TLS/JA3. And it does not
+predict that a site will let you through — IP reputation usually decides that,
+and neither flag touches it. (A competitor measured the *page-world shim*
+approach against live reCAPTCHA and found it made detection easier; that is a
+different mechanism — init scripts patching navigator from inside the page —
+than the two launch flags measured here, so both results can hold.)
 
 grip does **not** hide that it is automation at the network layer. TLS/JA3
 fingerprints, and full headless fingerprint parity, live below the Chrome
@@ -450,10 +463,11 @@ pip install grip-browser[anthropic]
 ## Measured numbers
 
 Everything in this table was measured on this branch. Anything not in it is not
-claimed: cold-start time, memory, requests per second, challenge solve rates and
-tokens against another tool are all unmeasured, and quoting them would be a
-guess. The snapshot-size figures live in [Why Grip](#why-grip) with their own
-method note.
+claimed: cold-start time, memory, requests per second and challenge solve rates
+are all unmeasured, and quoting them would be a guess. Tokens against other
+tools ARE measured — Playwright MCP and Puppeteer, in
+[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md). The
+snapshot-size figures live in [Why Grip](#why-grip) with their own method note.
 
 | | Measured | How |
 |---|---|---|

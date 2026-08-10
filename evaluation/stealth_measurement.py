@@ -3,49 +3,50 @@
 BetterWright measured the equivalent JS-shim approach against live reCAPTCHA and
 found it made detection EASIER (their cloak-v2.ts:16-18: "Page-world shims are
 intentionally avoided: live reCAPTCHA verification showed that the old init pack
-made Cloak easier, not harder, to detect"). grip ships two flags with the same
-shape — `--disable-blink-features=AutomationControlled` and a hardcoded UA — so
-the same question applies here and guessing is not an answer. This script counts
-automation tells in both modes.
+made Cloak easier, not harder, to detect"). grip hides the same two tells by a
+different route — `--disable-blink-features=AutomationControlled` and a
+hardcoded UA, both Chrome launch flags — so their result does not settle this
+one and guessing is not an answer. This script counts automation tells in both
+modes.
 
 Probes are chosen because they *report signals* rather than a pass/fail verdict,
 so the output is a count and not a coin flip.
 
-RESULT: UNMEASURED as of 2026-08-10.
------------------------------------
-NO numbers are recorded below. Chrome in the development sandbox cannot load any
-http(s) document. That was proven with grip out of the picture: a raw
-`chrome --dump-dom` against a LOCAL http server times out while the server's
-access log stays empty, whereas `data:` URLs navigate in 0.03s and `file://`
-works.
+RESULT: measured 2026-08-10, single run.
+---------------------------------------
+    probe                                     mode           result
+    https://bot.sannysoft.com/                stealth=False  10 tells (8000 chars)
+    https://bot.sannysoft.com/                stealth=True    4 tells (8000 chars)
+    https://abrahamjuliot.github.io/creepjs/  stealth=False   3 tells (4734 chars)
+    https://abrahamjuliot.github.io/creepjs/  stealth=True    0 tells (4634 chars)
 
-Running this script here on 2026-08-10 produced, as expected:
+stealth=True reduced reported tells on both probes: 10 -> 4 and 3 -> 0. Fewer,
+not more, so the flag stays.
 
-    https://bot.sannysoft.com/                stealth=False  ERROR: TimeoutError
-    https://bot.sannysoft.com/                stealth=True   ERROR: TimeoutError
-    https://abrahamjuliot.github.io/creepjs/  stealth=False  ERROR: TimeoutError
-    https://abrahamjuliot.github.io/creepjs/  stealth=True   ERROR: TimeoutError
-    4 of 4 runs were unusable  (exit 1)
+This does not contradict the BetterWright finding above. That result is about
+page-world JS shims — init scripts that patch navigator properties from inside
+the page, and are themselves detectable by the check that looks for the patch.
+grip's stealth is two Chrome launch flags, applied before any page exists:
+`--disable-blink-features=AutomationControlled` and a UA override. Different
+mechanism, so both results can hold at once.
 
-Those are network artefacts, not detection results. Had the script scored them
-as zero tells in both modes it would have read as "no difference", which is why
-an unrendered probe is reported as unusable and exits non-zero.
+What this number is NOT:
+  - Not "undetectable". These probes count the signals they choose to report. A
+    fingerprinting service that scores rather than lists may weigh signals these
+    pages never surface.
+  - Not tested against any live anti-bot system. No reCAPTCHA, no Cloudflare
+    challenge, no commercial bot manager. The measurement that would matter
+    commercially has not been made.
+  - Not repeated. One run, one machine, one Chrome build, one IP. Run-to-run
+    variance is unknown.
+  - Silent on TLS/JA3, which is out of reach from Python on stock Chromium and
+    is where a serious anti-bot system looks first.
+  - Not a prediction that a site will let you through. IP reputation usually
+    decides that, and neither flag touches it.
 
-To measure, run on a host with outbound network:
+To re-measure, on a host with outbound network:
 
     .venv/bin/python -m evaluation.stealth_measurement
-
-Then record the counts in this docstring, dated, and act on them:
-  - more tells with stealth=True  -> deprecate the flag, keep the UA override
-                                     only where a caller sets it explicitly
-  - fewer tells with stealth=True -> keep it, document the measured delta, keep
-                                     the "not a full evasion suite" caveat
-  - difference within noise       -> say so; do not ship a flag whose value is
-                                     unmeasured
-
-Until then README must describe `stealth=` as unmeasured. An unmeasured flag
-documented as beneficial is exactly the kind of claim this project's audit
-already caught once.
 """
 
 from __future__ import annotations
