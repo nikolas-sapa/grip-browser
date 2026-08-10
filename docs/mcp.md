@@ -12,7 +12,7 @@ pip install "grip-browser[mcp]"
 This installs the `grip-mcp` console script alongside the base `grip` package.
 Optional: set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the environment the
 server runs in if you want the `run` tool (goal-based autonomous browsing) —
-the other seven tools don't need an LLM key.
+the other eleven tools don't need an LLM key.
 
 ## Claude Code
 
@@ -101,6 +101,7 @@ Any of the configs above accept an `env` block:
 | `snapshot` | — | Re-snapshot the current page; returns only what changed since the last snapshot the client was shown |
 | `click` | `target` | Click an element by description or ref |
 | `type` | `target`, `text` | Type text into an input |
+| `select` | `target`, `value` | Choose an option in a `<select>` dropdown, by visible option text (preferred) or its value attribute |
 | `read` | — | Read the page as citable prose blocks, boilerplate removed |
 | `screenshot` | — | Capture a JPEG screenshot of the current page, base64-encoded |
 | `run` | `goal`, `url` | Drive the browser toward a goal autonomously (needs an LLM key) |

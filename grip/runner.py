@@ -38,6 +38,17 @@ _TOOLS = [
         }, "required": ["target", "text"]},
     }},
     {"type": "function", "function": {
+        "name": "select",
+        "description": (
+            "Choose an option in a <select> dropdown. Pass the option's visible "
+            "text (preferred) or its underlying value."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string", "description": "Description of the dropdown."},
+            "value": {"type": "string", "description": "Visible option text or value."},
+        }, "required": ["target", "value"]},
+    }},
+    {"type": "function", "function": {
         "name": "read",
         "description": (
             "Read the page as prose: ordered, citable text blocks with navigation "
@@ -233,6 +244,10 @@ class Runner:
             return self._page_payload()
         if name == "type":
             await self._page.type(args["target"], args["text"])
+            await self._page.snapshot()
+            return self._page_payload()
+        if name == "select":
+            await self._page.select(args["target"], args["value"])
             await self._page.snapshot()
             return self._page_payload()
         if name == "read":

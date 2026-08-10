@@ -25,7 +25,7 @@ from grip.browser import Browser
 from grip.page import Page
 
 TOOL_NAMES = (
-    "open", "goto", "snapshot", "click", "type", "read", "screenshot", "run",
+    "open", "goto", "snapshot", "click", "type", "select", "read", "screenshot", "run",
     "list_tabs", "switch_tab", "close_tab",
 )
 
@@ -147,6 +147,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> str:
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
         return text
+    if name == "select":
+        await page.select(arguments["target"], arguments["value"])
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return text
     if name == "read":
         doc = await page.read()
         return str(doc.text)
@@ -216,6 +221,16 @@ def main() -> None:
     @server.tool(name="type", description="Type text into an input.")
     async def _type(target: str, text: str) -> str:
         return await call_tool("type", {"target": target, "text": text})
+
+    @server.tool(
+        name="select",
+        description=(
+            "Choose an option in a <select> dropdown, by visible option text "
+            "(preferred) or its value attribute."
+        ),
+    )
+    async def _select(target: str, value: str) -> str:
+        return await call_tool("select", {"target": target, "value": value})
 
     @server.tool(name="read", description="Read the page as citable prose blocks.")
     async def _read() -> str:

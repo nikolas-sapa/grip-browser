@@ -1,3 +1,85 @@
+# The single definition of an element's accessible text, shared by DISCOVER (which
+# writes it into the snapshot an LLM reads) and RESOLVE (which recomputes it live
+# to verify click()/type()/select() are still touching the element the snapshot
+# described). Two independent formulas here would be exactly the bug this file's
+# top comment describes for candidate rules — computed once, drift becomes
+# unrepresentable.
+#
+# Precedence follows the browser's own accessible-name algorithm rather than an
+# invented order: aria-labelledby, then aria-label, both before any native
+# association, because an author who set either ARIA attribute is overriding the
+# visible label on purpose — a mismatched sibling <label> must not win over it.
+# Only below that does a native <label for="id">/wrapping <label> apply, and
+# only to form controls (input/select/textarea) — that association does not
+# exist for a button or link, whose own text was already the right answer.
+_ACCESSIBLE_TEXT_JS = """
+  const _GRIP_FORM_TAGS = new Set(['input', 'select', 'textarea']);
+  // A checkbox/radio/file/submit/button's `.value` is markup boilerplate ("on",
+  // a filename, a caption already covered by innerText), not user content —
+  // folding it into a label would only add noise and bytes to every snapshot.
+  const _GRIP_NO_VALUE_TYPES = new Set([
+    'checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'image', 'hidden'
+  ]);
+
+  function gripLabelledByText(el) {
+    const ids = (el.getAttribute('aria-labelledby') || '').trim();
+    if (!ids) return '';
+    const root = el.getRootNode();
+    if (typeof root.getElementById !== 'function') return '';
+    return ids.split(/\\s+/).map(function (id) {
+      const ref = root.getElementById(id);
+      return ref ? (ref.innerText || ref.textContent || '').trim() : '';
+    }).filter(Boolean).join(' ');
+  }
+
+  // el.labels covers both `<label for="id">` and a wrapping `<label>` in one
+  // browser-computed call — a querySelector/getElementById walk would need
+  // redoing per shadow root (they do not cross the boundary), which this file
+  // exists to support, so the built-in is both simpler and actually correct here.
+  function gripNativeLabelText(el) {
+    if (!_GRIP_FORM_TAGS.has(el.tagName.toLowerCase())) return '';
+    const labels = el.labels;
+    if (!labels || !labels.length) return '';
+    return Array.prototype.map.call(labels, function (l) {
+      return (l.innerText || '').trim();
+    }).filter(Boolean).join(' ');
+  }
+
+  function gripOwnText(el) {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input' && _GRIP_NO_VALUE_TYPES.has(type)) {
+      return (el.innerText || '').trim();
+    }
+    return (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+  }
+
+  // A label and the element's own text frequently overlap (a wrapping <label>
+  // whose innerText already includes the checkbox's own text). Emitting both
+  // verbatim would duplicate that text in every payload it appears in.
+  function gripCombine(label, own) {
+    if (!own) return label;
+    const l = label.toLowerCase(), o = own.toLowerCase();
+    if (o.includes(l) || l.includes(o)) return own.length >= label.length ? own : label;
+    return label + ': ' + own;
+  }
+
+  function gripAccessibleText(el) {
+    const own = gripOwnText(el);
+    const label = gripLabelledByText(el) ||
+      (el.getAttribute('aria-label') || '').trim() ||
+      gripNativeLabelText(el);
+    if (!label) return own;
+    // A <select>'s own text is its full option dump (every <option> label
+    // concatenated) — useful when nothing else identifies the control, but
+    // redundant bloat once a real label exists: the options remain
+    // discoverable through select()'s own no_such_option error, so they do
+    // not need to live in every snapshot payload too.
+    if (el.tagName.toLowerCase() === 'select') return label;
+    return gripCombine(label, own);
+  }
+"""
+
 # The single definition of "which elements are addressable, and in what order".
 #
 # DISCOVER, CLICK and TYPE all index into this same list. They previously each
@@ -8,7 +90,7 @@
 # wrong element — silently, and only on pages that happen to contain an
 # aria-hidden or opacity:0 control. Sharing one collector makes that class of bug
 # unrepresentable rather than merely fixed.
-_COLLECT_CANDIDATES_JS = """
+_COLLECT_CANDIDATES_JS = _ACCESSIBLE_TEXT_JS + """
   const INTERACTIVE_TAGS = new Set([
     'a','button','input','select','textarea','details','summary'
   ]);
@@ -131,7 +213,7 @@ DISCOVER_ELEMENTS_JS = """
       handle: gripStamp(el),
       tag: c.tag,
       role: c.role || c.tag,
-      text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
+      text: gripAccessibleText(el).slice(0, 120),
       placeholder: el.getAttribute('placeholder') || null,
       // el.href resolves relative URLs against the document for us. Only
       // fetchable schemes: mailto:/javascript:/tel:/#fragment are not pages.
@@ -156,7 +238,15 @@ DISCOVER_ELEMENTS_JS = """
 # The tag+text check catches the remaining case where a page reuses our attribute
 # or swaps the node underneath it — a wrong click is worse than a failed one, so
 # a mismatch is reported rather than performed.
-_RESOLVE_JS = """
+#
+# Prepends _ACCESSIBLE_TEXT_JS so `actual` is computed by the exact same
+# gripAccessibleText DISCOVER used to produce the `expectedText` callers pass
+# in (el.text off the snapshot). Before this shared, RESOLVE recomputed
+# identity with the old innerText/value/aria-label-only formula, so any
+# control whose accessible name comes only from a <label> (a checkbox wrapped
+# in one, with no own text or aria-label) mismatched on every click()/type()
+# call — DISCOVER said "Accept terms", RESOLVE said "on" or "".
+_RESOLVE_JS = _ACCESSIBLE_TEXT_JS + """
   // querySelector stops at shadow boundaries, but discovery walks into open
   // roots, so anything it stamped there would otherwise resolve to not_found.
   function gripQuery(root, sel) {
@@ -177,8 +267,7 @@ _RESOLVE_JS = """
     const tag = el.tagName.toLowerCase();
     if (expectedTag && tag !== expectedTag) return { el: null, reason: 'identity_mismatch' };
     if (expectedText) {
-      const actual = (el.innerText || el.value || el.getAttribute('aria-label') || '')
-        .trim().slice(0, 120);
+      const actual = gripAccessibleText(el).slice(0, 120);
       if (actual !== expectedText) return { el: null, reason: 'identity_mismatch' };
     }
     return { el: el, reason: '' };

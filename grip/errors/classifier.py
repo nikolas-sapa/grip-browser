@@ -75,6 +75,31 @@ class ErrorClassifier:
             recovery=[RecoveryAction.RE_SNAPSHOT, RecoveryAction.RETRY],
         )
 
+    def classify_not_a_select(self, description: str, actual_tag: str) -> BrowserError:
+        return BrowserError(
+            type=ErrorType.ELEMENT_NOT_FOUND,
+            message=(
+                f"{description!r} resolved to a <{actual_tag or '?'}>, not a "
+                "<select>. select() only works on dropdowns."
+            ),
+            confidence=0.85,
+            recovery=[RecoveryAction.RE_SNAPSHOT, RecoveryAction.RETRY],
+        )
+
+    def classify_invalid_option(
+        self, description: str, value: str, options: list[str]
+    ) -> BrowserError:
+        listed = ", ".join(repr(o) for o in options) if options else "no options"
+        return BrowserError(
+            type=ErrorType.ELEMENT_NOT_FOUND,
+            message=(
+                f"No option matched {value!r} in {description!r} "
+                f"(available: {listed})"
+            ),
+            confidence=0.85,
+            recovery=[RecoveryAction.RE_SNAPSHOT, RecoveryAction.RETRY],
+        )
+
     def classify_page_state(
         self,
         title: str,

@@ -108,6 +108,92 @@ async def test_type_raises_when_target_not_typable(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_select_succeeds_on_ok_outcome(monkeypatch):
+    page = _page_with_snapshot(
+        [_el(index=0, handle="h1", tag="select", text="Role")]
+    )
+    seen = {}
+
+    async def fake_send(method, params=None):
+        seen["expression"] = (params or {}).get("expression", "")
+        return {"result": {"value": {"ok": True, "reason": ""}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    await page.select("Role", "Admin")
+    # The value the caller passed has to actually reach the generated
+    # expression — this is the only layer a mocked engine can verify; the
+    # text-vs-value precedence itself lives in _SELECT_OPTION_JS and is
+    # exercised for real in tests/integration.
+    assert json.dumps("Admin") in seen["expression"]
+
+
+@pytest.mark.asyncio
+async def test_select_raises_not_a_select(monkeypatch):
+    page = _page_with_snapshot(
+        [_el(index=0, handle="h1", tag="select", text="Sort")]
+    )
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {"ok": False, "reason": "not_a_select", "tag": "div"}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    with pytest.raises(GripError) as exc:
+        await page.select("Sort", "Newest")
+    assert exc.value.error.type is ErrorType.ELEMENT_NOT_FOUND
+    assert "<div>" in exc.value.error.message
+
+
+@pytest.mark.asyncio
+async def test_select_raises_no_such_option(monkeypatch):
+    page = _page_with_snapshot(
+        [_el(index=0, handle="h1", tag="select", text="Role")]
+    )
+
+    async def fake_send(method, params=None):
+        return {
+            "result": {"value": {
+                "ok": False, "reason": "no_such_option",
+                "options": ["Admin", "Viewer"],
+            }}
+        }
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    with pytest.raises(GripError) as exc:
+        await page.select("Role", "Editor")
+    assert exc.value.error.type is ErrorType.ELEMENT_NOT_FOUND
+    assert "'Admin'" in exc.value.error.message
+    assert "'Viewer'" in exc.value.error.message
+
+
+@pytest.mark.asyncio
+async def test_select_raises_element_stale_when_handle_gone(monkeypatch):
+    page = _page_with_snapshot(
+        [_el(index=0, handle="h1", tag="select", text="Role")]
+    )
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {"ok": False, "reason": "not_found"}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    with pytest.raises(GripError) as exc:
+        await page.select("Role", "Admin")
+    assert exc.value.error.type is ErrorType.ELEMENT_STALE
+
+
+def test_find_select_ignores_non_select_with_matching_label():
+    # A button labeled "Sort" must not steal a select() call meant for the
+    # actual <select role="Sort">, which is exactly what bare _find_element
+    # (used by click()) would do since it isn't tag-filtered.
+    page = _page_with_snapshot([
+        _el(index=0, handle="h1", tag="button", text="Sort"),
+        _el(index=1, handle="h2", tag="select", text="Sort"),
+    ])
+    match = page._find_select("Sort")
+    assert match is not None
+    assert match.handle == "h2"
+
+
+@pytest.mark.asyncio
 async def test_goto_invalidates_cached_snapshot(monkeypatch):
     page = _page_with_snapshot([_el(index=0, handle="h1", tag="button", text="Old")])
 

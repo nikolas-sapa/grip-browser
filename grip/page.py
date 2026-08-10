@@ -21,6 +21,7 @@ from grip.cdp.shadow import (
     READ_CONTENT_JS,
     SCROLL_BOTTOM_JS,
     TYPE_ELEMENT_JS,
+    _RESOLVE_JS,
 )
 from grip.challenge import (
     POINT_PROBE_JS,
@@ -97,6 +98,63 @@ _FIND_FILE_INPUTS_JS = """
 _RESOLVE_FILE_INPUT_JS = """
 function (handle) {
   return document.querySelector('[data-grip-h="' + handle + '"]');
+}
+"""
+
+# select()'s own action JS, kept local like _FIND_FILE_INPUTS_JS/
+# _RESOLVE_FILE_INPUT_JS above rather than added to grip/cdp/shadow.py
+# (out of scope for this change; shadow.py owns discovery + click/type only).
+# Reuses _RESOLVE_JS for the same identity-checked handle lookup click()/
+# type() use, so a stale or swapped <select> raises the same way theirs does.
+#
+# Precedence, matched against the visible option list in order:
+#   1. exact visible option text (case-insensitive) — what a model reading the
+#      snapshot actually sees.
+#   2. exact `value` attribute (case-insensitive) — for callers that already
+#      know the underlying value.
+#   3. a *unique* case-insensitive substring of the visible text — covers a
+#      model paraphrasing a label ("Engineer" for "Engineer (Senior)"). A
+#      substring matching more than one option is not resolved silently; it
+#      is reported as no_such_option with the full option list so the caller
+#      can be exact instead of guessing which one was meant.
+# Disabled options are skipped at every stage — selecting one is not a real
+# user action a <select> allows.
+_SELECT_OPTION_JS = """
+function(handle, expectedTag, optionValue) {
+""" + _RESOLVE_JS + """
+  const r = gripResolve(handle, expectedTag, '');
+  if (!r.el) return { ok: false, reason: r.reason };
+  const el = r.el;
+  if (el.tagName.toLowerCase() !== 'select') {
+    return { ok: false, reason: 'not_a_select', tag: el.tagName.toLowerCase() };
+  }
+  const options = Array.prototype.filter.call(el.options, function (o) { return !o.disabled; });
+  const wanted = optionValue.trim().toLowerCase();
+  let match = null;
+  for (const opt of options) {
+    if ((opt.text || '').trim().toLowerCase() === wanted) { match = opt; break; }
+  }
+  if (!match) {
+    for (const opt of options) {
+      if ((opt.value || '').toLowerCase() === wanted) { match = opt; break; }
+    }
+  }
+  if (!match) {
+    const hits = options.filter(function (opt) {
+      return (opt.text || '').trim().toLowerCase().includes(wanted);
+    });
+    if (hits.length === 1) match = hits[0];
+  }
+  if (!match) {
+    return {
+      ok: false, reason: 'no_such_option',
+      options: options.map(function (o) { return (o.text || '').trim(); }),
+    };
+  }
+  el.selectedIndex = match.index;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, reason: '' };
 }
 """
 
@@ -910,6 +968,55 @@ class Page:
         ))
         self._raise_for_action(outcome, description)
 
+    async def select(self, description: str, value: str) -> None:
+        """Choose an option in a `<select>` matched by fuzzy description, the
+        same resolution `click()`/`type()` use.
+
+        `value` is matched against the dropdown's own options — visible text
+        first, then the `value` attribute, then a unique substring of the
+        text — see `_SELECT_OPTION_JS` for the exact ladder. Text wins over
+        value because an LLM reads the label a user sees, not the markup
+        underneath it.
+
+        Sets `selectedIndex` and dispatches `input`/`change` with
+        `bubbles: true` — the events a real user's choice produces — so a
+        framework-bound `<select>` (React/Vue controlled component) reacts
+        the same as a plain HTML one; a bare value assignment does not fire
+        either event and such a component would never see the change.
+
+        `<select multiple>`: only ever resolves to a single option (whichever
+        the ladder above matches) and does not accept a list — selecting
+        several values in one call needs its own API and is not implemented
+        here.
+        """
+        self._assert_not_safe("select")
+        if not self._current_snapshot:
+            await self.snapshot()
+        t0 = time.monotonic()
+        el = self._find_select(description)
+        if el is None:
+            err = self._classifier.classify_semantic_miss(description)
+            raise GripError(err)
+        js = (
+            f"({_SELECT_OPTION_JS})"
+            f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(value)})"
+        )
+        result = await self._engine.send(
+            "Runtime.evaluate", {"expression": js, "returnByValue": True}
+        )
+        outcome = result.get("result", {}).get("value") or {}
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="select",
+            input={"description": description, "value": value, "handle": el.handle},
+            output={"success": bool(outcome.get("ok")),
+                    "reason": outcome.get("reason", "")},
+            tokens_consumed=0,
+            duration_ms=duration_ms,
+        ))
+        self._raise_for_select(outcome, description, value)
+
     async def upload(self, description: str, *paths: str | Path) -> None:
         """Set one or more local files on a `<input type=file>` matched by
         fuzzy description (label text, aria-label, name, or id).
@@ -1065,6 +1172,38 @@ class Page:
         reason = outcome.get("reason", "")
         if reason == "not_typable":
             raise GripError(self._classifier.classify_semantic_miss(description))
+        raise GripError(
+            BrowserError(
+                type=ErrorType.ELEMENT_STALE,
+                message=(
+                    f"Element for {description!r} no longer matches the snapshot "
+                    f"it was found in ({reason or 'unknown'}). Re-snapshot and retry."
+                ),
+                confidence=1.0,
+                recovery=[RecoveryAction.RE_SNAPSHOT],
+            )
+        )
+
+    # select()'s outcome shape shares "stale handle" with click()/type() but
+    # has two failure modes neither of theirs does (wrong element kind, no
+    # matching option), so it gets its own mapping rather than overloading
+    # _raise_for_action's reason switch with select-only branches.
+    def _raise_for_select(
+        self, outcome: dict[str, Any], description: str, value: str
+    ) -> None:
+        if outcome.get("ok"):
+            return
+        reason = outcome.get("reason", "")
+        if reason == "not_a_select":
+            raise GripError(
+                self._classifier.classify_not_a_select(description, outcome.get("tag", ""))
+            )
+        if reason == "no_such_option":
+            raise GripError(
+                self._classifier.classify_invalid_option(
+                    description, value, outcome.get("options", [])
+                )
+            )
         raise GripError(
             BrowserError(
                 type=ErrorType.ELEMENT_STALE,
@@ -1378,6 +1517,27 @@ class Page:
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
             if (el.tag in ("input", "textarea") or el.role == "textbox") and (
+                desc_lower in el.text.lower()
+                or desc_lower in (el.placeholder or "").lower()
+                or desc_lower in el.role.lower()
+            ):
+                return el
+        return None
+
+    def _find_select(self, description: str) -> Element | None:
+        if not self._current_snapshot:
+            return None
+        # Exact ref match
+        for el in self._current_snapshot.elements:
+            if el.ref == description and el.tag == "select":
+                return el
+        # Fuzzy match, filtered to <select> the same way _find_input filters to
+        # inputs/textareas — an unfiltered fuzzy match (bare _find_element) can
+        # land on a button/link sharing the same label ("Sort") before it ever
+        # reaches the actual dropdown.
+        desc_lower = description.lower()
+        for el in self._current_snapshot.elements:
+            if el.tag == "select" and (
                 desc_lower in el.text.lower()
                 or desc_lower in (el.placeholder or "").lower()
                 or desc_lower in el.role.lower()
