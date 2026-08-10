@@ -84,7 +84,12 @@ def test_find_chrome_uses_shutil_which(monkeypatch):
 
 
 def test_caller_supplied_profile_is_not_deleted(monkeypatch, tmp_path):
-    monkeypatch.setenv("CHROME_EXECUTABLE", "/fake/chrome")
+    # A real file: find_chrome() stats CHROME_EXECUTABLE now, so a made-up path
+    # falls through to the candidate search and this test would depend on the
+    # machine having a browser installed.
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
     profile = tmp_path / "profile"
     profile.mkdir()
     launcher = ChromeLauncher(user_data_dir=str(profile))
@@ -95,7 +100,9 @@ def test_caller_supplied_profile_is_not_deleted(monkeypatch, tmp_path):
 def test_temp_profile_is_still_cleaned(monkeypatch, tmp_path):
     import os
 
-    monkeypatch.setenv("CHROME_EXECUTABLE", "/fake/chrome")
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
     launcher = ChromeLauncher()
     assert launcher._owns_user_data_dir
     launcher._user_data_dir = str(tmp_path / "temp_profile")
