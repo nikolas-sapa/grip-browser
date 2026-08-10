@@ -328,3 +328,18 @@ async def test_error_results_are_not_fenced_as_untrusted_page_text():
     err = [str(m["content"]) for m in runner._messages if m.get("role") == "tool"][0]
     assert "RE_SNAPSHOT" in err
     assert "<page_state>" not in err, "recovery guidance was fenced off as untrusted"
+
+
+@pytest.mark.asyncio
+async def test_read_tool_returns_prose_not_a_document_repr():
+    """The tool result is stringified into the transcript, so a Document object
+    would reach the model as a repr rather than as the page's text."""
+    responses = [
+        LLMResponse(content=None, tool_call=ToolCall(name="read", arguments={})),
+        LLMResponse(content=None, tool_call=ToolCall(name="done", arguments={"result": "ok"})),
+    ]
+    runner = Runner(llm=make_llm(responses), page=FakePage(["A"]), trace=Trace())
+    await runner.run("read the page")
+    payloads = [unfenced(m["content"]) for m in runner._messages if m.get("role") == "tool"]
+    assert "the page body says things" in payloads[0]
+    assert "Document(" not in payloads[0]

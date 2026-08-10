@@ -8,9 +8,13 @@ def test_find_chrome_returns_string_or_none():
     assert result is None or isinstance(result, str)
 
 
-def test_find_chrome_prefers_env_var(monkeypatch):
-    monkeypatch.setenv("CHROME_EXECUTABLE", "/fake/chrome")
-    assert find_chrome() == "/fake/chrome"
+def test_find_chrome_prefers_env_var(monkeypatch, tmp_path):
+    # The binary has to exist: a CHROME_EXECUTABLE pointing at nothing is a stale
+    # setting, not a preference, and trusting it hides the real error.
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    assert find_chrome() == str(exe)
 
 
 def test_launcher_raises_if_no_chrome(monkeypatch):
@@ -21,10 +25,12 @@ def test_launcher_raises_if_no_chrome(monkeypatch):
             ChromeLauncher()
 
 
-def test_launcher_stores_executable(monkeypatch):
-    monkeypatch.setenv("CHROME_EXECUTABLE", "/fake/chrome")
+def test_launcher_stores_executable(monkeypatch, tmp_path):
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
     launcher = ChromeLauncher()
-    assert launcher.executable == "/fake/chrome"
+    assert launcher.executable == str(exe)
 
 
 def test_find_chrome_falls_back_to_cached_chrome_for_testing(monkeypatch, tmp_path):
@@ -97,3 +103,14 @@ def test_temp_profile_is_still_cleaned(monkeypatch, tmp_path):
     path = launcher._user_data_dir
     launcher.terminate()
     assert not os.path.exists(path)
+
+
+def test_stale_chrome_executable_is_not_trusted(monkeypatch):
+    """A CHROME_EXECUTABLE pointing at nothing must fall through to the normal
+    search, so the caller gets the clear "not found" error rather than an opaque
+    Popen failure from inside launch()."""
+    from grip.cdp.launcher import find_chrome
+
+    monkeypatch.setenv("CHROME_EXECUTABLE", "/nonexistent/chrome")
+    found = find_chrome()
+    assert found != "/nonexistent/chrome"

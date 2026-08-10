@@ -4,6 +4,124 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Removed
+
+- **`Page.extract()` and `Page.observe()`.** Breaking. `extract()` returned the
+  identical `text_content` for every key in the schema it was given, and
+  `observe()` discarded its `question` argument and returned `format(snapshot)`
+  — the snapshot tool under a second name. Both were advertised to the model in
+  the agent tool list, so a run could spend a turn and its tokens on either and
+  learn nothing new. Use `read()` for prose and `snapshot()` for what is
+  actionable; `Browser.run(goal, llm=...)` remains the structured-extraction
+  path.
+- `RefRegistry` from the public exports. It has one internal caller and was
+  never usable on its own.
+
+### Added
+
+- **Snapshot deltas.** From the second observation of a page onward, an agent
+  can be handed only what changed: elements added, removed and retitled keyed by
+  ref, plus word-run diffs of the body text. `Page.delta` exposes it and the
+  agent loop uses it automatically. Measured on a five-turn click loop over a
+  28-element page: 628 tokens per turn becomes 42, a 75% cut in per-turn
+  payload. The loop also stops re-sending superseded page states, which moves
+  prompt cost from quadratic in turn count to linear.
+- **`NavigationPolicy`.** `Browser` now refuses non-http(s) schemes, private and
+  loopback addresses, and cloud metadata endpoints by default. `allow_private`
+  and `allow_file` opt back in per browser. Callers that pass user-supplied URLs
+  to `open()` were previously exposed to SSRF and local file disclosure.
+- **Persistent profiles and remote attach.** `Browser(user_data_dir=...)` reuses
+  a profile directory across runs, carrying localStorage, IndexedDB and service
+  workers that cookie JSON never could. `Browser(cdp_url=...)` attaches to a
+  browser grip did not launch, local or remote.
+- **Challenge handling.** `page.detect_challenge()` classifies the stage;
+  `page.solve_challenge()` attempts checkbox, Turnstile and slider in-process
+  with human-shaped pointer motion, and reports success only where it can verify
+  it. Image-grid and text challenges return to the caller's model with a
+  screenshot. No third-party solving service is involved. Solve rates are
+  unmeasured.
+- **`grip.input`** — Bézier pointer paths with eased velocity, for interactions
+  where constant-velocity straight-line motion is itself a tell.
+- **Optional MCP server.** `pip install "grip-browser[mcp]"` then `grip-mcp`.
+  Serves the delta payload the same way the agent loop does.
+- `PageSnapshot.prompt_injection` so a caller can tell a page whose text was
+  stripped from one that was clean.
+
+### Fixed
+
+- **`click()` and `type()` could still act on the wrong element.** 0.4.2 made
+  the three JS collectors agree on which elements are addressable, but the index
+  itself remained positional: it was resolved against a cached snapshot and then
+  re-derived against the live DOM at action time. Anything inserted or removed
+  above the target in between shifted it onto a different element, silently, and
+  the action reported success. Elements now carry a `data-grip-h` handle stamped
+  at discovery, actions resolve that handle and verify the element's tag and
+  text before acting, and a mismatch raises `ELEMENT_STALE` instead of clicking
+  something else.
+- **The cached snapshot outlived its document.** It was written once and never
+  invalidated, so an action after `goto()` resolved against the previous page.
+- **`type()` reported success unconditionally.** The CDP result was discarded and
+  `success: True` written into the trace regardless of what happened.
+- **Duplicate labels collapsed onto one ref.** Refs were `md5(tag:text)`, so two
+  "Delete" buttons shared one and the second was unreachable. A hidden element
+  sharing a visible control's label could absorb clicks meant for it. Refs are
+  now keyed on the element handle.
+- **Hidden text reached the model.** Visibility was tested with
+  `getComputedStyle().opacity`, which does not inherit, so a child of an
+  `opacity:0` parent passed as visible. Uses `checkVisibility()` now.
+- **Chrome and its profile directory leaked** when a connect failed, when
+  `close()` hit a raising `disconnect()`, and once per extra caller when several
+  coroutines opened the first tab concurrently — the pattern the README itself
+  documents.
+- **A dead CDP transport left every in-flight call to time out.** Pending futures
+  now fail immediately with the connection error rather than each waiting out the
+  full 30 seconds and reporting a misleading timeout.
+- **`goto(timeout=...)` bounded only the load wait,** not the CDP calls in front
+  of it, so a one-second timeout could block for ninety.
+- **`launch()` and `terminate()` blocked the event loop,** stalling every other
+  tab in a concurrent run.
+- **One tool error ended the whole agent run.** Errors now return to the model as
+  tool results carrying their suggested recovery, and the loop continues. The
+  LLM call is bounded; it previously had no timeout inside a twenty-step loop.
+- **Prompt injection.** The guard normalises confusable characters, zero-width
+  joiners and whitespace before matching, closing nine measured bypasses, and
+  scans the page title, element text and placeholders — channels that reached the
+  model entirely unscanned. Page content is now delimited and framed as untrusted
+  data in the system prompt, which is the defense that does not depend on
+  enumerating attacks; the pattern list remains a filter, not a control.
+- **Typed text was persisted to traces** at 0644, passwords included. It is
+  redacted at entry. Session cookie files are created 0600.
+- **`find_chrome()` trusted `CHROME_EXECUTABLE` without checking it existed,** so
+  a stale value produced an opaque failure deep in `launch()` instead of the
+  clear "Chrome/Chromium not found" error.
+
+### Changed
+
+- Browser-dependent tests skip when no Chrome is present instead of failing. 98
+  of them used to produce a wall of errors that read as a broken library.
+- `ruff` and `mypy` are now configured. Both previously passed by running with
+  default rule sets over a codebase with 68 and 25 real findings respectively; a
+  gate that reports safety nobody checked is worse than no gate. Both are clean.
+- CI tests Python 3.14.
+- Removed dead code: the fingerprint-only `diff.py` (superseded by deltas, and it
+  truncated at 500 characters while snapshots carry 8000), `ElementCache` (never
+  read), `HiddenElementFilter` (never called, and the fields it read were never
+  populated), `Element.snapshot_version` (never compared), and a duplicate
+  tokenization pass per snapshot.
+
+### Known limitations
+
+- TLS/JA3 fingerprints and full headless fingerprint parity are below the
+  DevTools Protocol and out of reach from Python driving stock Chromium. A site
+  blocking on IP reputation needs a residential or mobile proxy, which `proxy=`
+  supports.
+- Whether `stealth=True` helps is unmeasured. `evaluation/stealth_measurement.py`
+  answers it where a browser has network access.
+- A `SIGKILL`ed process still strands its temp profile directory; `terminate()`
+  cannot run if the interpreter never regains control.
+
 ## [0.4.2] - 2026-08-06
 
 ### Fixed

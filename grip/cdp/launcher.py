@@ -48,7 +48,10 @@ def _find_cached_chrome() -> str | None:
 
 
 def find_chrome() -> str | None:
-    if exe := os.environ.get("CHROME_EXECUTABLE"):
+    # Stat it rather than trusting it: a stale CHROME_EXECUTABLE used to come back
+    # as "found", so the clear "not found, install Chrome" error never fired and
+    # the caller got an opaque Popen failure from inside launch() instead.
+    if (exe := os.environ.get("CHROME_EXECUTABLE")) and Path(exe).exists():
         return exe
     for candidate in _CHROME_CANDIDATES:
         if Path(candidate).exists():
