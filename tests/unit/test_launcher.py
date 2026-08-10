@@ -47,10 +47,12 @@ def test_find_chrome_falls_back_to_cached_chrome_for_testing(monkeypatch, tmp_pa
     monkeypatch.setattr(
         launcher_mod, "_CACHED_CHROME_GLOBS", [str(tmp_path / "chromium-*" / "chrome-mac-arm64" / "chrome")]
     )
-    with patch("grip.cdp.launcher.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 1
-        mock_run.return_value.stdout = ""
-        assert find_chrome() == str(cached)
+    # find_chrome() looks in PATH before it reaches the cached-Chrome fallback, so
+    # without this the test only exercises the fallback on machines that have no
+    # browser installed — it passed on macOS and failed on CI's Ubuntu runner,
+    # where google-chrome is in PATH. Stub the lookup the code actually performs.
+    monkeypatch.setattr(launcher_mod.shutil, "which", lambda name: None)
+    assert find_chrome() == str(cached)
 
 
 def test_find_cached_chrome_prefers_newest_build(monkeypatch, tmp_path):
@@ -116,11 +118,16 @@ def test_stale_chrome_executable_is_not_trusted(monkeypatch):
     """A CHROME_EXECUTABLE pointing at nothing must fall through to the normal
     search, so the caller gets the clear "not found" error rather than an opaque
     Popen failure from inside launch()."""
-    from grip.cdp.launcher import find_chrome
+    from grip.cdp import launcher as launcher_mod
 
+    # Pin every later step of the search, otherwise the assertion is vacuous on a
+    # machine with no browser: find_chrome() would return None, which trivially
+    # differs from the stale path without proving the fall-through ran.
     monkeypatch.setenv("CHROME_EXECUTABLE", "/nonexistent/chrome")
-    found = find_chrome()
-    assert found != "/nonexistent/chrome"
+    monkeypatch.setattr(launcher_mod, "_CHROME_CANDIDATES", [])
+    monkeypatch.setattr(launcher_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(launcher_mod, "_find_cached_chrome", lambda: "/cached/chrome")
+    assert launcher_mod.find_chrome() == "/cached/chrome"
 
 
 def test_launch_timeout_reads_env(monkeypatch, tmp_path):

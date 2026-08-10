@@ -66,8 +66,13 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # The mcp extra is a lint dependency, not just a runtime one. Without it
+      # `mcp.*` falls to the ignore_missing_imports override in pyproject, every
+      # symbol from it becomes Any, and strict mode's disallow_untyped_decorators
+      # fails all five @server.tool handlers in grip/mcp/server.py — errors nobody
+      # sees locally, where mcp is installed. Lint what users actually install.
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,mcp]"
 
       - name: ruff
         run: ruff check grip/ gripsearch/ evaluation/ benchmarks/
