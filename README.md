@@ -18,31 +18,40 @@ pip install grip-browser
 
 ## What is Grip?
 
-**Grip is a CDP-native browser SDK for AI agents that turns a web page into a ~2,000-token semantic snapshot instead of ~78,000 tokens of raw HTML.** It runs on the Chrome DevTools Protocol directly — no Playwright, no Puppeteer, no wrapper binary.
+**Grip is a CDP-native browser SDK for AI agents that turns a web page into a ~2,000-token semantic snapshot instead of ~59,000 tokens of raw HTML** (medians over 8 real pages, 2026-08-10). It runs on the Chrome DevTools Protocol directly — no Playwright, no Puppeteer, no wrapper binary.
 
 ### Why Grip
 
 Agents don't need the DOM. They need to know what's on the page and what they can act on. Grip sends the model only the interactive elements and visible text — structured, indexed, and fuzzy-matchable.
 
-Measured across 8 real pages (Wikipedia, GitHub, react.dev, BBC, Hacker News, Python docs, arXiv, example.com): **median 77,588 tokens of raw HTML becomes 2,018 tokens of grip snapshot — a 19x reduction.** Per-page it ranges from 3x on a page that is already tiny to 95x on a heavy SPA.
+Measured across 8 real pages (Wikipedia, GitHub, react.dev, BBC, Hacker News, Python docs, arXiv, example.com) on 2026-08-10: **grip's snapshot is a median 16.0x smaller than the page's raw HTML** — that is the median of the per-page ratios, and per page it runs from 3.3x on example.com, which is already tiny, to 68.4x on GitHub. The underlying medians are 58,912 tokens of raw HTML (range 167–459,193) against 1,998 tokens of grip snapshot (range 50–19,946). Per-page tables: [`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md).
 
-That 19x is against **raw HTML**, which is the right comparison if your agent would otherwise put the DOM in the prompt. Against naively tag-stripped text — what a retrieval API sends a model — the reduction is about **1.4x**, because most of what grip removes is markup rather than words. Both numbers are measured; use whichever matches what you would otherwise send. Method and data: [`evaluation/`](evaluation/).
+The spread is the point: quoting the median alone is wrong for most individual pages by a large factor in one direction or the other.
+
+That 16.0x is against **raw HTML**, which is the right comparison if your agent would otherwise put the DOM in the prompt. Against naively tag-stripped text — what a retrieval API sends a model — the reduction is only about **1.4x**, because most of what grip removes is markup rather than words. That 1.4x is a separate, older measurement: median characters over the 23 pages of the 33-page reach corpus where both arms returned content, range 0.5x–3.7x, and it has not been re-run against the 8-page corpus above. Both numbers are measured; use whichever matches what you would otherwise send. Method and data: [`evaluation/`](evaluation/).
 
 ### Grip vs Playwright MCP vs Puppeteer
 
 | | Playwright MCP | Puppeteer | Grip |
 |---|:---:|:---:|:---:|
-| Tokens per snapshot | not measured | not measured | **~2,000 median** |
+| Tokens per snapshot | 11,597 median | 58,280 median (HTML)<br>27,489 median (a11y tree) | **1,998 median** |
 | Built on | Playwright | Chromium binary API | pure CDP |
 | Shadow DOM traversal | partial | no | full |
 | Fuzzy element match (no selectors) | no | no | yes |
 | Typed error recovery | no | no | yes |
 | Prompt-injection guard | no | no | yes |
 
-grip's token figure is measured across 8 real pages (median; 3x–95x reduction vs raw
-HTML depending on the page). The Playwright MCP and Puppeteer columns are feature
-comparisons — their token figures are not independently measured here, so they are
-left blank rather than guessed.
+All three token figures are measured on the same 8 real pages with the same encoder
+(tiktoken `cl100k_base`), run 2026-08-10. grip is the smallest payload on 8 of 8 pages
+— a median **5.0x** below Playwright MCP (range 2.5x–7.3x) and **15.4x** below
+Puppeteer's `page.content()`. Puppeteer has no single canonical observation, so both
+the HTML and accessibility-tree payloads are shown. On Hacker News, Playwright MCP's
+snapshot came out *larger* than the raw HTML it describes — an accessibility tree is
+not automatically a compression. Per-page tables, ratios and method:
+[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md).
+
+This measures payload size only. It says nothing about task success, latency,
+reliability or cross-browser support.
 
 Honest caveat: Playwright and Puppeteer are broader general-purpose automation frameworks with huge ecosystems and cross-browser support. Grip is narrower on purpose — it does one thing (feed an LLM the smallest useful view of a page) and does not try to replace them for human-driven E2E testing.
 
@@ -62,7 +71,7 @@ Honest caveat: Playwright and Puppeteer are broader general-purpose automation f
 
 **Is Grip a Playwright wrapper?** No. Grip talks to Chrome over the DevTools Protocol directly. There is no Playwright or Puppeteer dependency underneath.
 
-**How does it cut tokens?** It sends the model only interactive elements (inputs, buttons, links) and visible text, indexed for fuzzy matching — not the full HTML tree, not a screenshot. A trivial page like example.com comes out at ~50 tokens; a Wikipedia article at ~7,000, down from ~157,000 raw.
+**How does it cut tokens?** It sends the model only interactive elements (inputs, buttons, links) and visible text, indexed for fuzzy matching — not the full HTML tree, not a screenshot. On 2026-08-10 a trivial page like example.com came out at 50 tokens against 167 raw; the Wikipedia article on Python, the heaviest page in the corpus, came out at 19,946 against 459,193 raw.
 
 **Which LLMs does it work with?** Anthropic and OpenAI adapters ship in the box; any model works via the `LLMAdapter` protocol.
 
@@ -74,7 +83,7 @@ Honest caveat: Playwright and Puppeteer are broader general-purpose automation f
 
 ## The problem
 
-Most browser tools give AI agents raw HTML or screenshots. Raw HTML on a real page runs tens of thousands of tokens — measured median 77,588 across 8 popular sites, and 157,089 for a single Wikipedia article. Screenshots are ~3,000. Both burn through context windows fast and slow your agent down.
+Most browser tools give AI agents raw HTML or screenshots. Raw HTML on a real page runs tens of thousands of tokens — a measured median of 58,912 across 8 popular sites on 2026-08-10, ranging from 167 on example.com to 459,193 for a single Wikipedia article. A PNG screenshot estimates at ~3,000 tokens, a JPEG at ~800 (grip's own `Screenshot.tokens_estimated`, a size estimate rather than a corpus measurement). The 58,280 median in the tables above is a separate arm — Puppeteer's `page.content()` on the same 8 pages — not a second reading of this one. Both burn through context windows fast and slow your agent down.
 
 ## What grip does instead
 
@@ -94,7 +103,7 @@ CONTENT:
   Delivering to New York — Shop deals in...
 ```
 
-**~2,000 tokens per snapshot, median.** The example above is example.com, the smallest page on the web at ~50 tokens. A Wikipedia article is ~7,000 — against ~157,000 raw.
+**1,998 tokens per snapshot, median** across those 8 pages on 2026-08-10, but the range is 50 to 19,946 and the median is not what you should budget for. example.com, the smallest page on the web, is 50 tokens. The Wikipedia article on Python is 19,946 — against 459,193 raw.
 
 ---
 
@@ -111,7 +120,7 @@ async def main():
 
         print(snapshot.text_content)      # readable page text
         print(snapshot.elements)          # interactive elements only
-        print(snapshot.tokens_estimated)  # ~50 for this page; ~2,000 median on real pages
+        print(snapshot.tokens_estimated)  # 3,540 for this page on 2026-08-10; 1,998 median across 8 real pages
 
 asyncio.run(main())
 ```
@@ -304,13 +313,18 @@ does **not** measure (task success, latency, model quality) are in
 
 | | Playwright MCP | Puppeteer | grip |
 |---|:---:|:---:|:---:|
-| Tokens per snapshot | not measured | not measured | **~2,000 median** |
+| Tokens per snapshot | 11,597 median | 58,280 median (HTML)<br>27,489 median (a11y tree) | **1,998 median** |
 | Shadow DOM traversal | Partial | No | Full |
 | Prompt injection guard | No | No | Yes |
 | Typed error recovery | No | No | Yes |
 | Element staleness detection | No | No | Yes |
 | Pure CDP (no binary bloat) | No | No | Yes |
 | Screenshot token tracking | No | No | Yes |
+
+Token figures: 8 real pages, tiktoken `cl100k_base`, 2026-08-10 —
+[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md). Payload size
+is one axis: Playwright and Puppeteer are broader general-purpose automation frameworks
+and this table says nothing about task success, latency or cross-browser support.
 
 ---
 
