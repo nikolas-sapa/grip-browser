@@ -22,6 +22,7 @@ Run: .venv/bin/python -m evaluation.run_reach
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import html as html_mod
 import json
@@ -32,6 +33,7 @@ import urllib.error
 import urllib.request
 import zlib
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from evaluation.corpus import CORPUS
 from grip.browser import Browser
@@ -95,19 +97,16 @@ def static_fetch(url: str, timeout: float = 20.0) -> tuple[str, int | str]:
             status = resp.status
     except urllib.error.HTTPError as e:
         return "", e.code
-    except Exception as e:  # noqa: BLE001 - a benchmark must survive any one URL
+    except Exception as e:
         return "", type(e).__name__
 
     if enc == "gzip":
-        try:
+        # A mislabelled encoding is not fatal — keep the bytes as they came.
+        with contextlib.suppress(Exception):
             raw = gzip.decompress(raw)
-        except Exception:  # noqa: BLE001,S110 - a mislabelled encoding is not fatal
-            pass
     elif enc == "deflate":
-        try:
+        with contextlib.suppress(Exception):
             raw = zlib.decompress(raw, -zlib.MAX_WBITS)
-        except Exception:  # noqa: BLE001,S110 - a mislabelled encoding is not fatal
-            pass
 
     html = raw.decode("utf-8", errors="replace")
     text = _SCRIPT_STYLE.sub(" ", html)
@@ -147,14 +146,13 @@ async def main() -> None:
                 doc = await page.read()
                 b_chars = len(doc.text)
                 marker = pick_marker(doc.blocks)
-            except Exception as e:  # noqa: BLE001 - record the failure, keep going
+            except Exception as e:
                 note = f"browser error: {type(e).__name__}"
             finally:
                 if page is not None:
-                    try:
+                    # Teardown: nothing useful to report if closing fails.
+                    with contextlib.suppress(Exception):
                         await page.close()
-                    except Exception:  # noqa: BLE001,S110 - teardown, nothing to report
-                        pass
 
             static_text, status = static_fetch(url)
             browser_ok = bool(marker)
@@ -179,7 +177,7 @@ async def main() -> None:
         "rows": [asdict(r) for r in rows],
     }
     # ASYNC230: a single blocking write after all fetching is done, not in a hot path.
-    with open("evaluation/results.json", "w") as f:  # noqa: ASYNC230
+    with Path("evaluation/results.json").open("w") as f:  # noqa: ASYNC230
         json.dump(out, f, indent=1)
 
     report(rows)

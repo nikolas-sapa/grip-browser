@@ -34,6 +34,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def base_url():
+    # Loopback fixture: NavigationPolicy refuses private addresses by default
+    # (SSRF guard), so every Browser here opts in with allow_private=True.
     httpd = HTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_port}"
@@ -42,7 +44,7 @@ def base_url():
 
 @pytest.mark.asyncio
 async def test_relative_href_is_resolved_to_absolute(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base_url)
         snap = await page.snapshot()
         hrefs = dict(snap.links)
@@ -51,7 +53,7 @@ async def test_relative_href_is_resolved_to_absolute(base_url):
 
 @pytest.mark.asyncio
 async def test_absolute_href_is_preserved(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base_url)
         snap = await page.snapshot()
         assert dict(snap.links)["Absolute"] == "https://example.com/absolute"
@@ -60,7 +62,7 @@ async def test_absolute_href_is_preserved(base_url):
 @pytest.mark.asyncio
 async def test_unfetchable_schemes_are_dropped(base_url):
     """mailto/javascript/tel/#fragment are not pages — a fetcher cannot use them."""
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base_url)
         snap = await page.snapshot()
         texts = {t for t, _ in snap.links}
@@ -71,7 +73,7 @@ async def test_unfetchable_schemes_are_dropped(base_url):
 
 @pytest.mark.asyncio
 async def test_non_link_elements_have_no_href(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base_url)
         snap = await page.snapshot()
         buttons = [e for e in snap.elements if e.tag == "button"]
@@ -83,7 +85,7 @@ async def test_hrefs_stay_out_of_the_formatted_snapshot(base_url):
     """The formatted string is the token-budget surface; URLs would swamp a SERP."""
     from grip.compression.summarizer import Summarizer
 
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base_url)
         snap = await page.snapshot()
         formatted = Summarizer().format(snap)

@@ -43,6 +43,8 @@ class _OkHandler(_Handler):
 @pytest.fixture
 def server():
     def _start(handler):
+        # Loopback fixture: NavigationPolicy refuses private addresses by default
+        # (SSRF guard), so every Browser here opts in with allow_private=True.
         httpd = HTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         return httpd
@@ -62,7 +64,7 @@ def server():
 @pytest.mark.asyncio
 async def test_403_surfaces_as_anti_bot_block(server):
     base = server(_Handler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base}/403")
         snap = await page.snapshot()
         assert page._status_code == 403
@@ -73,7 +75,7 @@ async def test_403_surfaces_as_anti_bot_block(server):
 @pytest.mark.asyncio
 async def test_429_surfaces_as_rate_limited(server):
     base = server(_Handler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base}/429")
         snap = await page.snapshot()
         assert snap.page_error is not None
@@ -84,7 +86,7 @@ async def test_429_surfaces_as_rate_limited(server):
 async def test_just_a_moment_title_blocks_even_on_200(server):
     """Cloudflare sometimes serves the interstitial with a 200."""
     base = server(_Handler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base}/200")
         snap = await page.snapshot()
         assert snap.page_error is not None
@@ -95,7 +97,7 @@ async def test_just_a_moment_title_blocks_even_on_200(server):
 async def test_thin_legitimate_page_stays_clean(server):
     """Guards the false positive: a small real page must not be flagged."""
     base = server(_OkHandler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base)
         snap = await page.snapshot()
         assert page._status_code == 200
@@ -120,7 +122,7 @@ class _SoftNotFoundHandler(_Handler):
 @pytest.mark.asyncio
 async def test_soft_404_title_surfaces_as_no_content(server):
     base = server(_SoftNotFoundHandler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(base)
         snap = await page.snapshot()
         assert page._status_code == 200
@@ -133,7 +135,7 @@ async def test_status_is_captured_per_tab_under_concurrency(server):
     """Each tab owns its own status — no leaking between concurrent fetches."""
     base = server(_Handler)
     ok = server(_OkHandler)
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         blocked, fine = await asyncio.gather(
             browser.open(f"{base}/403"), browser.open(ok)
         )

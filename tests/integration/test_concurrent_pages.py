@@ -3,19 +3,35 @@ Concurrent page fetch — the primitive retrieval is built on.
 Run: .venv/bin/python -m pytest tests/integration/test_concurrent_pages.py -v -s
 """
 import asyncio
+import atexit
+import pathlib
+import shutil
+import tempfile
+import uuid
+
 import pytest
+
 from grip.browser import Browser
+
+# data: is refused by the navigation policy (attacker-controlled markup in page
+# context); a real file on disk gives each tab a distinct URL just as well.
+_FIXTURE_DIR = tempfile.mkdtemp(prefix="grip_fixtures_")
+atexit.register(shutil.rmtree, _FIXTURE_DIR, True)
 
 
 def _page_url(marker: str) -> str:
-    return f"data:text/html,<html><head><title>{marker}</title></head><body><h1>{marker}</h1></body></html>"
+    path = pathlib.Path(_FIXTURE_DIR) / f"{marker}_{uuid.uuid4().hex}.html"
+    path.write_text(
+        f"<html><head><title>{marker}</title></head><body><h1>{marker}</h1></body></html>"
+    )
+    return path.as_uri()
 
 
 @pytest.mark.asyncio
 async def test_concurrent_pages_are_independent():
     """Before this, Browser held one tab and the second open() clobbered the first."""
     markers = ["alpha", "bravo", "charlie", "delta"]
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_file=True) as browser:
         pages = await asyncio.gather(*(browser.open(_page_url(m)) for m in markers))
         snapshots = await asyncio.gather(*(p.snapshot() for p in pages))
 
@@ -30,7 +46,7 @@ async def test_concurrent_pages_are_independent():
 @pytest.mark.asyncio
 async def test_pages_stay_independent_after_later_opens():
     """The original bug: opening a second page changed what the first one saw."""
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_file=True) as browser:
         first = await browser.open(_page_url("first"))
         await browser.open(_page_url("second"))
         snap = await first.snapshot()
@@ -45,7 +61,7 @@ async def _target_ids(browser) -> set[str]:
 
 @pytest.mark.asyncio
 async def test_close_releases_the_tab():
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_file=True) as browser:
         page = await browser.open(_page_url("closeme"))
         target_id = page._target_id
         assert target_id in await _target_ids(browser)
@@ -68,7 +84,7 @@ async def test_close_releases_the_tab():
 @pytest.mark.asyncio
 async def test_stealth_is_off_by_default():
     """grip is a general SDK — masking automation must be an explicit choice."""
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_file=True) as browser:
         page = await browser.open("about:blank")
         r = await page._engine.send(
             "Runtime.evaluate",
@@ -79,7 +95,7 @@ async def test_stealth_is_off_by_default():
 
 @pytest.mark.asyncio
 async def test_stealth_removes_the_two_free_tells():
-    async with Browser(headless=True, stealth=True) as browser:
+    async with Browser(headless=True, stealth=True, allow_file=True) as browser:
         page = await browser.open("about:blank")
         r = await page._engine.send(
             "Runtime.evaluate",
@@ -119,7 +135,8 @@ async def test_cancelled_open_does_not_leak_a_tab():
     url = f"http://127.0.0.1:{httpd.server_port}/"
 
     try:
-        async with Browser(headless=True) as browser:
+        # a loopback server: private ranges are refused unless opted into
+        async with Browser(headless=True, allow_private=True) as browser:
             before = await _target_ids(browser)
             with pytest.raises((TimeoutError, asyncio.TimeoutError)):
                 await asyncio.wait_for(browser.open(url), timeout=2.0)

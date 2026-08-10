@@ -71,9 +71,16 @@ def _source(base, *paths):
     return StaticSource([f"{base}{p}" for p in paths])
 
 
+def _retriever(base, *paths, **kw):
+    # The fixture server is on 127.0.0.1 and NavigationPolicy refuses loopback by
+    # default, so these tests must opt in explicitly — the same way a caller
+    # pointing gripsearch at an internal host has to.
+    return Retriever(_source(base, *paths), allow_private=True, **kw)
+
+
 @pytest.mark.asyncio
 async def test_relevant_passage_ranks_first(base_url):
-    async with Retriever(_source(base_url, "/threads", "/asyncio")) as r:
+    async with _retriever(base_url, "/threads", "/asyncio") as r:
         result = await r.search("gather exception propagates to caller")
     assert result.passages
     assert "return_exceptions" in result.passages[0].text
@@ -82,7 +89,7 @@ async def test_relevant_passage_ranks_first(base_url):
 
 @pytest.mark.asyncio
 async def test_citation_resolves_to_the_right_heading(base_url):
-    async with Retriever(_source(base_url, "/asyncio")) as r:
+    async with _retriever(base_url, "/asyncio") as r:
         result = await r.search("gather exception propagates to caller")
     top = result.passages[0]
     assert "Running tasks concurrently" in top.citation
@@ -91,7 +98,7 @@ async def test_citation_resolves_to_the_right_heading(base_url):
 
 @pytest.mark.asyncio
 async def test_blocked_source_is_reported_not_dropped(base_url):
-    async with Retriever(_source(base_url, "/asyncio", "/blocked")) as r:
+    async with _retriever(base_url, "/asyncio", "/blocked") as r:
         result = await r.search("gather")
     failed = [f for f in result.failures if f.url.endswith("/blocked")]
     assert failed, "a blocked source vanished instead of being reported"
@@ -100,14 +107,14 @@ async def test_blocked_source_is_reported_not_dropped(base_url):
 
 @pytest.mark.asyncio
 async def test_content_free_page_is_reported(base_url):
-    async with Retriever(_source(base_url, "/asyncio", "/empty")) as r:
+    async with _retriever(base_url, "/asyncio", "/empty") as r:
         result = await r.search("gather")
     assert any(f.url.endswith("/empty") for f in result.failures)
 
 
 @pytest.mark.asyncio
 async def test_near_duplicate_passages_are_collapsed(base_url):
-    async with Retriever(_source(base_url, "/asyncio", "/duplicate")) as r:
+    async with _retriever(base_url, "/asyncio", "/duplicate") as r:
         result = await r.search("gather exception propagates to caller")
     texts = [p.text for p in result.passages]
     assert len(texts) == len(set(texts))
@@ -117,7 +124,7 @@ async def test_near_duplicate_passages_are_collapsed(base_url):
 
 @pytest.mark.asyncio
 async def test_chrome_never_becomes_a_passage(base_url):
-    async with Retriever(_source(base_url, "/asyncio")) as r:
+    async with _retriever(base_url, "/asyncio") as r:
         result = await r.search("pricing copyright home")
     for p in result.passages:
         assert "all rights reserved" not in p.text.lower()
@@ -126,7 +133,7 @@ async def test_chrome_never_becomes_a_passage(base_url):
 
 @pytest.mark.asyncio
 async def test_all_sources_failing_raises_with_the_failures_attached(base_url):
-    async with Retriever(_source(base_url, "/blocked")) as r:
+    async with _retriever(base_url, "/blocked") as r:
         with pytest.raises(NoUsableSources) as exc:
             await r.search("anything")
     assert exc.value.failures
@@ -135,7 +142,7 @@ async def test_all_sources_failing_raises_with_the_failures_attached(base_url):
 
 @pytest.mark.asyncio
 async def test_result_reports_what_it_cost(base_url):
-    async with Retriever(_source(base_url, "/asyncio")) as r:
+    async with _retriever(base_url, "/asyncio") as r:
         result = await r.search("gather")
     assert result.elapsed_s > 0
     assert result.tokens_estimated > 0

@@ -34,15 +34,40 @@ _COLLECT_CANDIDATES_JS = """
   // expensive part, so callers only reach this for elements already known to be
   // candidates.
   function gripIsHidden(el) {
+    // checkVisibility accounts for the element AND its ancestors — a child of an
+    // opacity:0 parent used to pass as visible here, because
+    // getComputedStyle().opacity does not inherit. That let an off-screen decoy
+    // sharing a visible control's label absorb clicks meant for the real one.
+    if (typeof el.checkVisibility === 'function') {
+      if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return true;
+    } else {
+      const s = window.getComputedStyle(el);
+      if (s.display === 'none' || s.visibility === 'hidden' ||
+          parseFloat(s.opacity) === 0) return true;
+    }
+    if (el.getAttribute('aria-hidden') === 'true') return true;
+    if (el.offsetWidth === 0 || el.offsetHeight === 0) return true;
+
+    // checkVisibility does no geometry and no text-colour work, so the classic
+    // off-screen and invisible-text decoys survive it with a normal-sized box.
     const style = window.getComputedStyle(el);
-    return (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      parseFloat(style.opacity) === 0 ||
-      el.getAttribute('aria-hidden') === 'true' ||
-      el.offsetWidth === 0 ||
-      el.offsetHeight === 0
-    );
+    if (parseFloat(style.textIndent) < -500) return true;
+    if (parseFloat(style.fontSize) === 0) return true;
+    // transparent + background-clip:text is the gradient-text idiom and it is
+    // used on primary CTAs — reading that as hidden would delete the main button.
+    // ponytail: a transparent container whose child re-sets colour still reads as
+    // hidden. Candidates are interactive elements, where that is rare.
+    if (style.color === 'rgba(0, 0, 0, 0)' &&
+        style.getPropertyValue('-webkit-background-clip') !== 'text' &&
+        style.backgroundClip !== 'text') return true;
+
+    // Document-space, not viewport: comparing against innerHeight would mark
+    // every below-the-fold element hidden and gut snapshots of long pages. Only
+    // fully off-canvas left/top counts.
+    const r = el.getBoundingClientRect();
+    if (r.right + window.scrollX <= 0 || r.bottom + window.scrollY <= 0) return true;
+
+    return false;
   }
 
   function gripCollect() {
@@ -74,6 +99,25 @@ _COLLECT_CANDIDATES_JS = """
     walk(document.body, false);
     return out;
   }
+
+  // A positional index is only valid against the tree that produced it. Stamping
+  // the node itself means click/type can find the element the caller was actually
+  // shown, even after the page has inserted or removed siblings above it.
+  //
+  // Allocated once per node from a document-scoped counter, never reused: a node
+  // that drops out of the candidate set (goes opacity:0, loses its role) keeps
+  // its stamp, so a positional 'h' + i would later hand that same stamp to a
+  // different live element and querySelector would return the stale one — the
+  // duplicate-label decoy this whole change exists to close.
+  function gripStamp(el) {
+    let h = el.getAttribute('data-grip-h');
+    if (!h) {
+      window.__gripHandleSeq = (window.__gripHandleSeq || 0) + 1;
+      h = 'h' + window.__gripHandleSeq;
+      el.setAttribute('data-grip-h', h);
+    }
+    return h;
+  }
 """
 
 DISCOVER_ELEMENTS_JS = """
@@ -84,6 +128,7 @@ DISCOVER_ELEMENTS_JS = """
     const rect = el.getBoundingClientRect();
     return {
       index: i,
+      handle: gripStamp(el),
       tag: c.tag,
       role: c.role || c.tag,
       text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 120),
@@ -106,35 +151,70 @@ DISCOVER_ELEMENTS_JS = """
 """
 
 
+# Resolving by stamped handle rather than by position: the index that DISCOVER
+# produced describes a tree that may no longer exist by the time the agent acts.
+# The tag+text check catches the remaining case where a page reuses our attribute
+# or swaps the node underneath it — a wrong click is worse than a failed one, so
+# a mismatch is reported rather than performed.
+_RESOLVE_JS = """
+  // querySelector stops at shadow boundaries, but discovery walks into open
+  // roots, so anything it stamped there would otherwise resolve to not_found.
+  function gripQuery(root, sel) {
+    const hit = root.querySelector(sel);
+    if (hit) return hit;
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) {
+        const deep = gripQuery(el.shadowRoot, sel);
+        if (deep) return deep;
+      }
+    }
+    return null;
+  }
+
+  function gripResolve(handle, expectedTag, expectedText) {
+    const el = gripQuery(document, '[data-grip-h="' + handle + '"]');
+    if (!el) return { el: null, reason: 'not_found' };
+    const tag = el.tagName.toLowerCase();
+    if (expectedTag && tag !== expectedTag) return { el: null, reason: 'identity_mismatch' };
+    if (expectedText) {
+      const actual = (el.innerText || el.value || el.getAttribute('aria-label') || '')
+        .trim().slice(0, 120);
+      if (actual !== expectedText) return { el: null, reason: 'identity_mismatch' };
+    }
+    return { el: el, reason: '' };
+  }
+"""
+
 CLICK_ELEMENT_JS = """
-function(index) {
-""" + _COLLECT_CANDIDATES_JS + """
-  const found = gripCollect();
-  if (index < 0 || index >= found.length) return false;
-  found[index].el.click();
-  return true;
+function(handle, expectedTag, expectedText) {
+""" + _RESOLVE_JS + """
+  const r = gripResolve(handle, expectedTag, expectedText);
+  if (!r.el) return { ok: false, reason: r.reason };
+  r.el.click();
+  return { ok: true, reason: '' };
 }
 """
 
 
 TYPE_ELEMENT_JS = """
-function(index, text) {
-""" + _COLLECT_CANDIDATES_JS + """
-  const found = gripCollect();
-  if (index < 0 || index >= found.length) return false;
-  const el = found[index].el;
-  // The index comes from the same list DISCOVER produced, so this is the element
-  // the caller meant. It still has to be typable — a link at that index means the
-  // caller matched the wrong thing, and silently typing nowhere would hide that.
+function(handle, text, expectedTag, expectedText) {
+""" + _RESOLVE_JS + """
+  const r = gripResolve(handle, expectedTag, expectedText);
+  if (!r.el) return { ok: false, reason: r.reason };
+  const el = r.el;
+  // A link resolving here means the caller matched the wrong thing, and silently
+  // typing nowhere would hide that.
   const tag = el.tagName.toLowerCase();
-  if (!(tag === 'input' || tag === 'textarea' || el.isContentEditable)) return false;
+  if (!(tag === 'input' || tag === 'textarea' || el.isContentEditable)) {
+    return { ok: false, reason: 'not_typable' };
+  }
   el.focus();
   el.value = '';
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.value = text;
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
-  return true;
+  return { ok: true, reason: '' };
 }
 """
 
@@ -202,7 +282,14 @@ SCROLL_BOTTOM_JS = """
 
 READ_CONTENT_JS = r"""
 (function () {
-  const BAD = /(^|[-_ ])(nav|menu|sidebar|footer|header|banner|cookie|consent|promo|advert|subscribe|newsletter|related|comment|share|social|breadcrumb)([-_ ]|$)/i;
+  // Built rather than written as a literal: a regex literal cannot wrap, and the
+  // one-line version ran past every sane line width.
+  const BAD_WORDS = [
+    'nav', 'menu', 'sidebar', 'footer', 'header', 'banner', 'cookie', 'consent',
+    'promo', 'advert', 'subscribe', 'newsletter', 'related', 'comment', 'share',
+    'social', 'breadcrumb',
+  ];
+  const BAD = new RegExp('(^|[-_ ])(' + BAD_WORDS.join('|') + ')([-_ ]|$)', 'i');
   const CHROME_TAGS = ['nav','footer','header','aside','script','style','noscript','form'];
   const CHROME_ROLES = ['navigation','banner','contentinfo','complementary','search'];
 

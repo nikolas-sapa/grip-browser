@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from typing import Self
 
 from grip.browser import Browser
@@ -15,7 +16,7 @@ from gripsearch.types import RetrievalResult
 class NoUsableSources(RuntimeError):
     """Every candidate failed. The failures are attached rather than swallowed."""
 
-    def __init__(self, query: str, failures: list) -> None:
+    def __init__(self, query: str, failures: Sequence[object]) -> None:
         self.query = query
         self.failures = failures
         detail = "; ".join(str(f) for f in failures) or "no candidates found"
@@ -39,6 +40,8 @@ class Retriever:
         headless: bool = True,
         stealth: bool = True,
         model: SynthesisModel | None = None,
+        allow_private: bool = False,
+        allow_file: bool = False,
     ) -> None:
         self._source = source
         self._n = sources_per_query
@@ -53,14 +56,25 @@ class Retriever:
         # Opt-in: no model, no synthesis. Injected rather than constructed so
         # any client (real or fake-for-tests) works without an SDK dependency.
         self._model = model
+        # Default False, matching grip's NavigationPolicy: a retriever pointed at
+        # candidate URLs it did not author must not be reachable to a loopback
+        # admin server or file://. Opt-in exists because indexing an internal
+        # docs host or a local fixture server is a legitimate, deliberate use.
+        self._allow_private = allow_private
+        self._allow_file = allow_file
         self._browser: Browser | None = None
 
     async def __aenter__(self) -> Self:
-        self._browser = Browser(headless=self._headless, stealth=self._stealth)
+        self._browser = Browser(
+            headless=self._headless,
+            stealth=self._stealth,
+            allow_private=self._allow_private,
+            allow_file=self._allow_file,
+        )
         await self._browser.__aenter__()
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, *args: object) -> None:
         if self._browser:
             await self._browser.close()
             self._browser = None

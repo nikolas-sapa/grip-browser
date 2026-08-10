@@ -60,6 +60,8 @@ def _serve(body):
         def log_message(self, *args):
             pass
 
+    # Loopback fixture: NavigationPolicy refuses private addresses by default
+    # (SSRF guard), so every Browser here opts in with allow_private=True.
     httpd = HTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return f"http://127.0.0.1:{httpd.server_port}", httpd
@@ -81,7 +83,7 @@ def input_url():
 
 @pytest.mark.asyncio
 async def test_snapshot_omits_hidden_controls(drift_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(drift_url)
         snap = await page.snapshot()
     texts = [e.text for e in snap.elements]
@@ -93,7 +95,7 @@ async def test_snapshot_omits_hidden_controls(drift_url):
 async def test_click_lands_on_the_element_the_snapshot_named(drift_url):
     """The regression: four hidden controls precede the real ones, so any rule
     mismatch makes click() land several elements away from the one matched."""
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(drift_url)
         await page.snapshot()
         await page.click("Second Real Button")
@@ -107,7 +109,7 @@ async def test_click_lands_on_the_element_the_snapshot_named(drift_url):
 
 @pytest.mark.asyncio
 async def test_click_lands_on_the_first_button_too(drift_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(drift_url)
         await page.snapshot()
         await page.click("First Real Button")
@@ -124,7 +126,7 @@ async def test_type_reaches_the_input_behind_other_controls(input_url):
     """TYPE built an input-only list, so an input preceded by buttons sat at a
     different index than the snapshot reported. Passing tests elsewhere only hid
     this because their fixtures put the input first."""
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(input_url)
         await page.snapshot()
         await page.type("search here", "blue sneakers")
@@ -138,7 +140,7 @@ async def test_type_reaches_the_input_behind_other_controls(input_url):
 
 @pytest.mark.asyncio
 async def test_type_reaches_the_second_input(input_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(input_url)
         await page.snapshot()
         await page.type("notes here", "some notes")

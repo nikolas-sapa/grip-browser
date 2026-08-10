@@ -39,12 +39,12 @@ async def test_format_output_looks_right():
 
 
 @pytest.mark.asyncio
-async def test_observe():
+async def test_read_returns_prose():
     async with Browser(headless=True) as browser:
         page = await browser.open("https://example.com")
-        result = await page.observe("What is on this page?")
-        print(f"\nObserve result:\n{result}")
-        assert len(result) > 10
+        doc = await page.read()
+        print(f"\nRead result:\n{doc.text}")
+        assert len(doc.text) > 10
 
 
 @pytest.mark.asyncio

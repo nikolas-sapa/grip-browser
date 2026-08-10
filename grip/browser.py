@@ -4,12 +4,15 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import urllib.parse
-from typing import TYPE_CHECKING, Self
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
 
 from grip.cdp.engine import CDPEngine
 from grip.cdp.launcher import ChromeLauncher
 from grip.page import Page
+from grip.security.policy import NavigationPolicy
 from grip.trace import Trace
 
 if TYPE_CHECKING:
@@ -50,19 +53,20 @@ async def fetch_browser_ws_url(port: int) -> str:
     import time
     import urllib.request
 
-    def _do_fetch() -> dict:
+    def _do_fetch() -> dict[str, Any]:
         with urllib.request.urlopen(
             f"http://localhost:{port}/json/version", timeout=2
         ) as resp:
-            return json.loads(resp.read())
+            parsed: dict[str, Any] = json.loads(resp.read())
+            return parsed
 
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         try:
             info = await asyncio.to_thread(_do_fetch)
             if ws_url := info.get("webSocketDebuggerUrl"):
-                return ws_url
-        except Exception:  # noqa: BLE001, S110 — best-effort probe, retried until deadline below
+                return str(ws_url)
+        except Exception:  # noqa: S110 — best-effort probe, retried until deadline below
             pass
         await asyncio.sleep(0.2)
     raise RuntimeError(f"No Chrome browser endpoint found on port {port}")
@@ -77,6 +81,10 @@ class Browser:
         proxy: str | None = None,
         stealth: bool = False,
         block_resources: bool = False,
+        allow_private: bool = False,
+        allow_file: bool = False,
+        user_data_dir: str | None = None,
+        cdp_url: str | None = None,
     ) -> None:
         self._llm = llm
         self._headless = headless
@@ -84,29 +92,63 @@ class Browser:
         self._proxy = proxy
         self._stealth = stealth
         self._block_resources = block_resources
+        self._policy = NavigationPolicy(
+            allow_private=allow_private, allow_file=allow_file
+        )
+        self._user_data_dir = user_data_dir
+        self._cdp_url = cdp_url
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
         self._pages: list[Page] = []
+        # open() is documented for concurrent use (asyncio.gather over URLs). Without
+        # this, N first-callers each see _engine as None and each launch their own
+        # Chrome — N-1 of which nothing owns and nothing terminates.
+        self._connect_lock = asyncio.Lock()
         self.trace = Trace()
 
     async def __aenter__(self) -> Self:
         await self._connect()
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, *args: object) -> None:
         await self.close()
 
     async def _connect(self) -> None:
         if self._engine:
             return
-        self._launcher = ChromeLauncher()
-        self._port = self._launcher.launch(
-            headless=self._headless, proxy=self._proxy, stealth=self._stealth
-        )
-        ws_url = await fetch_browser_ws_url(self._port)
-        self._engine = CDPEngine()
-        await self._engine.connect(ws_url)
+        async with self._connect_lock:
+            if self._engine:
+                return
+            if self._cdp_url:
+                # Attaching to a Chrome someone else launched — or a remote CDP
+                # engine entirely. No profile, no process, nothing to terminate.
+                engine = CDPEngine()
+                await engine.connect(self._cdp_url)
+                self._engine = engine
+                return
+            launcher = ChromeLauncher(user_data_dir=self._user_data_dir)
+            # launch() polls for the DevTools port for up to 10s; on the loop that
+            # stalls every other tab.
+            await asyncio.to_thread(
+                launcher.launch,
+                headless=self._headless,
+                proxy=self._proxy,
+                stealth=self._stealth,
+            )
+            # Chrome is already running by this point, so any failure between here
+            # and a live engine has to clean it up: __aenter__ raising means
+            # __aexit__ never runs and close() is never called.
+            try:
+                self._port = launcher.port
+                ws_url = await fetch_browser_ws_url(self._port)
+                engine = CDPEngine()
+                await engine.connect(ws_url)
+            except BaseException:
+                launcher.terminate()
+                raise
+            self._launcher = launcher
+            self._engine = engine
 
     async def open(self, url: str, **kwargs: str) -> Page:
         """Open a URL in its own tab and return a Page bound to it.
@@ -126,15 +168,18 @@ class Browser:
         url = _expand_macro(url, **kwargs)
 
         if not url.startswith(("http", "about:", "data:", "file:", "blob:")):
+            # Bare domains still work; everything else reaches the policy as-is so
+            # a non-http scheme cannot be laundered into an allowed one.
             url = "https://" + url
+
+        if reason := self._policy.check(url):
+            raise ValueError(f"navigation refused: {reason}")
 
         result = await self._engine.send("Target.createTarget", {"url": "about:blank"})
         target_id = result["targetId"]
 
         page_engine = CDPEngine()
-        await page_engine.connect(
-            f"ws://localhost:{self._port}/devtools/page/{target_id}"
-        )
+        await page_engine.connect(self._page_ws_url(target_id))
         page = Page(
             engine=page_engine,
             trace=self.trace,
@@ -158,6 +203,21 @@ class Browser:
             raise
         return page
 
+    def _page_ws_url(self, target_id: str) -> str:
+        """Websocket for one tab.
+
+        Derived from cdp_url when attached, because the endpoint may be anywhere:
+        a remote CDP engine is a wss:// host on the public internet, often with an
+        auth token in the query string. Both have to survive the rewrite — assuming
+        ws://localhost here is what confines grip to a Chrome on this machine.
+        """
+        if self._cdp_url:
+            parts = urllib.parse.urlsplit(self._cdp_url)
+            return urllib.parse.urlunsplit(
+                (parts.scheme, parts.netloc, f"/devtools/page/{target_id}", parts.query, "")
+            )
+        return f"ws://localhost:{self._port}/devtools/page/{target_id}"
+
     async def _close_target(self, target_id: str) -> None:
         if self._engine:
             await self._engine.send("Target.closeTarget", {"targetId": target_id})
@@ -177,12 +237,20 @@ class Browser:
             except Exception:
                 logger.debug("Failed to close tab %s", page._target_id, exc_info=True)
         self._pages.clear()
-        if self._engine:
-            await self._engine.disconnect()
+        try:
+            if self._engine:
+                await self._engine.disconnect()
+        except Exception:
+            # Teardown never raises: an already-dead socket is not a caller error,
+            # and raising here would mask whatever exception is unwinding __aexit__.
+            logger.debug("Failed to disconnect the browser engine", exc_info=True)
+        finally:
             self._engine = None
-        if self._launcher:
-            self._launcher.terminate()
-            self._launcher = None
+            # Whatever the websocket did, the OS process and its temp profile are
+            # ours to reclaim. Skipping this is how orphaned Chromes accumulate.
+            if self._launcher:
+                await self._launcher.aterminate()
+                self._launcher = None
 
     async def save_session(self, path: str) -> None:
         if not self._engine:
@@ -194,7 +262,13 @@ class Browser:
         cookies = result.get("cookies", [])
 
         def _write() -> None:
-            with open(path, "w") as f:
+            # Cookies carry session tokens; never leave them world-readable.
+            # O_CREAT's mode applies only to a new inode, and re-saving over an
+            # existing 0644 file is the common path — fchmod on the fd we already
+            # hold tightens it with no path-race window.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as f:
                 json.dump(cookies, f, indent=2)
 
         await asyncio.to_thread(_write)
@@ -203,14 +277,15 @@ class Browser:
         if not self._engine:
             raise RuntimeError("Browser is not connected. Use open() or async with first.")
 
-        def _read() -> list[dict]:
-            with open(path) as f:
-                return json.load(f)
+        def _read() -> list[dict[str, Any]]:
+            with Path(path).open() as f:
+                cookies: list[dict[str, Any]] = json.load(f)
+                return cookies
 
         try:
             cookies = await asyncio.to_thread(_read)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Session file not found: {path}")
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Session file not found: {path}") from e
         except json.JSONDecodeError as e:
             raise ValueError(f"Session file is not valid JSON: {path}") from e
         await self._engine.send("Storage.setCookies", {"cookies": cookies})

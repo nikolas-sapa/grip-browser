@@ -1,10 +1,15 @@
 from grip.browser import Browser
-from grip.compression.refs import RefRegistry
+from grip.compression.delta import SnapshotDelta
 from grip.compression.summarizer import Element, PageSnapshot
 from grip.errors.types import BrowserError, ErrorType, GripError, RecoveryAction
-from grip.page import Screenshot
+from grip.page import Page, Screenshot
 from grip.reader import Block, Document
+from grip.security.policy import NavigationPolicy
 from grip.trace import Trace, TraceEntry
+
+# Last: grip.runner imports grip.page at module scope, so it has to resolve after
+# the page import above rather than pulling a half-initialised module in.
+from grip.runner import RunResult
 
 __all__ = [
     "Block",
@@ -14,12 +19,15 @@ __all__ = [
     "Element",
     "ErrorType",
     "GripError",
+    "NavigationPolicy",
+    "Page",
     "PageSnapshot",
     "RecoveryAction",
-    "RefRegistry",
+    "RunResult",
     "Screenshot",
+    "SnapshotDelta",
     "Trace",
     "TraceEntry",
 ]
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"

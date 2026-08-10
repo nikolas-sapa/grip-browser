@@ -132,6 +132,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def base_url():
+    # Loopback fixture: NavigationPolicy refuses private addresses by default
+    # (SSRF guard), so every Browser here opts in with allow_private=True.
     httpd = HTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_port}"
@@ -140,7 +142,7 @@ def base_url():
 
 @pytest.mark.asyncio
 async def test_hidden_content_absent_without_interact_flag(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/show-more")
         doc = await page.read()
         assert "Revealed content after interaction." not in doc.text
@@ -148,7 +150,7 @@ async def test_hidden_content_absent_without_interact_flag(base_url):
 
 @pytest.mark.asyncio
 async def test_hidden_content_recovered_with_interact_flag(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/show-more")
         doc = await page.read(interact=True)
         assert "Revealed content after interaction." in doc.text
@@ -156,7 +158,7 @@ async def test_hidden_content_recovered_with_interact_flag(base_url):
 
 @pytest.mark.asyncio
 async def test_depth_cap_limits_interactions(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/load-more")
         doc = await page.read(interact=True, max_interactions=1)
         assert "chunk-1" in doc.text
@@ -165,7 +167,7 @@ async def test_depth_cap_limits_interactions(base_url):
 
 @pytest.mark.asyncio
 async def test_plateau_stops_the_loop_early(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/dead-button")
         await page.read(interact=True, max_interactions=3)
         result = await page._engine.send(
@@ -180,7 +182,7 @@ async def test_plateau_stops_the_loop_early(base_url):
 
 @pytest.mark.asyncio
 async def test_block_ids_contiguous_and_assigned_once(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/show-more")
         doc = await page.read(interact=True)
         ids = [b.id for b in doc.blocks]
@@ -191,7 +193,7 @@ async def test_block_ids_contiguous_and_assigned_once(base_url):
 
 @pytest.mark.asyncio
 async def test_default_read_behaviour_is_unchanged(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/show-more")
         doc = await page.read()
         assert [b.text for b in doc.blocks] == ["Article", "Intro paragraph."]
@@ -199,7 +201,7 @@ async def test_default_read_behaviour_is_unchanged(base_url):
 
 @pytest.mark.asyncio
 async def test_default_max_interactions_is_three(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/load-more")
         doc = await page.read(interact=True)  # max_interactions defaults to 3
         assert "chunk-3" in doc.text
@@ -210,7 +212,7 @@ async def test_default_max_interactions_is_three(base_url):
 async def test_a_next_link_does_not_navigate_away(base_url):
     """A paginated 'Next' link must not be followed — clicking it would hand
     back a different document mid-loop, breaking citation stability."""
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/paginated")
         doc = await page.read(interact=True)
         assert doc.url.rstrip("/").endswith("/paginated")
@@ -221,7 +223,7 @@ async def test_a_next_link_does_not_navigate_away(base_url):
 async def test_async_load_more_is_recovered(base_url):
     """Content appended after a delayed fetch-like callback, not synchronously
     on click, must still be picked up (the poll, not a fixed sleep)."""
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/async-load")
         doc = await page.read(interact=True)
         assert "Async chunk arrived." in doc.text
@@ -229,7 +231,7 @@ async def test_async_load_more_is_recovered(base_url):
 
 @pytest.mark.asyncio
 async def test_aria_expanded_false_is_treated_as_a_reveal_control(base_url):
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(f"{base_url}/aria-expander")
         without = await page.read()
         assert "Panel content." not in without.text

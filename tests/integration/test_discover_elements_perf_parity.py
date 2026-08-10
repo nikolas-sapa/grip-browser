@@ -9,7 +9,9 @@ every element the TreeWalker visits.
 This test proves that reorder is a pure cost change, not a behaviour change:
 it runs both the pre-optimization JS (frozen below, verbatim) and the current
 DISCOVER_ELEMENTS_JS against the same live DOM and asserts the returned
-element lists are identical (same elements, same order, same fields).
+element lists are identical (same elements, same order, same fields) apart from
+the two changes that have landed deliberately since the baseline was frozen —
+see the KNOWN_NEW_FIELDS comment below.
 
 Injects HTML into about:blank so most cases need no network; a handful of
 real pages (reused from evaluation/corpus.py) are included for messier,
@@ -93,6 +95,14 @@ OLD_DISCOVER_ELEMENTS_JS = """
           inShadowDom: inShadow,
           cx: Math.round(rect.left + rect.width / 2),
           cy: Math.round(rect.top + rect.height / 2),
+          // Diagnostic only, stripped before comparison and not part of the
+          // frozen selection logic: reports whether the current collector's
+          // off-canvas rule would suppress this element. See
+          // _diff_against_baseline for why that has to be checked per element
+          // rather than allowed categorically.
+          offCanvas: (
+            rect.right + window.scrollX <= 0 || rect.bottom + window.scrollY <= 0
+          ),
         });
       }
 
@@ -132,12 +142,70 @@ async def _eval_elements(page, js: str) -> list[dict]:
     return value or []
 
 
+# Two things have deliberately changed since the baseline was frozen, and exactly
+# two. Both are subtracted here so the test keeps failing on anything else.
+#
+# 1. `handle` — the data-grip-h stamp added so click/type act on the element the
+#    caller was actually shown rather than on whatever now occupies that index.
+#    A pure field addition, so it is dropped before comparing.
+# 2. Off-canvas suppression — the current gripIsHidden also rejects elements
+#    lying entirely at negative document coordinates (Wikipedia's and MDN's 1x1
+#    "Skip to content" links, e.g.). That drops *elements*, not fields, and
+#    element loss is the exact drift this test exists to catch, so it is not
+#    allowed categorically: each missing element must individually satisfy the
+#    off-canvas predicate, re-evaluated in the page by the baseline JS itself.
+#
+# The current collector may never contain an element the baseline lacks, and
+# every surviving element must match field-for-field, in order.
+KNOWN_NEW_FIELDS = frozenset({"handle"})
+DIAGNOSTIC_OLD_FIELDS = frozenset({"offCanvas"})
+
+
+def _comparable(row: dict, drop: frozenset[str]) -> dict:
+    # `index` is positional, so a justified drop renumbers everything after it.
+    # It is re-derived from the aligned sequences instead of compared directly.
+    return {k: v for k, v in row.items() if k not in drop and k != "index"}
+
+
+def _diff_against_baseline(old: list[dict], new: list[dict]) -> str | None:
+    """Returns a failure description, or None if the two agree modulo the two
+    deliberate changes above. Walks both in order: the current collector's rows
+    must appear in the baseline's order, and any baseline row skipped over has
+    to be one the off-canvas rule legitimately suppresses."""
+    for row in new:
+        if not row.get("handle"):
+            return f"expected a non-empty element handle, got {row!r}"
+
+    i = j = 0
+    while i < len(old) and j < len(new):
+        o = _comparable(old[i], DIAGNOSTIC_OLD_FIELDS)
+        n = _comparable(new[j], KNOWN_NEW_FIELDS)
+        if o == n:
+            i += 1
+            j += 1
+        elif old[i]["offCanvas"]:
+            i += 1  # legitimately suppressed by the off-canvas rule
+        else:
+            return (
+                f"element {j} differs and the baseline element {i} it should have "
+                f"matched is on-canvas, so this is a real divergence.\n"
+                f"baseline: {o}\ncurrent:  {n}"
+            )
+    if j < len(new):
+        return f"current collector has {len(new) - j} element(s) the baseline lacks: {new[j:]}"
+    unjustified = [r for r in old[i:] if not r["offCanvas"]]
+    if unjustified:
+        return f"current collector dropped on-canvas element(s): {unjustified}"
+    return None
+
+
 async def _assert_identical(page) -> None:
     old = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
     new = await _eval_elements(page, DISCOVER_ELEMENTS_JS)
-    assert new == old, (
+    problem = _diff_against_baseline(old, new)
+    assert problem is None, (
         f"DISCOVER_ELEMENTS_JS output diverged from pre-optimization baseline.\n"
-        f"old ({len(old)}): {old}\nnew ({len(new)}): {new}"
+        f"{problem}\nold ({len(old)}) / new ({len(new)})"
     )
 
 
@@ -155,10 +223,11 @@ async def _assert_identical_or_page_moved(page) -> bool:
     old2 = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
     if old1 != old2:
         return False  # page moved between evals — inconclusive, not a failure
-    assert new == old1, (
+    problem = _diff_against_baseline(old1, new)
+    assert problem is None, (
         f"DISCOVER_ELEMENTS_JS output diverged from pre-optimization baseline "
         f"(page was stable across both OLD evals, so this is real).\n"
-        f"old ({len(old1)}): {old1}\nnew ({len(new)}): {new}"
+        f"{problem}\nold ({len(old1)}) / new ({len(new)})"
     )
     return True
 

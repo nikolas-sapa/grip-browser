@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from grip.errors.types import BrowserError, ErrorType, RecoveryAction
 
-_CAPTCHA_TITLE_PATTERNS = ["captcha", "prove you're human", "verify you are human", "i am not a robot"]
+_CAPTCHA_TITLE_PATTERNS = [
+    "captcha", "prove you're human", "verify you are human", "i am not a robot",
+]
 _BLOCK_TITLE_PATTERNS = [
     "cloudflare", "access denied", "ddos-guard",
     "attention required", "blocked", "security check",
@@ -166,7 +168,10 @@ class ErrorClassifier:
     def classify_zero_results(self, context: str = "") -> BrowserError:
         return BrowserError(
             type=ErrorType.ZERO_RESULTS,
-            message=f"Page loaded but returned no matching content{': ' + context if context else ''}",
+            message=(
+                "Page loaded but returned no matching content"
+                f"{': ' + context if context else ''}"
+            ),
             confidence=0.80,
             recovery=[RecoveryAction.RETRY],
         )

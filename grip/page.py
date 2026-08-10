@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
+import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from grip.cdp.engine import CDPEngine
@@ -18,17 +21,45 @@ from grip.cdp.shadow import (
     SCROLL_BOTTOM_JS,
     TYPE_ELEMENT_JS,
 )
-from grip.compression.cache import ElementCache
-from grip.compression.diff import SnapshotDiff
+from grip.challenge import (
+    POINT_PROBE_JS,
+    SLIDER_PROBE_JS,
+    TOKEN_PROBE_JS,
+    ChallengeResult,
+    ChallengeStage,
+    detect_challenge_from_html,
+    frame_urls,
+    is_solvable,
+    needs_vision,
+)
+from grip.compression.delta import SnapshotDelta, build_delta
 from grip.compression.refs import RefRegistry
-from grip.compression.summarizer import PageSnapshot, Summarizer
+from grip.compression.summarizer import Element, PageSnapshot, Summarizer
 from grip.errors.classifier import RAW_TEXT_PROBE_FLOOR, ErrorClassifier
-from grip.errors.types import BrowserError, ErrorType, GripError
+from grip.errors.types import BrowserError, ErrorType, GripError, RecoveryAction
+from grip.input import RESOLVE_POINT_JS, bezier_path, move_delay, press_dwell
 from grip.reader import Block, Document
 from grip.resources import BLOCKED_RESOURCE_PATTERNS
 from grip.security.injection import InjectionDetector
-from grip.security.sanitizer import HiddenElementFilter, RawElement
+from grip.security.sanitizer import RawElement
 from grip.trace import Trace, TraceEntry
+
+# An element still has to be listed and clickable after its label is cut, so the
+# label is replaced rather than the element dropped.
+_ELIDED = "[elided: detected instruction-like text]"
+
+
+def _same_document(current: str, requested: str) -> bool:
+    """Whether two URLs address the same document for load-wait purposes.
+
+    location.href is normalised by the browser ("https://x.test" comes back as
+    "https://x.test/"), so a raw string compare would miss the common case and
+    silently give up the fast path. Only the trailing slash is forgiven — query
+    and fragment differences are real navigations.
+    """
+    if not current or not requested:
+        return False
+    return current.rstrip("/") == requested.rstrip("/")
 
 
 @dataclass
@@ -41,8 +72,7 @@ class Screenshot:
         return base64.b64encode(self.data).decode()
 
     def save(self, path: str) -> None:
-        with open(path, "wb") as f:
-            f.write(self.data)
+        Path(path).write_bytes(self.data)
 
 
 class Page:
@@ -64,9 +94,8 @@ class Page:
         self._version = 0
         self._current_snapshot: PageSnapshot | None = None
         self._summarizer = Summarizer()
-        self._cache = ElementCache()
-        self._diff = SnapshotDiff()
-        self._filter = HiddenElementFilter()
+        self._previous_snapshot: PageSnapshot | None = None
+        self.delta: SnapshotDelta | None = None
         self._injector = InjectionDetector()
         self._classifier = ErrorClassifier()
         self._initialized = False
@@ -75,6 +104,10 @@ class Page:
         self._status_code: int = 0
         self._content_probed_url: str = ""
         self._block_resources = block_resources
+        # Where the synthetic pointer currently sits, so a human path starts from
+        # the last position instead of teleporting to the target every time.
+        self._pointer_x = 0
+        self._pointer_y = 0
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -88,23 +121,21 @@ class Page:
     async def _ensure_initialized(self) -> None:
         if not self._initialized:
             await self._engine.send("Runtime.enable")
-            await self._engine.send("Page.enable")
             self._initialized = True
 
     async def goto(self, url: str, timeout: float = 30.0) -> None:
-        """Navigate this tab and wait for the load event."""
-        await self._engine.send("Page.enable")
-        await self._engine.send("Network.enable")
-        if self._block_resources:
-            await self._engine.send(
-                "Network.setBlockedURLs", {"urls": list(BLOCKED_RESOURCE_PATTERNS)}
-            )
+        """Navigate this tab and wait for the load event.
+
+        The timeout bounds the whole call. It previously bounded only the load
+        wait, so the three CDP enables in front of it each contributed their own
+        30s and goto(timeout=1) could block for a minute and a half.
+        """
         load_event = asyncio.Event()
 
-        def on_load(params: dict) -> None:
+        def on_load(_params: dict[str, Any]) -> None:
             load_event.set()
 
-        def on_response(params: dict) -> None:
+        def on_response(params: dict[str, Any]) -> None:
             # Only the main document response carries the status that describes the
             # fetch. Sub-resources (images, XHR) fire this too and must be ignored.
             # Redirect chains fire several Document responses; the last one wins.
@@ -112,27 +143,101 @@ class Page:
                 self._status_code = params.get("response", {}).get("status", 0)
 
         self._status_code = 0
+        # The cached snapshot describes the document we are leaving. Element
+        # handles, refs and indices are all scoped to it, so keeping it across a
+        # navigation would let an action resolve against the previous page.
+        self._current_snapshot = None
+        # Same reasoning for the delta baseline: a reload of the *same* URL would
+        # otherwise diff against a document whose handles no longer exist, and
+        # build_delta's url guard cannot see that case.
+        self._previous_snapshot = None
+        self.delta = None
         # Subscribe before navigating — a fast page can fire loadEventFired
         # before the navigate call returns.
         self._engine.on("Page.loadEventFired", on_load)
         self._engine.on("Network.responseReceived", on_response)
         try:
-            await self._engine.send("Page.navigate", {"url": url})
-            await asyncio.wait_for(load_event.wait(), timeout=timeout)
+            async with asyncio.timeout(timeout):
+                # Runtime goes up with the other two rather than lazily in
+                # snapshot(): a page handed back by goto() has to be usable, and
+                # enabling Runtime after the fact costs a round trip on the hot path.
+                await asyncio.gather(
+                    self._engine.send("Page.enable"),
+                    self._engine.send("Network.enable"),
+                    self._engine.send("Runtime.enable"),
+                )
+                self._initialized = True
+                if self._block_resources:
+                    await self._engine.send(
+                        "Network.setBlockedURLs",
+                        {"urls": list(BLOCKED_RESOURCE_PATTERNS)},
+                    )
+                # Page.loadEventFired is not replayed. If the target is already
+                # sitting on the requested document, the event we just subscribed
+                # to fired before we existed and will never fire again, so the
+                # wait below would burn the entire timeout and then be swallowed
+                # as success. Ask the page instead of assuming.
+                if await self._already_at(url):
+                    return
+                await self._engine.send("Page.navigate", {"url": url})
+                await load_event.wait()
         except TimeoutError:
-            pass  # slow page: hand it back anyway, snapshot() sees whatever loaded
+            # A slow page is still a usable page: hand it back and let snapshot()
+            # report whatever loaded. A dead connection is not — but that surfaces
+            # as a ConnectionError from send(), which we deliberately do not catch.
+            pass
         finally:
             self._engine.off("Page.loadEventFired", on_load)
             self._engine.off("Network.responseReceived", on_response)
+
+    async def _already_at(self, url: str) -> bool:
+        """True only if this target is *already* showing a finished `url`.
+
+        Both halves matter. readyState alone is not enough: right after a
+        navigation is requested the outgoing document can still report
+        "complete", so gating on it alone would let goto() return before the
+        requested page exists. The URL alone is not enough either — the document
+        can be committed but still parsing.
+
+        Best-effort: any failure here means "no, navigate normally", which is
+        the behaviour that predates this check.
+        """
+        try:
+            result = await self._engine.send(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        'JSON.stringify({url: location.href,'
+                        ' readyState: document.readyState})'
+                    ),
+                    "returnByValue": True,
+                },
+            )
+        except Exception:
+            return False
+        raw = result.get("result", {}).get("value")
+        if not raw:
+            return False
+        try:
+            state = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            return False
+        if state.get("readyState") not in ("interactive", "complete"):
+            return False
+        return _same_document(str(state.get("url", "")), url)
 
     async def close(self) -> None:
         """Close this tab and drop its CDP connection. Idempotent."""
         if self._closed:
             return
         self._closed = True
-        await self._engine.disconnect()
-        if self._closer and self._target_id:
-            await self._closer(self._target_id)
+        try:
+            await self._engine.disconnect()
+        finally:
+            # The tab outlives its websocket. Skipping this on a failed disconnect
+            # leaks the target for the lifetime of the Browser.
+            if self._closer and self._target_id:
+                await self._closer(self._target_id)
 
     async def snapshot(self) -> PageSnapshot:
         await self._ensure_initialized()
@@ -158,6 +263,24 @@ class Page:
 
         scan = self._injector.scan(page_text)
         safe_text = scan.safe_text
+        # The guard only ever saw the CONTENT block. The title, every interactive
+        # element's label and every placeholder reach the model too, and a payload
+        # in any of them landed verbatim in the formatted snapshot.
+        title_scan = self._injector.scan(title)
+        elements_stripped = False
+        for raw in raw_elements:
+            if raw.text and not self._injector.scan(raw.text).is_clean:
+                raw.text = _ELIDED
+                elements_stripped = True
+            if raw.placeholder and not self._injector.scan(raw.placeholder).is_clean:
+                raw.placeholder = _ELIDED
+                elements_stripped = True
+            # role is the formatter's last fallback for an element with no text
+            # and no placeholder (icon-only buttons), so it is printed verbatim
+            # too — and it is just another page-controlled attribute.
+            if raw.role and not self._injector.scan(raw.role).is_clean:
+                raw.role = _ELIDED
+                elements_stripped = True
 
         page_error = None
         _detected = self._classifier.classify_page_state(title, url, self._status_code)
@@ -197,20 +320,26 @@ class Page:
         snapshot = self._summarizer.build(
             version=self._version,
             url=url,
-            title=title,
+            title=title_scan.safe_text,
             raw_elements=raw_elements,
             page_text=safe_text,
         )
         snapshot.page_error = page_error
+        # Deliberately after classify_page_state, which keys off real title strings
+        # ("Just a moment...", "Access Denied"): sanitizing the title before that
+        # check would let an injected title silently flip the anti-bot verdict.
+        snapshot.prompt_injection = (
+            scan.was_modified or title_scan.was_modified or elements_stripped
+        )
         for el in snapshot.elements:
-            el.ref = self._refs.assign(el.tag, el.text)
+            el.ref = self._refs.assign(el.handle)
+        self._refs.evict({el.handle for el in snapshot.elements})
         snapshot.tokens_estimated = self._summarizer.count_tokens(
             self._summarizer.format(snapshot)
         )
-        changed = self._diff.has_changed(snapshot)
-        snapshot.changed_from_previous = changed
-        self._diff.record(snapshot)
-        self._cache.store_many(snapshot.elements)
+        self.delta = build_delta(self._previous_snapshot, snapshot)
+        snapshot.changed_from_previous = self.delta is None or not self.delta.is_empty
+        self._previous_snapshot = snapshot
         self._current_snapshot = snapshot
 
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -360,7 +489,7 @@ class Page:
             blocks = data.get("blocks", [])
             chars = sum(len(b.get("text", "")) for b in blocks)
             return len(blocks), chars
-        except Exception:  # noqa: BLE001 — best-effort probe, never fail the snapshot
+        except Exception:
             return None
 
     async def _count_blocks(self) -> int:
@@ -372,52 +501,108 @@ class Page:
         data = json.loads(raw) if isinstance(raw, str) else raw
         return len(data.get("blocks", []))
 
-    async def click(self, description: str) -> None:
+    async def click(self, description: str, *, human: bool = False) -> None:
         self._assert_not_safe("click")
         if not self._current_snapshot:
             await self.snapshot()
         t0 = time.monotonic()
-        index = self._find_element_index(description)
-        if index is None:
+        el = self._find_element(description)
+        if el is None:
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
-        js = f"({CLICK_ELEMENT_JS})({index})"
+        if human:
+            # Default stays the JS path: it is faster and works headless.
+            # human=True is for challenge flows, where the approach to the target
+            # is itself scored. It re-resolves the handle first rather than
+            # trusting the snapshot's cx/cy, so a stale element still raises
+            # instead of putting a real click on whatever now occupies that spot.
+            probe = await self._eval(
+                f"({RESOLVE_POINT_JS})"
+                f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+            )
+            outcome = probe or {}
+            self._trace.add(TraceEntry(
+                timestamp=time.time(),
+                action="click",
+                input={"description": description, "handle": el.handle, "human": True},
+                output={"success": bool(outcome.get("ok")),
+                        "reason": outcome.get("reason", "")},
+                tokens_consumed=0,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+            ))
+            self._raise_for_action(outcome, description)
+            await self.click_at(int(outcome["x"]), int(outcome["y"]), human=True)
+            return
+        js = (
+            f"({CLICK_ELEMENT_JS})"
+            f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+        )
         result = await self._engine.send(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
-        success = result.get("result", {}).get("value", False)
+        outcome = result.get("result", {}).get("value") or {}
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._trace.add(TraceEntry(
             timestamp=time.time(),
             action="click",
-            input={"description": description, "index": index},
-            output={"success": success},
+            input={"description": description, "handle": el.handle},
+            output={"success": bool(outcome.get("ok")),
+                    "reason": outcome.get("reason", "")},
             tokens_consumed=0,
             duration_ms=duration_ms,
         ))
+        self._raise_for_action(outcome, description)
 
     async def type(self, description: str, text: str) -> None:
         self._assert_not_safe("type")
         if not self._current_snapshot:
             await self.snapshot()
         t0 = time.monotonic()
-        index = self._find_input_index(description)
-        if index is None:
+        el = self._find_input(description)
+        if el is None:
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
-        js = f"({TYPE_ELEMENT_JS})({index}, {json.dumps(text)})"
-        await self._engine.send(
+        js = (
+            f"({TYPE_ELEMENT_JS})"
+            f"({json.dumps(el.handle)}, {json.dumps(text)}, "
+            f"{json.dumps(el.tag)}, {json.dumps(el.text)})"
+        )
+        result = await self._engine.send(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
+        outcome = result.get("result", {}).get("value") or {}
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._trace.add(TraceEntry(
             timestamp=time.time(),
             action="type",
-            input={"description": description, "text": text, "index": index},
-            output={"success": True},
+            input={"description": description, "text": text, "handle": el.handle},
+            output={"success": bool(outcome.get("ok")),
+                    "reason": outcome.get("reason", "")},
             tokens_consumed=0,
             duration_ms=duration_ms,
         ))
+        self._raise_for_action(outcome, description)
+
+    # A wrong action is worse than a failed one, so every non-ok outcome becomes a
+    # typed error the runner's recovery can act on, rather than a boolean the
+    # caller has no way to notice.
+    def _raise_for_action(self, outcome: dict[str, Any], description: str) -> None:
+        if outcome.get("ok"):
+            return
+        reason = outcome.get("reason", "")
+        if reason == "not_typable":
+            raise GripError(self._classifier.classify_semantic_miss(description))
+        raise GripError(
+            BrowserError(
+                type=ErrorType.ELEMENT_STALE,
+                message=(
+                    f"Element for {description!r} no longer matches the snapshot "
+                    f"it was found in ({reason or 'unknown'}). Re-snapshot and retry."
+                ),
+                confidence=1.0,
+                recovery=[RecoveryAction.RE_SNAPSHOT],
+            )
+        )
 
     async def press(self, key: str) -> None:
         self._assert_not_safe("press")
@@ -430,15 +615,240 @@ class Page:
             {"type": "keyUp", "key": key},
         )
 
-    async def extract(self, schema: dict[str, str]) -> dict[str, Any]:
-        snap = await self.snapshot()
-        # Returns raw page text per key — pass to an LLM for semantic parsing.
-        # Use browser.run(goal, llm=...) for automatic structured extraction.
-        return {key: snap.text_content for key in schema}
+    async def click_at(
+        self, x: int, y: int, *, human: bool = True, rng: random.Random | None = None
+    ) -> None:
+        """Click real viewport coordinates with a trusted pointer event.
 
-    async def observe(self, question: str) -> str:
-        snap = await self.snapshot()
-        return self._summarizer.format(snap)
+        click() dispatches an untrusted JS event with no pointer motion at all,
+        which is fine for ordinary pages and useless for challenge widgets that
+        score the approach to the target. This path moves along a curved, eased
+        Bezier first, then presses with a randomized dwell.
+        """
+        self._assert_not_safe("click_at")
+        t0 = time.monotonic()
+        moves = 0
+        if human:
+            moves = await self._move_pointer((self._pointer_x, self._pointer_y), (x, y), rng)
+        await self._mouse(
+            "mousePressed", x, y, button="left", click_count=1
+        )
+        await asyncio.sleep(press_dwell(rng))
+        await self._mouse(
+            "mouseReleased", x, y, button="left", click_count=1
+        )
+        self._pointer_x, self._pointer_y = x, y
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="click_at",
+            input={"x": x, "y": y, "human": human},
+            output={"moves": moves},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
+    async def drag(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        *,
+        human: bool = True,
+        rng: random.Random | None = None,
+    ) -> None:
+        """Press at start, travel to end with the button held, release.
+
+        The slider primitive. The button stays down for every intermediate move:
+        a released mid-path pointer is not a drag and sliders reject it.
+        """
+        self._assert_not_safe("drag")
+        t0 = time.monotonic()
+        # Jitter shaped like a hand, not a nonce.
+        r = rng or random.Random()  # noqa: S311
+        sx, sy = start
+        ex, ey = end
+        await self._mouse("mousePressed", sx, sy, button="left", click_count=1)
+
+        path = bezier_path(start, end, rng=rng) if human else [end]
+        # Slight overshoot-and-correct: a hand rarely lands a slider handle dead
+        # on the stop at the first attempt.
+        if human and (ex, ey) != (sx, sy):
+            over = r.randint(3, 9)
+            dx, dy = ex - sx, ey - sy
+            norm = math.hypot(dx, dy) or 1.0
+            path.append((int(ex + dx / norm * over), int(ey + dy / norm * over)))
+            path.append((ex, ey))
+
+        for px, py in path:
+            await self._mouse("mouseMoved", px, py, button="left")
+            if human:
+                await asyncio.sleep(move_delay(r))
+        await self._mouse("mouseReleased", ex, ey, button="left", click_count=1)
+        self._pointer_x, self._pointer_y = ex, ey
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="drag",
+            input={"start": list(start), "end": list(end), "human": human},
+            output={"moves": len(path)},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
+    async def _move_pointer(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        rng: random.Random | None = None,
+    ) -> int:
+        r = rng or random.Random()  # noqa: S311
+        path = bezier_path(start, end, rng=rng)
+        for px, py in path:
+            await self._mouse("mouseMoved", px, py)
+            await asyncio.sleep(move_delay(r))
+        return len(path)
+
+    async def _mouse(
+        self,
+        event_type: str,
+        x: int,
+        y: int,
+        *,
+        button: str = "none",
+        click_count: int = 0,
+    ) -> None:
+        params: dict[str, Any] = {"type": event_type, "x": x, "y": y, "button": button}
+        if click_count:
+            params["clickCount"] = click_count
+        await self._engine.send("Input.dispatchMouseEvent", params)
+
+    async def detect_challenge(self) -> ChallengeStage:
+        """Classify any bot challenge on the page. Read-only, no network calls."""
+        # A Page reached without goto() (remote CDP attach, an adopted target)
+        # has no Runtime domain enabled, and every probe below is an evaluate.
+        await self._ensure_initialized()
+        html = await self._page_html()
+        tree = await self._engine.send("Page.getFrameTree")
+        return detect_challenge_from_html(html, frame_urls(tree or {}))
+
+    async def solve_challenge(self, timeout: float = 30.0) -> ChallengeResult:
+        """Attempt the challenge in-process and report a verified outcome.
+
+        status is one of: none, solved, needs_vision, unsupported, timeout.
+        "solved" is only returned once a response token is present or the widget
+        has left the DOM. Nothing here calls a third-party solving service.
+        """
+        self._assert_not_safe("solve_challenge")
+        t0 = time.monotonic()
+        stage = await self.detect_challenge()
+
+        if stage is ChallengeStage.NONE:
+            result = ChallengeResult(status="none", stage=stage)
+        elif needs_vision(stage):
+            shot = await self.screenshot()
+            result = ChallengeResult(
+                status="needs_vision",
+                stage=stage,
+                detail=(
+                    f"{stage.value} challenge needs a vision model to answer. "
+                    "Pass result.screenshot to your model, then act with "
+                    "page.click_at(x, y, human=True)."
+                ),
+                screenshot=shot,
+            )
+        elif not is_solvable(stage):
+            result = ChallengeResult(
+                status="unsupported",
+                stage=stage,
+                detail=(
+                    f"{stage.value} challenge has no in-process solve path. "
+                    "It is scored server-side or grip could not identify the widget."
+                ),
+            )
+        elif stage is ChallengeStage.SLIDER:
+            result = await self._solve_slider(stage, timeout)
+        else:
+            result = await self._solve_click_widget(stage, timeout)
+
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="solve_challenge",
+            input={"timeout": timeout},
+            output={"stage": stage.value, "status": result.status},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+        return result
+
+    async def _solve_click_widget(
+        self, stage: ChallengeStage, timeout: float
+    ) -> ChallengeResult:
+        deadline = time.monotonic() + timeout
+        point = await self._eval(POINT_PROBE_JS)
+        if not isinstance(point, dict):
+            return ChallengeResult(
+                status="unsupported",
+                stage=stage,
+                detail="Widget frame has no measurable box; nothing to click.",
+            )
+        await self.click_at(int(point["x"]), int(point["y"]), human=True)
+        return await self._await_verification(stage, deadline)
+
+    async def _solve_slider(
+        self, stage: ChallengeStage, timeout: float
+    ) -> ChallengeResult:
+        deadline = time.monotonic() + timeout
+        geom = await self._eval(SLIDER_PROBE_JS)
+        if not isinstance(geom, dict):
+            return ChallengeResult(
+                status="unsupported",
+                stage=stage,
+                detail="Could not locate the slider handle and its track.",
+            )
+        await self.drag(
+            (int(geom["x"]), int(geom["y"])),
+            (int(geom["endX"]), int(geom["y"])),
+            human=True,
+        )
+        return await self._await_verification(stage, deadline)
+
+    async def _await_verification(
+        self, stage: ChallengeStage, deadline: float
+    ) -> ChallengeResult:
+        """Poll until the challenge is provably gone, or give up honestly.
+
+        The click having been dispatched proves nothing — providers score the
+        interaction and may silently refuse. Only a token or a vanished widget
+        is evidence, and without either this returns "timeout".
+        """
+        while True:
+            token = await self._eval(TOKEN_PROBE_JS)
+            if isinstance(token, str) and token:
+                return ChallengeResult(
+                    status="solved", stage=stage, detail="Response token present."
+                )
+            if await self.detect_challenge() is ChallengeStage.NONE:
+                return ChallengeResult(
+                    status="solved", stage=stage, detail="Widget left the page."
+                )
+            if time.monotonic() >= deadline:
+                return ChallengeResult(
+                    status="timeout",
+                    stage=stage,
+                    detail=(
+                        "Interaction was dispatched but no token appeared and the "
+                        "widget is still present. The challenge is NOT solved."
+                    ),
+                )
+            await asyncio.sleep(0.4)
+
+    async def _eval(self, expression: str) -> Any:
+        result = await self._engine.send(
+            "Runtime.evaluate", {"expression": expression, "returnByValue": True}
+        )
+        return (result or {}).get("result", {}).get("value")
+
+    async def _page_html(self) -> str:
+        html = await self._eval("document.documentElement.outerHTML")
+        return html if isinstance(html, str) else ""
 
     async def screenshot(self, quality: int = 75) -> Screenshot:
         """
@@ -468,21 +878,21 @@ class Page:
         ))
         return Screenshot(data=img_bytes, tokens_estimated=tokens)
 
-    def _find_element_index(self, description: str) -> int | None:
+    def _find_element(self, description: str) -> Element | None:
         if not self._current_snapshot:
             return None
         # Exact ref match (e.g., "e5")
         for el in self._current_snapshot.elements:
             if el.ref == description:
-                return el.index
+                return el
         # Fuzzy text/role match
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
             if desc_lower in el.text.lower() or desc_lower in el.role.lower():
-                return el.index
+                return el
         return None
 
-    def _find_input_index(self, description: str) -> int | None:
+    def _find_input(self, description: str) -> Element | None:
         if not self._current_snapshot:
             return None
         # Exact ref match
@@ -490,7 +900,7 @@ class Page:
             if el.ref == description and (
                 el.tag in ("input", "textarea") or el.role == "textbox"
             ):
-                return el.index
+                return el
         # Fuzzy match
         desc_lower = description.lower()
         for el in self._current_snapshot.elements:
@@ -499,7 +909,7 @@ class Page:
                 or desc_lower in (el.placeholder or "").lower()
                 or desc_lower in el.role.lower()
             ):
-                return el.index
+                return el
         return None
 
     async def _discover_elements(self) -> list[RawElement]:
@@ -528,6 +938,7 @@ class Page:
                 width=d.get("width", 1),
                 height=d.get("height", 1),
                 href=d.get("href"),
+                handle=d.get("handle", ""),
             )
             for d in raw_data
         ]
@@ -537,7 +948,8 @@ class Page:
             "Runtime.evaluate",
             {"expression": PAGE_TEXT_JS, "returnByValue": True},
         )
-        return result.get("result", {}).get("value", "")
+        value = result.get("result", {}).get("value", "")
+        return str(value) if value is not None else ""
 
     async def _get_page_info(self) -> tuple[str, str]:
         result = await self._engine.send("Target.getTargetInfo", {})

@@ -14,7 +14,7 @@ try:
 
     def _count_tokens(text: str) -> int:
         return len(_ENC.encode(text))
-except Exception:  # noqa: BLE001 — tiktoken is optional; any failure to import or
+except Exception:
     # fetch its encoding (missing package, no network for the cached vocab, etc.)
     # falls back to the char-count heuristic below rather than breaking snapshotting.
     def _count_tokens(text: str) -> int:
@@ -33,7 +33,6 @@ _TAG_ABBREV = {
 @dataclass
 class Element:
     index: int
-    snapshot_version: int
     tag: str
     role: str
     text: str
@@ -42,6 +41,7 @@ class Element:
     cx: int
     cy: int
     ref: str = ""
+    handle: str = ""
     href: str | None = None
 
 
@@ -55,6 +55,10 @@ class PageSnapshot:
     tokens_estimated: int
     changed_from_previous: bool = True
     page_error: BrowserError | None = None
+    # Detections used to be computed and discarded, so a caller had no way to tell
+    # a stripped page from a clean one — which is the difference between "this page
+    # is quiet" and "this page tried something and we cut it out".
+    prompt_injection: bool = False
 
     @property
     def links(self) -> list[tuple[str, str]]:
@@ -76,7 +80,6 @@ class Summarizer:
         elements = [
             Element(
                 index=i,
-                snapshot_version=version,
                 tag=el.tag,
                 role=el.role,
                 text=el.text,
@@ -84,20 +87,21 @@ class Summarizer:
                 in_shadow_dom=el.in_shadow_dom,
                 cx=el.cx,
                 cy=el.cy,
+                handle=el.handle,
                 href=el.href,
             )
             for i, el in enumerate(raw_elements)
         ]
         text_content = page_text.strip()
-        formatted = self._build_format_str(url, title, elements, text_content)
-        tokens = _count_tokens(formatted)
+        # No token count here: page.py recomputes it after refs are assigned, and
+        # this one was both discarded and wrong — it tokenized index-based refs.
         return PageSnapshot(
             version=version,
             url=url,
             title=title,
             elements=elements,
             text_content=text_content,
-            tokens_estimated=tokens,
+            tokens_estimated=0,
         )
 
     def format(self, snapshot: PageSnapshot) -> str:

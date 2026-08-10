@@ -56,7 +56,8 @@ it is pattern-based, only covers the text paths above (not raw HTML,
 screenshots, or anything you extract from the page yourself outside those
 APIs), and can be bypassed by injections it doesn't recognize. Do not treat
 it as a substitute for treating all page content as untrusted input, and for
-scoping what actions an agent is allowed to take autonomously.
+scoping what actions an agent is allowed to take autonomously. See
+[Residual risk](#residual-risk) for what the guard does and does not buy you.
 
 ### Sessions and cookies
 
@@ -79,3 +80,73 @@ Do not rely on it to bypass anti-bot systems; use it only where you have a
 legitimate reason to reduce automation fingerprinting (e.g. testing your
 own site's behavior) and the operator's terms of service permit automated
 access.
+
+**Its effect is unmeasured.** A competitor measured the equivalent
+page-world approach against live reCAPTCHA and found it made detection
+easier rather than harder, so the flag is not documented as beneficial.
+`evaluation/stealth_measurement.py` counts detection signals in both modes
+and is the script that settles it; it needs a host with outbound network.
+Until it has been run, treat `stealth=True` as unproven in either
+direction.
+
+### Challenge solving
+
+`page.solve_challenge()` interacts with the challenge widget on the page
+using pointer events grip dispatches itself. It calls no third-party
+solving service and sends no page content anywhere. It reports `"solved"`
+only when it can verify the outcome (a response token is present, or the
+widget has left the DOM); an unverifiable attempt returns `"timeout"`, so
+a caller is never told a challenge was cleared when it was not.
+
+Solving a challenge on a site you do not operate may breach that site's
+terms of service. That is your call to make, not grip's, and grip does not
+make it for you: `solve_challenge()` is an explicit call that never runs
+on its own, and it is blocked under `Browser(safe=True)` along with the
+rest of the interaction surface (`click_at`, `drag`).
+
+### Residual risk
+
+These are limitations, not features. They are listed because knowing where the
+guarantees stop is more useful than a list of what is defended.
+
+**The DevTools endpoint is a same-user trust boundary.** grip launches Chrome
+with its debugging port bound to loopback on a random port, with no
+authentication, because CDP has none to offer. Any process running as the same
+user can find that port, attach to the browser, read every cookie via
+`Storage.getCookies`, and evaluate script in any tab. That is inherent to the
+protocol and cannot be fixed inside the library. If the browser holds credentials
+for something valuable, run it in a container or under a dedicated user rather
+than alongside code you do not control.
+
+**`NavigationPolicy` cannot see where a DNS name resolves.** Resolution happens
+inside Chrome, after the policy check. The policy blocks non-http(s) schemes and
+literal private, loopback and cloud-metadata addresses, which stops the direct
+form of SSRF through an agent. It does not stop a hostname that resolves to one
+of those addresses, because it never sees the resolved IP. Pinning resolved IPs
+is out of scope and is not implemented. Treat the policy as a guard against a
+model being talked into typing `http://169.254.169.254`, not as a network
+boundary; enforce that at the network layer.
+
+**The injection guard is a keyword filter, not a control.** It normalises
+Unicode confusables, zero-width characters and irregular whitespace before
+matching, which closed nine measured bypasses that previously walked straight
+through. It still matches known phrasings. A novel phrasing gets past it, and no
+amount of pattern work changes that. The real defense is the untrusted-data
+framing the runner puts around page content in the prompt, which does not depend
+on enumerating attacks in advance. Design your agent as though the filter were
+absent: scope what actions it may take without a human, and assume any text from
+a page is hostile.
+
+**A `SIGKILL`ed process strands its temp profile directory.** grip removes the
+profile on shutdown from `terminate()`, and a normal exit, exception or
+`SIGTERM` all reach it. `SIGKILL` does not — the process never gets control, and
+the directory is left behind for the OS or you to clean up.
+
+### Boundary
+
+TLS/JA3 fingerprints and full headless fingerprint parity are below the
+DevTools Protocol and unreachable from a Python client driving stock
+Chromium. grip does not attempt them and does not claim them. A block based
+on IP reputation is an egress problem: route through a residential or mobile
+proxy with `Browser(proxy=...)`, and match your locale and timezone to that
+egress yourself.

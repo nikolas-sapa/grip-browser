@@ -111,7 +111,9 @@ def base_url():
 @pytest.mark.asyncio
 async def test_retriever_answer_wires_search_into_synthesize(base_url):
     model = FakeModel("gather runs tasks concurrently [1].")
-    async with Retriever(StaticSource([f"{base_url}/asyncio"]), model=model) as r:
+    async with Retriever(
+        StaticSource([f"{base_url}/asyncio"]), model=model, allow_private=True
+    ) as r:
         answer = await r.answer("gather concurrently")
     assert answer.passages
     assert answer.passages[0].url.endswith("/asyncio")
@@ -120,7 +122,9 @@ async def test_retriever_answer_wires_search_into_synthesize(base_url):
 @pytest.mark.asyncio
 async def test_default_search_is_unaffected_by_a_model_being_configured(base_url):
     model = FakeModel("unused")
-    async with Retriever(StaticSource([f"{base_url}/asyncio"]), model=model) as r:
+    async with Retriever(
+        StaticSource([f"{base_url}/asyncio"]), model=model, allow_private=True
+    ) as r:
         result = await r.search("gather concurrently")
     assert result.passages  # search() still returns RetrievalResult, untouched
 

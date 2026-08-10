@@ -1,0 +1,117 @@
+<h2>The Full Architecture</h2>
+<p class="subtitle">Five layers — each one solving a specific problem from the research. Read top to bottom: your agent talks to the top, Chrome runs at the bottom.</p>
+
+<div style="display:flex;flex-direction:column;gap:0;max-width:680px;margin:24px auto;">
+
+  <!-- Layer 0: Developer API -->
+  <div style="background:#003d5c;color:white;border-radius:12px 12px 0 0;padding:20px 24px;text-align:center;">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;color:#7fb8d4;margin-bottom:6px;">Your Agent Talks To This</div>
+    <div style="font-size:16px;font-weight:700;">Developer API</div>
+    <div style="display:flex;justify-content:center;gap:12px;margin-top:12px;flex-wrap:wrap;">
+      <code style="background:rgba(255,255,255,.15);padding:5px 12px;border-radius:6px;font-size:13px;">browser.run("do task")</code>
+      <code style="background:rgba(255,255,255,.15);padding:5px 12px;border-radius:6px;font-size:13px;">page.snapshot()</code>
+      <code style="background:rgba(255,255,255,.15);padding:5px 12px;border-radius:6px;font-size:13px;">page.click("button")</code>
+      <code style="background:rgba(255,255,255,.15);padding:5px 12px;border-radius:6px;font-size:13px;">page.extract({...})</code>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div style="text-align:center;background:#e8f4fb;padding:6px 0;font-size:18px;color:#003d5c;">↓</div>
+
+  <!-- Layer 1: Compression Engine -->
+  <div style="background:#e8f4fb;border:2px solid #003d5c;padding:20px 24px;">
+    <div style="display:flex;align-items:flex-start;gap:16px;">
+      <div style="background:#003d5c;color:white;border-radius:8px;padding:8px 12px;font-size:11px;text-transform:uppercase;letter-spacing:1px;white-space:nowrap;margin-top:2px;">Layer 1</div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:#003d5c;">Compression Engine</div>
+        <div style="font-size:13px;color:#444;margin-top:4px;">Transforms raw browser data into a compact summary before the LLM ever sees it. Element cache means we never re-read the same thing twice. Differential updates send only what changed.</div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="background:#003d5c;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Token-first</span>
+          <span style="background:#003d5c;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Element cache</span>
+          <span style="background:#003d5c;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Snapshot versioning</span>
+          <span style="background:#003d5c;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Diff updates</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div style="text-align:center;background:#fdf0f0;padding:6px 0;font-size:18px;color:#c0392b;">↓</div>
+
+  <!-- Layer 2: Security Layer -->
+  <div style="background:#fdf0f0;border:2px solid #c0392b;border-top:none;padding:20px 24px;">
+    <div style="display:flex;align-items:flex-start;gap:16px;">
+      <div style="background:#c0392b;color:white;border-radius:8px;padding:8px 12px;font-size:11px;text-transform:uppercase;letter-spacing:1px;white-space:nowrap;margin-top:2px;">Layer 2</div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:#c0392b;">Security &amp; Sanitization</div>
+        <div style="font-size:13px;color:#444;margin-top:4px;">Every page passes through this before reaching the LLM. Strips hidden elements (invisible text that could hijack your agent), detects prompt injection patterns, scopes context to only the relevant part of the page.</div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="background:#c0392b;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Injection guard</span>
+          <span style="background:#c0392b;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Hidden element filter</span>
+          <span style="background:#c0392b;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Context scoping</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div style="text-align:center;background:#fff8e1;padding:6px 0;font-size:18px;color:#e67e22;">↓</div>
+
+  <!-- Layer 3: Error Recovery -->
+  <div style="background:#fff8e1;border:2px solid #e67e22;border-top:none;padding:20px 24px;">
+    <div style="display:flex;align-items:flex-start;gap:16px;">
+      <div style="background:#e67e22;color:white;border-radius:8px;padding:8px 12px;font-size:11px;text-transform:uppercase;letter-spacing:1px;white-space:nowrap;margin-top:2px;">Layer 3</div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:#e67e22;">Structured Error Recovery</div>
+        <div style="font-size:13px;color:#444;margin-top:4px;">Instead of returning a vague error string, this layer classifies exactly what went wrong and suggests how to recover. The LLM gets a structured object: error type, confidence, and recommended next action.</div>
+        <div style="margin-top:10px;font-family:monospace;font-size:12px;background:#1e1e2e;color:#cdd6f4;padding:12px;border-radius:6px;line-height:1.7;">
+          <span style="color:#f38ba8;">ElementStale</span> → re-snapshot + retry<br>
+          <span style="color:#f38ba8;">AntiBotBlock</span> → rotate identity<br>
+          <span style="color:#f38ba8;">AuthRequired</span> → ask human<br>
+          <span style="color:#f38ba8;">NetworkTimeout</span> → exponential backoff
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div style="text-align:center;background:#f0f4f0;padding:6px 0;font-size:18px;color:#1a7a1a;">↓</div>
+
+  <!-- Layer 4: CDP Engine -->
+  <div style="background:#f0f4f0;border:2px solid #1a7a1a;border-top:none;padding:20px 24px;">
+    <div style="display:flex;align-items:flex-start;gap:16px;">
+      <div style="background:#1a7a1a;color:white;border-radius:8px;padding:8px 12px;font-size:11px;text-transform:uppercase;letter-spacing:1px;white-space:nowrap;margin-top:2px;">Layer 4</div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:#1a7a1a;">CDP Engine (Chrome DevTools Protocol)</div>
+        <div style="font-size:13px;color:#444;margin-top:4px;">Direct WebSocket connection to Chrome. Full Shadow DOM access. Surgical data extraction — only pulls exactly what we need. Vision fallback for canvas apps (Google Sheets, Figma). Zero intermediary overhead.</div>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="background:#1a7a1a;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Full Shadow DOM</span>
+          <span style="background:#1a7a1a;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Vision fallback</span>
+          <span style="background:#1a7a1a;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">Surgical extraction</span>
+          <span style="background:#1a7a1a;color:white;font-size:11px;padding:3px 9px;border-radius:12px;">No overhead</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div style="text-align:center;background:#1e1e2e;padding:6px 0;font-size:18px;color:#a6e3a1;">↓</div>
+
+  <!-- Chrome -->
+  <div style="background:#1e1e2e;color:white;border-radius:0 0 12px 12px;padding:16px 24px;text-align:center;">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;color:#585b70;margin-bottom:4px;">Runs Here</div>
+    <div style="font-size:14px;font-weight:600;color:#cdd6f4;">Chrome / Chromium (local or cloud)</div>
+  </div>
+
+</div>
+
+<!-- Observability callout -->
+<div style="max-width:680px;margin:20px auto 0;padding:16px 20px;background:#f8f8f8;border:1px solid #e0e0e0;border-radius:8px;">
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:6px;font-weight:700;">Runs across all layers</div>
+  <div style="font-size:14px;font-weight:700;color:#1a1a1a;margin-bottom:6px;">Observability Trace</div>
+  <div style="font-size:13px;color:#444;">Every action is recorded: what was seen, what was decided, what was executed, what the page looked like after. Machine-queryable. Used for automatic retry classification and can be exported for LLM fine-tuning.</div>
+</div>
+
+<div style="max-width:680px;margin:20px auto 0;padding:16px 20px;background:#fff8e1;border:1px solid #f9c840;border-radius:8px;font-size:13px;color:#5a4000;">
+  <strong>Does this architecture look right?</strong> Let me know in the terminal and we'll move to naming + core features.
+</div>

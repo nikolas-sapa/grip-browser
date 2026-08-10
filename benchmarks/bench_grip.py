@@ -15,8 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from grip.browser import Browser
 from grip.cdp.shadow import DISCOVER_ELEMENTS_JS, READ_CONTENT_JS
-from grip.compression.cache import ElementCache
-from grip.compression.diff import SnapshotDiff
+from grip.compression.delta import build_delta
 from grip.compression.refs import RefRegistry
 from grip.compression.summarizer import Summarizer
 from grip.security.sanitizer import RawElement
@@ -89,6 +88,8 @@ def _make_handler(page: bytes) -> type[BaseHTTPRequestHandler]:
 
 
 def _serve(page: bytes) -> tuple[HTTPServer, str]:
+    # Loopback fixture: NavigationPolicy refuses private addresses by default
+    # (SSRF guard), so every Browser here opts in with allow_private=True.
     httpd = HTTPServer(("127.0.0.1", 0), _make_handler(page))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, f"http://127.0.0.1:{httpd.server_port}"
@@ -117,7 +118,8 @@ async def bench_snapshot(browser: Browser, url: str, label: str) -> None:
     page = await browser.open(url)
     await page.snapshot()  # warm-up: first hit pays connection/JIT costs
     samples = await _time_calls(page.snapshot)
-    print(f"  snapshot()          [{label:6s}] {_stats(samples)}  elements={len(page._current_snapshot.elements)}")
+    n_elements = len(page._current_snapshot.elements)
+    print(f"  snapshot()          [{label:6s}] {_stats(samples)}  elements={n_elements}")
     await page.close()
 
 
@@ -234,6 +236,7 @@ def _synthetic_raw_elements(n: int) -> list[RawElement]:
             width=100,
             height=20,
             href=f"/path/{i}" if tags[i % 4] == "a" else None,
+            handle=f"h{i}",
         )
         for i in range(n)
     ]
@@ -244,26 +247,25 @@ def bench_compression_pipeline() -> None:
     for n in (100, 1000, 5000):
         raw = _synthetic_raw_elements(n)
         summarizer = Summarizer()
-        cache = ElementCache()
-        diff = SnapshotDiff()
         refs = RefRegistry()
 
         t0 = time.monotonic()
-        snap = summarizer.build(version=1, url="http://x", title="t", raw_elements=raw, page_text="hello " * 500)
+        snap = summarizer.build(
+            version=1, url="http://x", title="t", raw_elements=raw,
+            page_text="hello " * 500,
+        )
         for el in snap.elements:
-            el.ref = refs.assign(el.tag, el.text)
+            el.ref = refs.assign(el.handle)
         snap.tokens_estimated = summarizer.count_tokens(summarizer.format(snap))
-        diff.has_changed(snap)
-        diff.record(snap)
-        cache.store_many(snap.elements)
+        build_delta(snap, snap)
         dt = time.monotonic() - t0
-        print(f"  n={n:5d} elements: {dt * 1000:7.2f}ms total (build+refs+tokens+diff+cache)")
+        print(f"  n={n:5d} elements: {dt * 1000:7.2f}ms total (build+refs+tokens+delta)")
 
 
 async def main() -> None:
     bench_compression_pipeline()
 
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         for label, html in FIXTURES.items():
             httpd, url = _serve(html)
             try:

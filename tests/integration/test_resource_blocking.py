@@ -50,6 +50,8 @@ def server():
 
     def factory():
         handler = type("H", (_Recorder,), {"requested": []})
+        # Loopback fixture: NavigationPolicy refuses private addresses by default
+        # (SSRF guard), so every Browser here opts in with allow_private=True.
         httpd = HTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         servers.append(httpd)
@@ -63,7 +65,7 @@ def server():
 @pytest.mark.asyncio
 async def test_blocking_skips_images_and_fonts(server):
     url, handler = server()
-    async with Browser(headless=True, block_resources=True) as browser:
+    async with Browser(headless=True, block_resources=True, allow_private=True) as browser:
         page = await browser.open(url)
         await page.snapshot()
     assert not [p for p in handler.requested if p.endswith((".png", ".svg"))], (
@@ -75,7 +77,7 @@ async def test_blocking_skips_images_and_fonts(server):
 async def test_images_load_by_default(server):
     """Off by default — blocking changes what the browser sees, so it is opt-in."""
     url, handler = server()
-    async with Browser(headless=True) as browser:
+    async with Browser(headless=True, allow_private=True) as browser:
         page = await browser.open(url)
         await page.snapshot()
     assert [p for p in handler.requested if p.endswith(".png")]
@@ -85,7 +87,7 @@ async def test_images_load_by_default(server):
 async def test_blocking_keeps_page_content(server):
     """The whole point is that only the unreadable bytes go."""
     url, _ = server()
-    async with Browser(headless=True, block_resources=True) as browser:
+    async with Browser(headless=True, block_resources=True, allow_private=True) as browser:
         page = await browser.open(url)
         doc = await page.read()
     assert "text an agent actually reads" in doc.text
@@ -96,7 +98,7 @@ async def test_xhr_still_loads_while_blocking(server):
     """Content routinely arrives over XHR; blocking it would change what the page
     is, not just what it weighs."""
     url, handler = server()
-    async with Browser(headless=True, block_resources=True) as browser:
+    async with Browser(headless=True, block_resources=True, allow_private=True) as browser:
         page = await browser.open(url)
         await page.snapshot()
     assert any(p.endswith(".json") for p in handler.requested), handler.requested

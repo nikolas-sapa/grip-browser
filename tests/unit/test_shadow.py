@@ -13,12 +13,12 @@ def test_discover_elements_is_string():
 
 def test_click_element_is_string():
     assert isinstance(CLICK_ELEMENT_JS, str)
-    assert "index" in CLICK_ELEMENT_JS
+    assert "handle" in CLICK_ELEMENT_JS
 
 
 def test_type_element_is_string():
     assert isinstance(TYPE_ELEMENT_JS, str)
-    assert "index" in TYPE_ELEMENT_JS
+    assert "handle" in TYPE_ELEMENT_JS
     assert "text" in TYPE_ELEMENT_JS
 
 
@@ -43,12 +43,28 @@ def test_discover_js_carries_the_tracking_host_list():
         assert host in DISCOVER_ELEMENTS_JS
 
 
+def test_discover_emits_handle_field():
+    assert "data-grip-h" in DISCOVER_ELEMENTS_JS
+    assert "handle:" in DISCOVER_ELEMENTS_JS
+
+
+def test_click_js_takes_handle_and_verifies_identity():
+    for js in (CLICK_ELEMENT_JS, TYPE_ELEMENT_JS):
+        assert "data-grip-h" in js
+        assert "identity_mismatch" in js
+        assert "not_found" in js
+    assert "not_typable" in TYPE_ELEMENT_JS
+
+
 def test_click_and_type_share_the_discover_collector():
-    """click() and type() are handed an index produced by DISCOVER. If they build
-    their candidate list by different rules, that index points at a different
-    element. They previously did, so this pins them to one shared collector."""
+    """click() and type() no longer rebuild a candidate list at all: they resolve
+    the handle DISCOVER stamped, so the shared-collector rules only have to hold
+    for DISCOVER. What replaces the old pin is that both actions verify the
+    element's identity before touching it."""
     from grip.cdp.shadow import CLICK_ELEMENT_JS, TYPE_ELEMENT_JS
 
-    for js in (DISCOVER_ELEMENTS_JS, CLICK_ELEMENT_JS, TYPE_ELEMENT_JS):
-        assert "gripCollect()" in js
-        assert "gripIsHidden" in js
+    assert "gripCollect()" in DISCOVER_ELEMENTS_JS
+    assert "gripIsHidden" in DISCOVER_ELEMENTS_JS
+    for js in (CLICK_ELEMENT_JS, TYPE_ELEMENT_JS):
+        assert "gripCollect()" not in js, "actions must not re-walk the live DOM"
+        assert "gripResolve(handle, expectedTag, expectedText)" in js

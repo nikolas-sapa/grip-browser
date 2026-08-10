@@ -54,6 +54,7 @@ import json
 import sys
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from evaluation.page_weight_corpus import CORPUS
 from grip.browser import Browser
@@ -127,9 +128,14 @@ async def _open_instrumented_page(
             {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
         )
         handled: set[str] = set()
+        # Holds a strong reference: a bare create_task result can be collected
+        # mid-flight, which silently drops the interception.
+        pending: set[asyncio.Task[None]] = set()
 
         def on_paused(params: dict) -> None:
-            asyncio.create_task(_handle_paused(page_engine, params, handled))
+            task = asyncio.create_task(_handle_paused(page_engine, params, handled))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
 
         page_engine.on("Fetch.requestPaused", on_paused)
 
@@ -150,7 +156,7 @@ async def _handle_paused(engine: CDPEngine, params: dict, handled: set[str]) -> 
             )
         else:
             await engine.send("Fetch.continueRequest", {"requestId": request_id})
-    except Exception:  # noqa: BLE001,S110 - a lost race on a torn-down page, not fatal
+    except Exception:
         pass
 
 
@@ -172,7 +178,7 @@ async def measure(category: str, url: str, arm: str) -> Row:
                         page_error = snap.page_error.type.value
                     doc = await page.read()
                     chars = len(doc.text)
-                except Exception as e:  # noqa: BLE001 - byte count still stands
+                except Exception as e:
                     page_error = page_error or f"read_error:{type(e).__name__}"
             finally:
                 await page.close()
@@ -194,7 +200,7 @@ async def measure(category: str, url: str, arm: str) -> Row:
                 request_count=stats["requests"],
                 doc_status=doc_status, page_error=page_error, chars=chars,
             )
-    except Exception as e:  # noqa: BLE001 - a benchmark must survive any one URL
+    except Exception as e:
         return Row(
             category=category, url=url, arm=arm,
             status="failed", reason=f"error:{type(e).__name__}",
@@ -238,7 +244,7 @@ async def main() -> None:
         "settle_seconds": SETTLE_SECONDS,
         "rows": [asdict(r) for r in rows],
     }
-    with open("evaluation/page_weight_results.json", "w") as f:  # noqa: ASYNC230
+    with Path("evaluation/page_weight_results.json").open("w") as f:  # noqa: ASYNC230
         json.dump(out, f, indent=1)
 
     report(rows)
