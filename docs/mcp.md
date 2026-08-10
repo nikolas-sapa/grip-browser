@@ -104,15 +104,22 @@ Any of the configs above accept an `env` block:
 | `read` | — | Read the page as citable prose blocks, boilerplate removed |
 | `screenshot` | — | Capture a JPEG screenshot of the current page, base64-encoded |
 | `run` | `goal`, `url` | Drive the browser toward a goal autonomously (needs an LLM key) |
+| `list_tabs` | — | List open tabs (`target_id`, url, which one is active) |
+| `switch_tab` | `target_id` | Make an already-open tab active for subsequent tool calls |
+| `close_tab` | `target_id` (optional) | Close a tab; the active tab if `target_id` is omitted |
 
 `open` and `run` are the only tools that don't require a prior `open` call —
-every other tool operates on the page `open`/`run` left current.
+every other tool operates on the page `open`/`run` left current, i.e. the
+active tab. `open` opens a *new* tab and makes it active without closing any
+others; use `switch_tab`/`close_tab` to manage the ones left behind.
 
 ## Session model
 
-One browser, one page, per server process — there is no multi-session
-registry. An MCP client drives one conversation at a time; if you need
-multiple concurrent browsing sessions, run multiple `grip-mcp` processes.
+One browser, one *active* page, per server process — there is no
+multi-session registry. `open` can leave more than one tab alive at once
+(`list_tabs`/`switch_tab`/`close_tab` manage them), but there is still only
+one active tab and one conversation driving it. If you need multiple
+concurrent browsing sessions, run multiple `grip-mcp` processes.
 
 *(ponytail: a session registry keyed by client-supplied IDs is a real feature,
 but a speculative one — nothing here sends a session id yet. Future work if a

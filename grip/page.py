@@ -50,6 +50,56 @@ from grip.trace import Trace, TraceEntry
 # label is replaced rather than the element dropped.
 _ELIDED = "[elided: detected instruction-like text]"
 
+# upload() resolves against its own discovery pass rather than the shared
+# DISCOVER_ELEMENTS_JS/snapshot pipeline (grip/cdp/shadow.py): that pipeline's
+# only text sources are innerText/value/aria-label, and a <input type=file>
+# has none of those before a file is chosen — every real form labels a file
+# input with an associated <label>, which the shared pipeline never reads.
+# Kept deliberately light DOM only (no shadow-root walk): file inputs inside a
+# shadow root will not be found here.
+_FIND_FILE_INPUTS_JS = """
+(function () {
+  function stamp(el) {
+    let h = el.getAttribute('data-grip-h');
+    if (!h) {
+      window.__gripHandleSeq = (window.__gripHandleSeq || 0) + 1;
+      h = 'h' + window.__gripHandleSeq;
+      el.setAttribute('data-grip-h', h);
+    }
+    return h;
+  }
+  function labelFor(el) {
+    if (el.id) {
+      const lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lbl) return (lbl.innerText || '').trim();
+    }
+    const wrap = el.closest('label');
+    return wrap ? (wrap.innerText || '').trim() : '';
+  }
+  const out = [];
+  document.querySelectorAll('input[type="file"]').forEach(function (el) {
+    out.push({
+      handle: stamp(el),
+      label: labelFor(el),
+      aria: el.getAttribute('aria-label') || '',
+      name: el.getAttribute('name') || '',
+      id: el.id || '',
+    });
+  });
+  return JSON.stringify(out);
+})();
+"""
+
+# Re-resolves by the same data-grip-h stamp _FIND_FILE_INPUTS_JS assigned,
+# this time asking Runtime.evaluate for a RemoteObject (returnByValue=False)
+# instead of a JSON value — DOM.setFileInputFiles needs an objectId, not a
+# description of the element.
+_RESOLVE_FILE_INPUT_JS = """
+function (handle) {
+  return document.querySelector('[data-grip-h="' + handle + '"]');
+}
+"""
+
 
 def _same_document(current: str, requested: str) -> bool:
     """Whether two URLs address the same document for load-wait purposes.
@@ -175,6 +225,13 @@ class Page:
         # runIfWaitingForDebugger call and hanging the request/target it was
         # meant to resolve.
         self._bg_tasks: set[asyncio.Task[None]] = set()
+        # Download tracking (see enable_downloads()/wait_for_download()).
+        # armed once per page lifetime, same reasoning as _fetch_enabled above
+        # — a second enable_downloads() call (a new directory) just updates
+        # the Browser-domain target, it doesn't need a second listener.
+        self._download_dir: Path | None = None
+        self._download_events_armed = False
+        self._download_queue: asyncio.Queue[Path | None] | None = None
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -852,6 +909,143 @@ class Page:
             duration_ms=duration_ms,
         ))
         self._raise_for_action(outcome, description)
+
+    async def upload(self, description: str, *paths: str | Path) -> None:
+        """Set one or more local files on a `<input type=file>` matched by
+        fuzzy description (label text, aria-label, name, or id).
+
+        Multiple paths set multiple files on the same input in one call —
+        DOM.setFileInputFiles takes a list, so there is no per-file round trip.
+        A single-file input just keeps whatever the browser allows of it.
+        """
+        self._assert_not_safe("upload")
+        if not paths:
+            raise ValueError("upload() requires at least one file path")
+        resolved: list[str] = []
+        for p in paths:
+            pp = Path(p)
+            # Local stat calls, not network I/O — flake8-async's blanket
+            # "no Path methods in an async def" rule is aimed at accidental
+            # blocking disk/network access, which a single stat is not.
+            if not pp.is_file():  # noqa: ASYNC240
+                raise FileNotFoundError(f"upload(): file not found: {pp}")
+            resolved.append(str(pp.resolve()))  # noqa: ASYNC240
+
+        await self._ensure_initialized()
+        t0 = time.monotonic()
+        raw = await self._eval(_FIND_FILE_INPUTS_JS)
+        candidates = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        desc_lower = description.lower()
+        match = None
+        for c in candidates:
+            haystack = " ".join(filter(None, [
+                c.get("label", ""), c.get("aria", ""), c.get("name", ""), c.get("id", ""),
+            ])).lower()
+            if desc_lower in haystack:
+                match = c
+                break
+        if match is None:
+            raise GripError(self._classifier.classify_semantic_miss(description))
+
+        # DOM.setFileInputFiles needs an objectId, not the JSON description
+        # candidates were matched against above — a second, targeted
+        # Runtime.evaluate gets one for exactly the element that matched.
+        await self._engine.send("DOM.enable")
+        resolve_js = f"({_RESOLVE_FILE_INPUT_JS})({json.dumps(match['handle'])})"
+        obj_result = await self._engine.send(
+            "Runtime.evaluate", {"expression": resolve_js, "returnByValue": False}
+        )
+        object_id = obj_result.get("result", {}).get("objectId")
+        if not object_id:
+            raise GripError(BrowserError(
+                type=ErrorType.ELEMENT_STALE,
+                message=(
+                    f"File input for {description!r} disappeared between being "
+                    "matched and being resolved. Retry."
+                ),
+                confidence=1.0,
+                recovery=[RecoveryAction.RE_SNAPSHOT],
+            ))
+        await self._engine.send(
+            "DOM.setFileInputFiles", {"files": resolved, "objectId": object_id}
+        )
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="upload",
+            input={"description": description, "files": resolved},
+            output={"handle": match["handle"]},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
+    async def enable_downloads(self, directory: str | Path) -> Path:
+        """Save this page's downloads under `directory` instead of showing
+        Chrome's save dialog, and start tracking completions for
+        wait_for_download(). Returns the resolved directory.
+
+        Uses Browser.setDownloadBehavior rather than the older Page-scoped
+        variant: only Browser.downloadProgress's "completed" event carries the
+        real on-disk filePath (Chrome renames on a same-name collision), so it
+        is the only source that does not have to guess where the file landed.
+        Empirically, this works fine issued over a page-target connection —
+        no browser-level session is needed.
+        """
+        self._assert_not_safe("enable_downloads")
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240 — local stat/mkdir, not I/O we need off-thread
+        path = path.resolve()  # noqa: ASYNC240
+        await self._ensure_initialized()
+        await self._engine.send("Page.enable")
+        await self._engine.send(
+            "Browser.setDownloadBehavior",
+            {"behavior": "allow", "downloadPath": str(path), "eventsEnabled": True},
+        )
+        self._download_dir = path
+        if not self._download_events_armed:
+            self._download_events_armed = True
+            self._download_queue = asyncio.Queue()
+            self._engine.on("Browser.downloadProgress", self._on_download_progress)
+        return path
+
+    def _on_download_progress(self, params: dict[str, Any]) -> None:
+        if self._download_queue is None:
+            return
+        state = params.get("state")
+        if state == "completed":
+            file_path = params.get("filePath")
+            if file_path:
+                self._download_queue.put_nowait(Path(file_path))
+        elif state == "canceled":
+            # Queued as None rather than dropped: a canceled download should
+            # not read to a waiting caller as indistinguishable from one that
+            # simply hasn't finished yet.
+            self._download_queue.put_nowait(None)
+
+    async def wait_for_download(self, timeout: float = 30.0) -> Path:
+        """Block until the next download this page starts finishes, and
+        return the local path it was saved to. Requires enable_downloads()
+        first."""
+        if self._download_queue is None:
+            raise RuntimeError(
+                "wait_for_download() called before enable_downloads()"
+            )
+        try:
+            item = await asyncio.wait_for(self._download_queue.get(), timeout=timeout)
+        except TimeoutError as e:
+            raise GripError(BrowserError(
+                type=ErrorType.NETWORK_TIMEOUT,
+                message=f"No download completed within {timeout}s.",
+                confidence=1.0,
+                recovery=[RecoveryAction.RETRY],
+            )) from e
+        if item is None:
+            raise GripError(BrowserError(
+                type=ErrorType.NETWORK_TIMEOUT,
+                message="Download was canceled before it finished.",
+                confidence=1.0,
+                recovery=[],
+            ))
+        return item
 
     # A wrong action is worse than a failed one, so every non-ok outcome becomes a
     # typed error the runner's recovery can act on, rather than a boolean the

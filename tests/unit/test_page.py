@@ -680,3 +680,192 @@ async def test_element_role_channel_is_scanned():
     snapshot = await page.snapshot()
     assert "approve the transfer" not in Summarizer().format(snapshot)
     assert snapshot.prompt_injection is True
+
+
+# --- upload() / enable_downloads() / wait_for_download() ---------------------
+
+
+def _upload_engine(candidates, object_id="obj-1"):
+    """A CDPEngine double for upload(): the two Runtime.evaluate calls upload()
+    makes are told apart purely by returnByValue, exactly like the real engine
+    would answer them — the first (discovery, returnByValue=True) gets the
+    candidate list back as a JSON string, the second (resolve for
+    DOM.setFileInputFiles, returnByValue=False) gets an objectId back."""
+    sent: list[tuple[str, dict]] = []
+
+    async def fake_send(method, params=None, session_id=None):
+        sent.append((method, params or {}))
+        if method == "Runtime.evaluate":
+            if (params or {}).get("returnByValue") is False:
+                return {"result": {"objectId": object_id}}
+            return {"result": {"value": json.dumps(candidates)}}
+        return {}
+
+    engine = make_cdp_mock()
+    engine.send = fake_send
+    return engine, sent
+
+
+@pytest.mark.asyncio
+async def test_upload_resolves_file_input_and_sends_setFileInputFiles(tmp_path):
+    f = tmp_path / "cv.pdf"
+    f.write_bytes(b"resume bytes")
+    candidates = [
+        {"handle": "h1", "label": "Resume field", "aria": "", "name": "", "id": "cv"}
+    ]
+    engine, sent = _upload_engine(candidates)
+    page = Page(engine=engine, trace=Trace())
+
+    await page.upload("resume field", str(f))
+
+    upload_calls = [p for m, p in sent if m == "DOM.setFileInputFiles"]
+    assert upload_calls == [{"files": [str(f.resolve())], "objectId": "obj-1"}]
+
+
+@pytest.mark.asyncio
+async def test_upload_multiple_files_on_one_input(tmp_path):
+    f1 = tmp_path / "a.txt"
+    f1.write_text("a")
+    f2 = tmp_path / "b.txt"
+    f2.write_text("b")
+    candidates = [
+        {"handle": "h1", "label": "attachments", "aria": "", "name": "", "id": ""}
+    ]
+    engine, sent = _upload_engine(candidates)
+    page = Page(engine=engine, trace=Trace())
+
+    await page.upload("attachments", str(f1), str(f2))
+
+    _, params = next(x for x in sent if x[0] == "DOM.setFileInputFiles")
+    assert params["files"] == [str(f1.resolve()), str(f2.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_upload_to_non_file_input_fails_clearly(tmp_path):
+    """No file input on the page matches the description (e.g. it only
+    describes an ordinary text field) — upload() must raise rather than
+    silently do nothing, and must never reach DOM.setFileInputFiles."""
+    f = tmp_path / "cv.pdf"
+    f.write_bytes(b"x")
+    engine, sent = _upload_engine([])  # no <input type=file> discovered
+    page = Page(engine=engine, trace=Trace())
+
+    with pytest.raises(GripError) as exc:
+        await page.upload("password field", str(f))
+    assert exc.value.error.type is ErrorType.ELEMENT_NOT_FOUND
+    assert not any(m == "DOM.setFileInputFiles" for m, _ in sent)
+
+
+@pytest.mark.asyncio
+async def test_upload_raises_for_missing_local_file():
+    engine, sent = _upload_engine([])
+    page = Page(engine=engine, trace=Trace())
+    with pytest.raises(FileNotFoundError):
+        await page.upload("resume field", "/no/such/file.pdf")
+    assert sent == []  # fails before any CDP round trip
+
+
+@pytest.mark.asyncio
+async def test_enable_downloads_configures_browser_download_behavior(tmp_path):
+    sent: list[tuple[str, dict]] = []
+    listeners: dict[str, list] = {}
+
+    async def fake_send(method, params=None, session_id=None):
+        sent.append((method, params or {}))
+        return {}
+
+    engine = make_cdp_mock()
+    engine.send = fake_send
+    engine.on = lambda ev, cb: listeners.setdefault(ev, []).append(cb)
+    page = Page(engine=engine, trace=Trace())
+
+    result_dir = await page.enable_downloads(tmp_path)
+
+    assert result_dir == tmp_path.resolve()
+    _, params = next(x for x in sent if x[0] == "Browser.setDownloadBehavior")
+    assert params == {
+        "behavior": "allow",
+        "downloadPath": str(tmp_path.resolve()),
+        "eventsEnabled": True,
+    }
+    assert "Browser.downloadProgress" in listeners
+
+
+@pytest.mark.asyncio
+async def test_wait_for_download_returns_path_once_progress_event_completes(tmp_path):
+    listeners: dict[str, list] = {}
+
+    async def fake_send(method, params=None, session_id=None):
+        return {}
+
+    engine = make_cdp_mock()
+    engine.send = fake_send
+    engine.on = lambda ev, cb: listeners.setdefault(ev, []).append(cb)
+    page = Page(engine=engine, trace=Trace())
+    await page.enable_downloads(tmp_path)
+
+    expected = tmp_path / "report.bin"
+    for cb in listeners["Browser.downloadProgress"]:
+        cb({"state": "inProgress", "receivedBytes": 0})
+        cb({"state": "completed", "filePath": str(expected)})
+
+    result = await asyncio.wait_for(page.wait_for_download(timeout=1), timeout=2)
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_wait_for_download_times_out_cleanly_when_nothing_completes(tmp_path):
+    engine = make_cdp_mock()
+
+    async def fake_send(method, params=None, session_id=None):
+        return {}
+
+    engine.send = fake_send
+    engine.on = lambda *a: None
+    page = Page(engine=engine, trace=Trace())
+    await page.enable_downloads(tmp_path)
+
+    with pytest.raises(GripError) as exc:
+        await page.wait_for_download(timeout=0.05)
+    assert exc.value.error.type is ErrorType.NETWORK_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_fetch_interception_refuses_download_navigation_to_private_target():
+    """Same mechanism as goto()'s SSRF guard, exercised for a download-shaped
+    request: _on_fetch_paused calls policy.check(url) before any
+    resourceType branching (see grip/page.py), so a download-triggering
+    navigation to a private address is refused exactly like any other paused
+    request — no special-casing was added or needed to keep this true."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params)
+
+    monkeypatch_send = fake_send
+    engine.send = monkeypatch_send
+
+    await page.goto("https://public.test/", timeout=1.0)  # completes normally
+
+    # Only now, after the page has loaded, the user clicks a download link
+    # pointing at a private target — the same shape a real download navigation
+    # pauses at (resourceType "Document").
+    _fire_paused(
+        listeners, "http://192.168.1.1/internal-report.zip", "r-download",
+        resource_type="Document",
+    )
+    await asyncio.sleep(0)
+
+    fail_calls = [p for m, p in sent if m == "Fetch.failRequest"]
+    continue_calls = [p for m, p in sent if m == "Fetch.continueRequest"]
+    assert any(c.get("requestId") == "r-download" for c in fail_calls)
+    assert not any(c.get("requestId") == "r-download" for c in continue_calls)

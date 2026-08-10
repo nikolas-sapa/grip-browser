@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import pytest
@@ -7,6 +8,7 @@ from grip.browser import Browser
 from grip.cdp.engine import CDPEngine
 from grip.errors import GripError
 from grip.errors.types import ErrorType
+from grip.page import Page
 from grip.trace import Trace
 
 
@@ -314,3 +316,189 @@ def test_page_ws_url_keeps_a_non_default_remote_port():
     assert browser._page_ws_url("T9") == (
         "wss://cdp.example.net:7443/devtools/page/T9?token=t0ken"
     )
+
+
+@pytest.mark.asyncio
+async def test_pages_property_and_get_page_track_open_and_closed_tabs():
+    browser = Browser()
+    engine = MagicMock()
+    engine.send = AsyncMock(return_value={})
+    browser._engine = engine
+
+    class _Stub:
+        def __init__(self, target_id):
+            self._target_id = target_id
+
+    p1, p2 = _Stub("T1"), _Stub("T2")
+    browser._pages = [p1, p2]
+
+    assert browser.pages == (p1, p2)
+    assert browser.get_page("T2") is p2
+    assert browser.get_page("nope") is None
+
+    await browser._close_target("T1")
+    assert browser.pages == (p2,)
+    assert browser.get_page("T1") is None
+
+
+@pytest.mark.asyncio
+async def test_each_tab_gets_its_own_fetch_interception_armed(monkeypatch):
+    """Fetch interception is armed per-Page inside goto() -> _ensure_initialized
+    (see grip/page.py). A second tab opened through Browser.open() must arm it
+    on its OWN CDP session — most tests here pin every CDPEngine() instantiation
+    to the same MagicMock (MockEngine.return_value = engine), which would let a
+    per-tab regression (e.g. arming only tab 1) pass unnoticed. side_effect
+    gives each call to CDPEngine() a genuinely distinct object instead."""
+    browser_engine = MagicMock()
+    browser_engine.connect = AsyncMock()
+    browser_engine.send = AsyncMock(side_effect=[
+        {"targetId": "T1"},  # Target.createTarget, tab 1
+        {"targetId": "T2"},  # Target.createTarget, tab 2
+    ])
+
+    page_engines: list[MagicMock] = []
+
+    def _new_page_engine() -> MagicMock:
+        eng = MagicMock()
+        eng.connect = AsyncMock()
+        eng.on = MagicMock()
+        eng.send = AsyncMock(return_value={})
+        page_engines.append(eng)
+        return eng
+
+    engines = iter([browser_engine, _new_page_engine(), _new_page_engine()])
+    monkeypatch.setattr("grip.browser.CDPEngine", lambda: next(engines))
+
+    async def fake_goto(self, url, timeout=30.0):
+        # Real goto() waits on page-load CDP events this mock never fires.
+        # What's under test is "opening a tab arms interception on that tab's
+        # own session" — goto()'s navigation-wait machinery is covered in
+        # tests/unit/test_page.py, not here.
+        await self._ensure_initialized()
+        self._current_url = url
+
+    monkeypatch.setattr(Page, "goto", fake_goto)
+
+    browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+    page1 = await browser.open("https://a.test")
+    page2 = await browser.open("https://b.test")
+
+    assert page1._engine is page_engines[0]
+    assert page2._engine is page_engines[1]
+    assert page1._engine is not page2._engine
+
+    def _fetch_enable_calls(eng: MagicMock) -> list[object]:
+        return [c for c in eng.send.call_args_list if c.args[0] == "Fetch.enable"]
+
+    assert _fetch_enable_calls(page_engines[0]), "tab 1 must have interception armed"
+    assert _fetch_enable_calls(page_engines[1]), (
+        "tab 2 must have interception armed on its own session, not skipped"
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_session_captures_cookies_and_per_origin_localstorage(tmp_path):
+    browser = Browser()
+
+    async def browser_send(method, params=None):
+        if method == "Storage.getCookies":
+            return {"cookies": [{"name": "sid", "value": "abc", "domain": "a.test"}]}
+        if method == "Target.getTargetInfo":
+            return {"targetInfo": {"url": "https://a.test/page"}}
+        raise AssertionError(f"unexpected browser-level call {method}")
+
+    engine = MagicMock()
+    engine.send = AsyncMock(side_effect=browser_send)
+    browser._engine = engine
+
+    async def page_send(method, params=None):
+        assert method == "Runtime.evaluate"
+        return {"result": {"value": json.dumps({"token": "xyz"})}}
+
+    page_engine = MagicMock()
+    page_engine.send = AsyncMock(side_effect=page_send)
+
+    class _Stub:
+        _target_id = "T1"
+        _engine = page_engine
+
+    browser._pages = [_Stub()]
+
+    session_path = tmp_path / "session.json"
+    await browser.save_session(str(session_path))
+
+    data = json.loads(session_path.read_text())
+    assert data["cookies"] == [{"name": "sid", "value": "abc", "domain": "a.test"}]
+    assert data["origins"] == {"https://a.test": {"localStorage": {"token": "xyz"}}}
+    assert oct(session_path.stat().st_mode & 0o777) == oct(0o600)
+
+
+@pytest.mark.asyncio
+async def test_load_session_reads_the_old_cookie_only_format(tmp_path):
+    """Session files predate the {"cookies", "origins"} shape — a bare cookie
+    list must still load. The list-vs-dict shape is the only version marker
+    an old file can have, so that's what detects it."""
+    browser = Browser()
+    calls = []
+
+    async def browser_send(method, params=None):
+        calls.append((method, params))
+        return {}
+
+    engine = MagicMock()
+    engine.send = AsyncMock(side_effect=browser_send)
+    browser._engine = engine
+
+    session_path = tmp_path / "old_session.json"
+    old_cookies = [{"name": "sid", "value": "abc", "domain": "a.test"}]
+    session_path.write_text(json.dumps(old_cookies))
+
+    await browser.load_session(str(session_path))
+
+    assert calls == [("Storage.setCookies", {"cookies": old_cookies})]
+
+
+@pytest.mark.asyncio
+async def test_load_session_restores_localstorage_into_a_matching_open_tab(tmp_path):
+    browser = Browser()
+
+    async def browser_send(method, params=None):
+        if method == "Storage.setCookies":
+            return {}
+        if method == "Target.getTargetInfo":
+            return {"targetInfo": {"url": "https://a.test/dashboard"}}
+        raise AssertionError(f"unexpected browser-level call {method}")
+
+    engine = MagicMock()
+    engine.send = AsyncMock(side_effect=browser_send)
+    browser._engine = engine
+
+    seen_exprs = []
+
+    async def page_send(method, params=None):
+        assert method == "Runtime.evaluate"
+        seen_exprs.append(params["expression"])
+        return {}
+
+    page_engine = MagicMock()
+    page_engine.send = AsyncMock(side_effect=page_send)
+
+    class _Stub:
+        _target_id = "T1"
+        _engine = page_engine
+
+        async def close(self):
+            raise AssertionError("must not close a tab it did not open")
+
+    browser._pages = [_Stub()]
+
+    session_path = tmp_path / "session.json"
+    session_path.write_text(json.dumps(
+        {"cookies": [], "origins": {"https://a.test": {"localStorage": {"k": "v"}}}}
+    ))
+
+    await browser.load_session(str(session_path))
+
+    assert seen_exprs, "must have written localStorage into the matching open tab"
+    assert "localStorage.setItem" in seen_exprs[0]
+    assert '"k"' in seen_exprs[0] and '"v"' in seen_exprs[0]

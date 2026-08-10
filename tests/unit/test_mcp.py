@@ -317,3 +317,118 @@ async def test_a_delta_costlier_than_its_snapshot_is_not_sent():
         assert server._last_sent_version == 2
     finally:
         server.reset_state()
+
+
+class _MultiTabPage(_FakePage):
+    """_FakePage plus the bits list_tabs/switch_tab/close_tab actually touch:
+    an identity (_target_id), a URL, and a close() that reports itself."""
+
+    def __init__(self, target_id, url, closed_log):
+        super().__init__([url])
+        self._target_id = target_id
+        self._current_url = url
+        self._closed_log = closed_log
+
+    async def close(self):
+        self._closed_log.append(self._target_id)
+
+
+class _MultiTabBrowser:
+    """Owns several tabs at once, like the real Browser._pages list — enough
+    for list_tabs/switch_tab/close_tab to exercise Browser.pages/get_page."""
+
+    def __init__(self, pages):
+        self._all_pages = list(pages)
+        self._llm = None
+        self.trace = None
+
+    @property
+    def pages(self):
+        return tuple(self._all_pages)
+
+    def get_page(self, target_id):
+        for p in self._all_pages:
+            if p._target_id == target_id:
+                return p
+        return None
+
+    async def open(self, url, **kwargs):
+        return self._all_pages[0]
+
+
+@pytest.mark.asyncio
+async def test_list_tabs_marks_the_active_one():
+    from grip.mcp import server
+
+    server.reset_state()
+    closed = []
+    page_a = _MultiTabPage("A1", "https://a.test", closed)
+    page_b = _MultiTabPage("B2", "https://b.test", closed)
+    server._browser = _MultiTabBrowser([page_a, page_b])
+    server._page = page_b
+    try:
+        out = await server.call_tool("list_tabs", {})
+    finally:
+        server.reset_state()
+    assert "A1\thttps://a.test" in out
+    assert "B2\thttps://b.test\t[active]" in out
+
+
+@pytest.mark.asyncio
+async def test_switch_tab_makes_a_different_open_tab_active():
+    from grip.mcp import server
+
+    server.reset_state()
+    closed = []
+    page_a = _MultiTabPage("A1", "https://a.test", closed)
+    page_b = _MultiTabPage("B2", "https://b.test", closed)
+    server._browser = _MultiTabBrowser([page_a, page_b])
+    server._page = page_a
+    try:
+        out = await server.call_tool("switch_tab", {"target_id": "B2"})
+        assert server._page is page_b
+        assert out.startswith("PAGE:"), "a switched-to tab is a fresh baseline"
+
+        with pytest.raises(ValueError, match="no open tab"):
+            await server.call_tool("switch_tab", {"target_id": "nope"})
+    finally:
+        server.reset_state()
+
+
+@pytest.mark.asyncio
+async def test_close_tab_by_id_leaves_the_active_tab_alone():
+    from grip.mcp import server
+
+    server.reset_state()
+    closed = []
+    page_a = _MultiTabPage("A1", "https://a.test", closed)
+    page_b = _MultiTabPage("B2", "https://b.test", closed)
+    server._browser = _MultiTabBrowser([page_a, page_b])
+    server._page = page_a
+    try:
+        out = await server.call_tool("close_tab", {"target_id": "B2"})
+    finally:
+        server.reset_state()
+    assert closed == ["B2"]
+    assert "B2" in out
+
+
+@pytest.mark.asyncio
+async def test_close_tab_defaults_to_active_and_clears_it():
+    """Closing the active tab must not silently repoint _page at another tab —
+    the next click/type would land somewhere the client didn't ask for."""
+    from grip.mcp import server
+
+    server.reset_state()
+    closed = []
+    page_a = _MultiTabPage("A1", "https://a.test", closed)
+    server._browser = _MultiTabBrowser([page_a])
+    server._page = page_a
+    try:
+        await server.call_tool("close_tab", {})
+        assert closed == ["A1"]
+        assert server._page is None
+        with pytest.raises(RuntimeError, match="open"):
+            await server.call_tool("snapshot", {})
+    finally:
+        server.reset_state()

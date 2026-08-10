@@ -12,10 +12,23 @@ from grip.adapters.base import LLMResponse, ToolCall
 
 
 class OpenAIAdapter:
-    def __init__(self, api_key: str | None = None, model: str = "gpt-4o") -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "gpt-4o",
+        base_url: str | None = None,
+    ) -> None:
+        """base_url points this at any OpenAI-compatible endpoint (Ollama,
+        vLLM, LM Studio, OpenRouter, Together, Groq, ...). Most local servers
+        don't check the key, but the SDK still requires a non-empty string —
+        default to a placeholder only when base_url is set, so plain OpenAI
+        usage still fails loudly on a missing key.
+        """
         if openai is None:
             raise ImportError("pip install grip-browser[openai]")
-        self._client = openai.AsyncOpenAI(api_key=api_key)
+        if base_url is not None and api_key is None:
+            api_key = "not-needed"
+        self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
 
     async def complete(

@@ -4,6 +4,13 @@ ponytail: one Browser, one Page, no session registry. An MCP client drives a
 single conversation; multiplexing is a real feature but not this one, and a dict
 of sessions keyed by an id nobody sends is speculative.
 
+list_tabs/switch_tab/close_tab do not change that model — there is still one
+Browser and one *active* Page (`_page`, the module-global every other tool
+operates on). They just expose the tabs `open` already creates under
+Browser._pages, which used to be invisible and unreachable once you'd called
+`open` a second time. Switching changes which already-open tab is active;
+it never creates a second concurrent "session".
+
 The `mcp` package is imported inside `main()` only — this module must stay
 importable on a base install so `grip` never depends on the extra.
 """
@@ -17,7 +24,10 @@ from typing import Any
 from grip.browser import Browser
 from grip.page import Page
 
-TOOL_NAMES = ("open", "goto", "snapshot", "click", "type", "read", "screenshot", "run")
+TOOL_NAMES = (
+    "open", "goto", "snapshot", "click", "type", "read", "screenshot", "run",
+    "list_tabs", "switch_tab", "close_tab",
+)
 
 _browser: Browser | None = None
 _page: Page | None = None
@@ -93,6 +103,42 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> str:
         # whatever the runner itself last sent, not zero.
         _last_sent_version = runner._last_sent_version
         return str(result.data)
+    if name == "list_tabs":
+        browser = await _ensure_browser()
+        active_id = _page._target_id if _page is not None else None
+        lines = [
+            f"{p._target_id}\t{p._current_url or '(not yet loaded)'}"
+            + ("\t[active]" if p._target_id == active_id else "")
+            for p in browser.pages
+        ]
+        return "\n".join(lines) if lines else "(no open tabs)"
+    if name == "switch_tab":
+        browser = await _ensure_browser()
+        target = browser.get_page(arguments["target_id"])
+        if target is None:
+            raise ValueError(f"no open tab with target_id {arguments['target_id']!r}")
+        _page = target
+        # A different tab is a different page the client has no baseline for —
+        # same reasoning as a fresh 'open'.
+        _last_sent_version = 0
+        await _page.snapshot()
+        text, _last_sent_version = _page.payload(_last_sent_version)
+        return text
+    if name == "close_tab":
+        browser = await _ensure_browser()
+        target_id = arguments.get("target_id") or None
+        closing = browser.get_page(target_id) if target_id else _require_page()
+        if closing is None:
+            raise ValueError(f"no open tab with target_id {target_id!r}")
+        was_active = _page is not None and closing._target_id == _page._target_id
+        await closing.close()
+        if was_active:
+            # Silently repointing at another tab would land the next click/type
+            # on a page the client didn't ask for. Same ergonomics as before
+            # any tab is open: call 'switch_tab' (or 'open') explicitly.
+            _page = None
+            _last_sent_version = 0
+        return f"closed {closing._target_id}"
     page = _require_page()
     if name == "goto":
         await page.goto(arguments["url"])
@@ -193,6 +239,34 @@ def main() -> None:
     )
     async def _screenshot() -> str:
         return await call_tool("screenshot", {})
+
+    @server.tool(
+        name="list_tabs",
+        description="List open tabs (target_id and url, active tab marked).",
+    )
+    async def _list_tabs() -> str:
+        return await call_tool("list_tabs", {})
+
+    @server.tool(
+        name="switch_tab",
+        description=(
+            "Make an already-open tab active; snapshot/click/type/read/goto "
+            "operate on it from then on."
+        ),
+    )
+    async def _switch_tab(target_id: str) -> str:
+        return await call_tool("switch_tab", {"target_id": target_id})
+
+    @server.tool(
+        name="close_tab",
+        description=(
+            "Close a tab by target_id, or the active tab if target_id is "
+            "omitted. Closing the active tab requires 'switch_tab' or 'open' "
+            "before the next snapshot/click/type call."
+        ),
+    )
+    async def _close_tab(target_id: str = "") -> str:
+        return await call_tool("close_tab", {"target_id": target_id})
 
     @server.tool(
         name="run",
