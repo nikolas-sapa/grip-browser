@@ -1,13 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { CopyButton } from "@/components/copy-button";
+import { Eyebrow, Lede, SectionHeading } from "@/components/section";
+import { Reveal } from "@/components/reveal";
 
+// Every call here exists on grip.Page — the snippets are lifted from the README
+// rather than written for the page, so they cannot drift into an API that does
+// not ship.
 const TABS = [
   {
-    id: "quickstart",
-    label: "Quick start",
+    id: "snapshot",
+    label: "Snapshot",
     filename: "quick_start.py",
     code: `import asyncio
 from grip import Browser
@@ -17,35 +23,51 @@ async def main():
         page = await browser.open("https://news.ycombinator.com")
         snapshot = await page.snapshot()
 
-        print(snapshot.text_content)       # readable page text
-        print(snapshot.elements)           # interactive elements only
-        print(snapshot.tokens_estimated)   # ~50
+        print(snapshot.text_content)      # readable page text
+        print(snapshot.elements)          # interactive elements only
+        print(snapshot.tokens_estimated)  # what this turn will cost
 
 asyncio.run(main())`,
   },
   {
-    id: "agentloop",
+    id: "loop",
     label: "Agent loop",
     filename: "agent_loop.py",
     code: `async with Browser(headless=True) as browser:
     page = await browser.open("https://amazon.com")
-    await page.snapshot()                # build element index
+    await page.snapshot()               # build element index
 
     await page.type("search", "blue sneakers")
-    await page.click("Go")               # fuzzy match — no selectors
+    await page.click("Go")              # fuzzy match, no selectors needed
 
-    await page.snapshot()                # re-index after navigation
-    data = await page.extract({
-        "product": "str",
-        "price": "str"
-    })
+    await page.snapshot()               # re-index after navigation
+    doc = await page.read()             # prose, citable blocks, no nav chrome
 
-    shot = await page.screenshot()       # JPEG, ~800 tokens
+    shot = await page.screenshot()      # JPEG, for vision models
     shot.save("result.jpg")`,
   },
   {
+    id: "errors",
+    label: "Typed errors",
+    filename: "recover.py",
+    code: `from grip import GripError
+from grip.errors.types import ErrorType
+
+try:
+    await page.click("checkout")
+except GripError as e:
+    match e.error.type:
+        case ErrorType.ELEMENT_STALE:      # element moved after navigation
+            await page.snapshot()
+            await page.click("checkout")
+        case ErrorType.RATE_LIMITED:       # 429: back off, then retry
+            await asyncio.sleep(30)
+        case ErrorType.CAPTCHA_REQUIRED:   # escalate; grip will not guess
+            await escalate(e.error.message)`,
+  },
+  {
     id: "autonomous",
-    label: "Autonomous mode",
+    label: "Autonomous",
     filename: "autonomous.py",
     code: `from grip import Browser
 from grip.adapters.anthropic import AnthropicAdapter
@@ -55,74 +77,143 @@ llm = AnthropicAdapter(api_key="sk-ant-...")
 async with Browser(llm=llm, headless=True) as browser:
     result = await browser.run(
         goal="Find the cheapest blue sneakers under $80",
-        url="https://amazon.com"
+        url="https://amazon.com",
     )
     print(result.data)
     print(f"Used {result.tokens} tokens")`,
   },
-];
+] as const;
 
-export function CodeShowcase() {
-  const [active, setActive] = useState(TABS[0].id);
-  const current = TABS.find((t) => t.id === active)!;
+const KEYWORDS = new Set([
+  "import",
+  "from",
+  "async",
+  "await",
+  "def",
+  "with",
+  "as",
+  "try",
+  "except",
+  "match",
+  "case",
+  "return",
+  "print",
+]);
+
+/** Deliberately small: split on comment, then string, then bare words. A full
+ * highlighter would be more weight than four snippets are worth. */
+function highlight(line: string, key: number) {
+  const commentAt = findCommentStart(line);
+  const code = commentAt === -1 ? line : line.slice(0, commentAt);
+  const comment = commentAt === -1 ? null : line.slice(commentAt);
+
+  const parts = code.split(/("[^"]*")/g);
 
   return (
-    <section className="px-6 py-24 max-w-4xl mx-auto">
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ once: true, margin: "-60px" }}
-        transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] }}
-        className="text-center mb-12"
-      >
-        <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-white">
-          Three lines to a working agent
-        </h2>
-        <p className="mt-3 text-white/40 max-w-md mx-auto text-sm">
-          From a single snapshot to a fully autonomous browsing loop.
-        </p>
-      </motion.div>
-
-      <div className="rounded-2xl border border-white/[0.08] bg-[#111113] overflow-hidden">
-        {/* Tab bar */}
-        <div className="flex items-center gap-1 px-4 pt-3 pb-0 border-b border-white/[0.06]">
-          <span className="w-2.5 h-2.5 rounded-full bg-white/10 mr-1" />
-          <span className="w-2.5 h-2.5 rounded-full bg-white/10 mr-4" />
-          <span className="w-2.5 h-2.5 rounded-full bg-white/10 mr-4" />
-
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActive(tab.id)}
-              className={cn(
-                "px-3 py-2 text-[11px] font-mono transition-colors duration-150 border-b-2 -mb-px",
-                active === tab.id
-                  ? "text-white border-white/40"
-                  : "text-white/30 border-transparent hover:text-white/60"
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
-
-          <span className="ml-auto text-[10px] text-white/20 font-mono pb-2">
-            {current.filename}
+    <div key={key}>
+      {parts.map((part, i) =>
+        part.startsWith('"') && part.endsWith('"') && part.length > 1 ? (
+          <span key={i} className="text-[var(--primary)]">
+            {part}
           </span>
-        </div>
+        ) : (
+          <span key={i}>
+            {part.split(/(\b)/).map((word, j) =>
+              KEYWORDS.has(word) ? (
+                <span key={j} className="font-medium text-foreground">
+                  {word}
+                </span>
+              ) : (
+                <span key={j} className="text-foreground/70">
+                  {word}
+                </span>
+              ),
+            )}
+          </span>
+        ),
+      )}
+      {comment && <span className="text-muted-foreground">{comment}</span>}
+      {line === "" && " "}
+    </div>
+  );
+}
 
-        {/* Code */}
-        <AnimatePresence mode="wait">
-          <motion.pre
-            key={active}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-            className="p-6 text-[12px] sm:text-[13px] font-mono text-white/70 overflow-x-auto leading-relaxed min-h-[220px]"
-          >
-            <code>{current.code}</code>
-          </motion.pre>
-        </AnimatePresence>
+/** `#` inside a string literal is not a comment. */
+function findCommentStart(line: string) {
+  let inString = false;
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] === '"') inString = !inString;
+    if (line[i] === "#" && !inString) return i;
+  }
+  return -1;
+}
+
+export function CodeShowcase() {
+  const [active, setActive] = useState<string>(TABS[0].id);
+  const current = TABS.find((t) => t.id === active) ?? TABS[0];
+
+  return (
+    <section id="code" className="px-6 py-24 sm:py-32">
+      <div className="mx-auto max-w-5xl">
+        <Reveal>
+          <Eyebrow index="04">The API</Eyebrow>
+          <SectionHeading>Describe the element. Not the selector.</SectionHeading>
+          <Lede>
+            grip resolves &ldquo;Go&rdquo; or &ldquo;search&rdquo; against the
+            indexed snapshot, traverses shadow DOM without special-casing, and
+            raises typed errors your loop can branch on instead of strings it has
+            to parse.
+          </Lede>
+        </Reveal>
+
+        <Reveal delay={0.08}>
+          <div className="mt-12 overflow-hidden rounded-[12px] border border-border bg-card">
+            <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2">
+              {TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActive(tab.id)}
+                  aria-current={active === tab.id}
+                  className={cn(
+                    "relative shrink-0 px-3 py-3 text-[12px] whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                    active === tab.id
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {tab.label}
+                  {active === tab.id && (
+                    <motion.span
+                      layoutId="code-tab"
+                      className="absolute inset-x-2 -bottom-px h-px bg-[var(--primary)]"
+                      transition={{ type: "spring", stiffness: 480, damping: 40 }}
+                    />
+                  )}
+                </button>
+              ))}
+              <div className="ml-auto flex shrink-0 items-center gap-2 pr-1 pl-4">
+                <span className="hidden font-mono text-[11px] text-muted-foreground sm:inline">
+                  {current.filename}
+                </span>
+                <CopyButton value={current.code} label="Copy snippet" />
+              </div>
+            </div>
+
+            <AnimatePresence mode="wait">
+              <motion.pre
+                key={active}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.18 }}
+                className="min-h-[300px] overflow-x-auto p-5 font-mono text-[12.5px] leading-[1.75] sm:p-6"
+              >
+                <code>{current.code.split("\n").map(highlight)}</code>
+              </motion.pre>
+            </AnimatePresence>
+          </div>
+        </Reveal>
       </div>
     </section>
   );

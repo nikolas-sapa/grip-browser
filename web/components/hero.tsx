@@ -1,119 +1,105 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { HeroVisual } from "./hero-visual";
-import { ArrowRight, Terminal } from "lucide-react";
+import { motion, useReducedMotion } from "framer-motion";
+import { ArrowRight } from "lucide-react";
+import { CopyButton } from "@/components/copy-button";
+import { GithubMark } from "@/components/icons";
+import { HeroVisual } from "@/components/hero-visual";
+import { BENCHMARK, PACKAGE, VERSION, endToEnd } from "@/lib/metrics";
 
-const fadeUp = (delay = 0) => ({
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as [number, number, number, number], delay },
-});
+const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
+function Rise({ children, delay }: { children: React.ReactNode; delay: number }) {
+  const reduced = useReducedMotion();
+  if (reduced) return <>{children}</>;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.8, delay, ease: EASE_OUT_EXPO }}
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 export function Hero() {
   return (
-    <section className="relative flex flex-col items-center text-center pt-36 pb-20 px-6 overflow-hidden">
-      {/* Badge */}
-      <motion.div {...fadeUp(0)}>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] text-white/50 font-mono mb-8">
-          <Terminal size={10} />
-          pip install grip-browser
-        </span>
-      </motion.div>
+    <section id="top" className="relative px-6 pt-32 pb-16 sm:pt-40 sm:pb-24">
+      <div className="mx-auto grid max-w-6xl gap-12 lg:grid-cols-12 lg:gap-16">
+        <div className="min-w-0 lg:col-span-6 lg:pt-6">
+          <Rise delay={0}>
+            <a
+              href="#cost"
+              className="inline-flex items-center gap-2 rounded-full border border-border py-1 pr-3 pl-1 text-[12px] text-muted-foreground transition-colors hover:border-[var(--primary)] hover:text-foreground"
+            >
+              <span className="rounded-full bg-[var(--primary)] px-2 py-0.5 font-mono text-[11px] text-[var(--primary-foreground)] tabular-nums">
+                v{VERSION}
+              </span>
+              Three-way benchmark, {BENCHMARK.date}
+              <ArrowRight className="size-3" strokeWidth={2} />
+            </a>
+          </Rise>
 
-      {/* Headline */}
-      <motion.h1
-        {...fadeUp(0.05)}
-        className="max-w-3xl text-5xl sm:text-6xl lg:text-7xl font-semibold tracking-tight leading-[1.08]"
-      >
-        <span className="text-white">
-          2,000 tokens per page snapshot.
-          <br />
-          Not 78,000.
-        </span>
-      </motion.h1>
+          <Rise delay={0.06}>
+            <h1 className="mt-8 max-w-[16ch] text-[clamp(2.5rem,6vw,4rem)] leading-[1.03] font-semibold tracking-[-0.04em] text-balance">
+              A browser your agent can afford to look at.
+            </h1>
+          </Rise>
 
-      {/* Subheadline */}
-      <motion.p
-        {...fadeUp(0.1)}
-        className="mt-5 max-w-lg text-base sm:text-lg text-white/40 leading-relaxed"
-      >
-        grip is a CDP-native browser SDK for AI agents. It hands your agent a
-        semantic page snapshot — interactive elements and visible text — instead
-        of raw HTML. No Playwright bloat.
-        <span className="block mt-2 text-sm text-white/25">
-          Median across 8 real pages, measured against raw HTML. Against
-          tag-stripped text the reduction is smaller — method and data in the
-          repo.
-        </span>
-      </motion.p>
+          <Rise delay={0.12}>
+            <p className="mt-6 max-w-lg text-[17px] leading-[1.6] text-muted-foreground">
+              grip is a CDP-native Python SDK. Point it at a page and your model
+              gets the interactive elements and the visible text, indexed and
+              fuzzy-matchable, small enough to keep in context for a whole run.
+              No Playwright, no Puppeteer, no wrapper binary.
+            </p>
+          </Rise>
 
-      {/* CTAs */}
-      <motion.div {...fadeUp(0.15)} className="mt-8 flex flex-wrap items-center justify-center gap-3">
-        <a
-          href="#install"
-          className="flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-medium text-black hover:bg-white/90 transition-colors"
-        >
-          Get started <ArrowRight size={13} />
-        </a>
-        <a
-          href="https://github.com/nikolas-sapa/grip-browser"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-5 py-2.5 text-sm text-white/70 hover:bg-white/[0.08] hover:text-white transition-colors"
-        >
-          View on GitHub
-        </a>
-      </motion.div>
+          <Rise delay={0.18}>
+            <div className="mt-8 flex items-baseline gap-4 border-l-2 border-[var(--primary)] pl-4">
+              <span className="font-mono text-[30px] leading-none font-medium tracking-[-0.03em] tabular-nums">
+                {endToEnd.median}
+              </span>
+              <span className="text-[13px] leading-[1.5] text-muted-foreground">
+                {endToEnd.what}.{" "}
+                <span className="font-mono tabular-nums">
+                  {endToEnd.repeatRuns}
+                </span>{" "}
+                across repeat runs of the benchmark.
+              </span>
+            </div>
+          </Rise>
 
-      {/* Proof strip — live badges, real numbers */}
-      <motion.div {...fadeUp(0.2)} className="mt-6 flex flex-wrap items-center justify-center gap-2">
-        <a
-          href="https://pypi.org/project/grip-browser/"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="grip-browser on PyPI"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="https://img.shields.io/pypi/v/grip-browser?style=flat-square&labelColor=1a1a1a&color=2e2e2e"
-            alt="PyPI version"
-            height={20}
-          />
-        </a>
-        <a
-          href="https://pypi.org/project/grip-browser/"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="grip-browser downloads on PyPI"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="https://img.shields.io/pypi/dm/grip-browser?style=flat-square&labelColor=1a1a1a&color=2e2e2e"
-            alt="PyPI monthly downloads"
-            height={20}
-          />
-        </a>
-        <a
-          href="https://github.com/nikolas-sapa/grip-browser"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="grip-browser stars on GitHub"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="https://img.shields.io/github/stars/nikolas-sapa/grip-browser?style=flat-square&labelColor=1a1a1a&color=2e2e2e"
-            alt="GitHub stars"
-            height={20}
-          />
-        </a>
-      </motion.div>
+          <Rise delay={0.24}>
+            <div className="mt-10 flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1 rounded-md border border-border bg-card py-1 pr-1 pl-4">
+                <code className="font-mono text-[13px] whitespace-nowrap">
+                  <span className="text-muted-foreground select-none">$ </span>
+                  {PACKAGE.pip}
+                </code>
+                <CopyButton value={PACKAGE.pip} label="Copy install command" />
+              </div>
 
-      {/* Hero visual — animated snapshot demo */}
-      <motion.div {...fadeUp(0.25)} className="mt-14 w-full">
-        <HeroVisual />
-      </motion.div>
+              <a
+                href={PACKAGE.github}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-10 items-center gap-2 rounded-md border border-border px-4 text-[13px] font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <GithubMark className="size-3.5" />
+                Source
+              </a>
+            </div>
+          </Rise>
+        </div>
+
+        <div className="min-w-0 lg:col-span-6">
+          <Rise delay={0.2}>
+            <HeroVisual />
+          </Rise>
+        </div>
+      </div>
     </section>
   );
 }
