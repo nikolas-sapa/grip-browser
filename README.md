@@ -42,8 +42,8 @@ That 16.0x is against **raw HTML**, which is the right comparison if your agent 
 | Prompt-injection guard | no | no | yes |
 
 All three token figures are measured on the same 8 real pages with the same encoder
-(tiktoken `cl100k_base`), run 2026-08-10. grip is the smallest payload on 8 of 8 pages
-— a median **5.0x** below Playwright MCP (range 2.5x–7.3x) and **15.4x** below
+(tiktoken `cl100k_base`), run 2026-08-10. Of these three, grip is the smallest payload
+on 8 of 8 pages — a median **5.0x** below Playwright MCP (range 2.5x–7.3x) and **15.4x** below
 Puppeteer's `page.content()`. Puppeteer has no single canonical observation, so both
 the HTML and accessibility-tree payloads are shown. On Hacker News, Playwright MCP's
 snapshot came out *larger* than the raw HTML it describes — an accessibility tree is
@@ -54,6 +54,48 @@ This measures payload size only. It says nothing about task success, latency,
 reliability or cross-browser support.
 
 Honest caveat: Playwright and Puppeteer are broader general-purpose automation frameworks with huge ecosystems and cross-browser support. Grip is narrower on purpose — it does one thing (feed an LLM the smallest useful view of a page) and does not try to replace them for human-driven E2E testing.
+
+### Grip vs browser-use
+
+**On this comparison grip does not win.** browser-use is the closest competitor
+grip has — Python, CDP-native since its 0.6.0 (it dropped Playwright as its
+driver), MIT — so it is the one worth measuring, and the result goes the other
+way. On the like-for-like payload, browser-use's DOM serialisation against
+grip's snapshot over the same 8 pages, same encoder, same Chrome binary, no LLM
+in either loop, **browser-use is 0.90x the size of grip's snapshot by
+median-of-ratios and 0.81x by ratio-of-medians** — smaller on both statistics,
+smaller on 4 of the 8 pages, and nearly 3x smaller on Wikipedia.
+
+It is not a column in the table above because the two payloads are not the same
+measurement, and the raw ratio misleads in both directions:
+
+- **They do not describe the same amount of page.** browser-use serialises the
+  viewport plus a 1000px margin; grip serialises the whole document. Its 6,778
+  tokens on Wikipedia leave **26.9 viewport-heights unserialised**, and it pays
+  again on every scroll turn. A smaller number can mean less page rather than
+  denser encoding. Which is cheaper end to end depends on the task, and this
+  benchmark does not measure that.
+- **On the 3 pages where coverage is comparable the result is mixed** — 1.63x,
+  1.07x and 0.56x browser-use ÷ grip, on Hacker News, arXiv and example.com.
+  n=3. Nothing should be generalised from three pages; it is reported because it
+  is the fairest cut this data allows, not because it rescues anything.
+- **GitHub runs the other way.** browser-use is **4.15x larger** than grip there
+  while still leaving 5.5 pages below unserialised — on a control-dense
+  application shell its per-element encoding costs more, viewport limit and all.
+- **Screenshots are excluded**, which favours browser-use: it runs with vision on
+  by default and ships a base64 PNG alongside this text, while grip's figure is
+  all grip sends.
+
+They are also not substitutes. browser-use is a **full agent framework** — LLM
+loop, action registry, memory, planning, filesystem, cloud execution, MCP
+integration. grip is a **snapshot primitive**: it produces a compact view of a
+page and does not run an agent. If you want an agent that browses, browser-use
+does something grip does not do at all, and choosing between them on payload
+size alone would be choosing on the wrong axis.
+
+Per-page tables, both statistics, the 40,000-character cap, variance across
+three runs and what this does not measure:
+[`benchmarks/RESULTS_BROWSERUSE.md`](benchmarks/RESULTS_BROWSERUSE.md).
 
 ### When to use Grip
 
@@ -339,6 +381,11 @@ Token figures: 8 real pages, tiktoken `cl100k_base`, 2026-08-10 —
 is one axis: Playwright and Puppeteer are broader general-purpose automation frameworks
 and this table says nothing about task success, latency or cross-browser support.
 
+This table covers Playwright MCP and Puppeteer only. The token column does **not**
+generalise to every tool: browser-use's serialisation is *smaller* than grip's at the
+median on the same corpus — see [Grip vs browser-use](#grip-vs-browser-use) for the
+figures and for why the two are not measuring the same thing.
+
 ---
 
 ## Structured errors
@@ -466,7 +513,9 @@ Everything in this table was measured on this branch. Anything not in it is not
 claimed: cold-start time, memory, requests per second and challenge solve rates
 are all unmeasured, and quoting them would be a guess. Tokens against other
 tools ARE measured — Playwright MCP and Puppeteer, in
-[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md). The
+[`benchmarks/RESULTS_COMPETITORS.md`](benchmarks/RESULTS_COMPETITORS.md), and
+browser-use, which comes out *smaller* than grip at the median, in
+[`benchmarks/RESULTS_BROWSERUSE.md`](benchmarks/RESULTS_BROWSERUSE.md). The
 snapshot-size figures live in [Why Grip](#why-grip) with their own method note.
 
 | | Measured | How |
