@@ -1,8 +1,11 @@
 import { Nav } from "@/components/nav";
 import { Hero } from "@/components/hero";
-import { Features } from "@/components/features";
+import { TokenCost } from "@/components/token-cost";
+import { Mechanisms } from "@/components/mechanisms";
+import { Delta } from "@/components/delta";
 import { CodeShowcase } from "@/components/code-showcase";
-import { Comparison } from "@/components/comparison";
+import { Features } from "@/components/features";
+import { Limits } from "@/components/limits";
 import { Install } from "@/components/install";
 import { Footer } from "@/components/footer";
 
@@ -12,9 +15,13 @@ export default function Home() {
       <Nav />
       <main>
         <Hero />
-        <Features />
+        <TokenCost />
+        <div className="mx-auto h-px max-w-6xl rule" />
+        <Mechanisms />
+        <Delta />
         <CodeShowcase />
-        <Comparison />
+        <Features />
+        <Limits />
         <Install />
       </main>
       <Footer />

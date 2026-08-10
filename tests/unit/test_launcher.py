@@ -47,10 +47,12 @@ def test_find_chrome_falls_back_to_cached_chrome_for_testing(monkeypatch, tmp_pa
     monkeypatch.setattr(
         launcher_mod, "_CACHED_CHROME_GLOBS", [str(tmp_path / "chromium-*" / "chrome-mac-arm64" / "chrome")]
     )
-    with patch("grip.cdp.launcher.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 1
-        mock_run.return_value.stdout = ""
-        assert find_chrome() == str(cached)
+    # find_chrome() looks in PATH before it reaches the cached-Chrome fallback, so
+    # without this the test only exercises the fallback on machines that have no
+    # browser installed — it passed on macOS and failed on CI's Ubuntu runner,
+    # where google-chrome is in PATH. Stub the lookup the code actually performs.
+    monkeypatch.setattr(launcher_mod.shutil, "which", lambda name: None)
+    assert find_chrome() == str(cached)
 
 
 def test_find_cached_chrome_prefers_newest_build(monkeypatch, tmp_path):
@@ -116,8 +118,93 @@ def test_stale_chrome_executable_is_not_trusted(monkeypatch):
     """A CHROME_EXECUTABLE pointing at nothing must fall through to the normal
     search, so the caller gets the clear "not found" error rather than an opaque
     Popen failure from inside launch()."""
-    from grip.cdp.launcher import find_chrome
+    from grip.cdp import launcher as launcher_mod
 
+    # Pin every later step of the search, otherwise the assertion is vacuous on a
+    # machine with no browser: find_chrome() would return None, which trivially
+    # differs from the stale path without proving the fall-through ran.
     monkeypatch.setenv("CHROME_EXECUTABLE", "/nonexistent/chrome")
-    found = find_chrome()
-    assert found != "/nonexistent/chrome"
+    monkeypatch.setattr(launcher_mod, "_CHROME_CANDIDATES", [])
+    monkeypatch.setattr(launcher_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(launcher_mod, "_find_cached_chrome", lambda: "/cached/chrome")
+    assert launcher_mod.find_chrome() == "/cached/chrome"
+
+
+def test_launch_timeout_reads_env(monkeypatch, tmp_path):
+    from grip.cdp.launcher import default_launch_timeout
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+
+    monkeypatch.delenv("GRIP_CHROME_LAUNCH_TIMEOUT", raising=False)
+    assert default_launch_timeout() == 10.0
+    monkeypatch.setenv("GRIP_CHROME_LAUNCH_TIMEOUT", "45")
+    assert ChromeLauncher().launch_timeout == 45.0
+    # Junk and non-positive values fall back: a bad env var must not turn every
+    # launch into a crash or a zero-length deadline.
+    for bad in ("banana", "0", "-3", ""):
+        monkeypatch.setenv("GRIP_CHROME_LAUNCH_TIMEOUT", bad)
+        assert default_launch_timeout() == 10.0
+    # An explicit argument still wins over the environment.
+    monkeypatch.setenv("GRIP_CHROME_LAUNCH_TIMEOUT", "45")
+    assert ChromeLauncher(launch_timeout=2.5).launch_timeout == 2.5
+
+
+def test_launch_timeout_error_reports_exit_code_and_stderr(monkeypatch, tmp_path):
+    """The timeout used to say only "timed out", which is a debugging dead end.
+    It has to say whether Chrome is alive and what Chrome itself complained about."""
+    import time
+
+    import pytest
+
+    exe = tmp_path / "fake-chrome"
+    exe.write_text("#!/bin/sh\necho 'chrome could not start' >&2\nexit 7\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+
+    # A generous deadline on purpose: the launch must fail as soon as the process
+    # dies, not by running out the clock, so this asserts on elapsed time too.
+    launcher = ChromeLauncher(launch_timeout=30)
+    start = time.monotonic()
+    with pytest.raises(RuntimeError) as excinfo:
+        launcher.launch()
+    elapsed = time.monotonic() - start
+    assert elapsed < 10, "a dead Chrome should fail fast, not wait out the deadline"
+    message = str(excinfo.value)
+    assert "exited with code 7" in message
+    assert "chrome could not start" in message
+    assert "GRIP_CHROME_LAUNCH_TIMEOUT" in message
+    # A failed launch cleans up after itself — nothing else is holding the
+    # process or the temp profile, because launch() never returned a launcher.
+    assert launcher._process is None
+    assert launcher._stderr_path is None
+
+
+def test_process_state_reports_the_real_exit_code_not_a_poll_race(monkeypatch, tmp_path):
+    """poll() returns None for a child that has exited but not been reaped, so a
+    bare poll() here would report "still running" for a dead Chrome depending on
+    scheduler timing. _process_state() waits for the reap instead.
+
+    Driven directly rather than through a very short launch_timeout: with a
+    deadline shorter than process startup, "still running" is sometimes simply
+    true, and a test asserting otherwise would be the flake it is meant to catch.
+    """
+    import subprocess
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    launcher = ChromeLauncher()
+
+    launcher._process = subprocess.Popen(["/bin/sh", "-c", "exit 7"])
+    assert "exited with code 7" in launcher._process_state()
+
+    # The other branch still has to be reachable: a live process must not be
+    # reported as dead just because the failure path waited on it.
+    launcher._process = subprocess.Popen(["/bin/sh", "-c", "sleep 30"])
+    try:
+        assert launcher._process_state() == "process still running"
+    finally:
+        launcher._process.kill()
+        launcher._process.wait()

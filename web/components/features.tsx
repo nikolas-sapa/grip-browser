@@ -1,90 +1,99 @@
-"use client";
+import {
+  Cable,
+  Crosshair,
+  Layers,
+  ScrollText,
+  ShieldAlert,
+  Waypoints,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { Reveal } from "@/components/reveal";
+import { Eyebrow, Lede, SectionHeading } from "@/components/section";
 
-import { motion } from "framer-motion";
-import { Cpu, Layers, Target, ShieldAlert, Activity, Plug } from "lucide-react";
+type Feature = {
+  icon: LucideIcon;
+  title: string;
+  body: string;
+  /** Column span at lg. Uneven on purpose: a uniform card grid reads as filler. */
+  span: string;
+};
 
-const FEATURES = [
+const FEATURES: Feature[] = [
   {
-    icon: Cpu,
-    title: "Pure CDP",
-    description: "Speaks Chrome DevTools Protocol directly — no Playwright binary, no Puppeteer overhead.",
+    icon: Crosshair,
+    title: "Fuzzy element matching",
+    body: 'page.click("Go") resolves against the indexed snapshot. No selectors to write, and none to fix when the markup moves.',
+    span: "lg:col-span-7",
   },
   {
-    icon: Target,
-    title: "Fuzzy element matching",
-    description: 'Click "Go" or type "search" — grip resolves to the real element. No CSS selectors.',
+    icon: Cable,
+    title: "Pure CDP",
+    body: "Straight onto the Chrome DevTools Protocol. No Playwright, no Puppeteer, no wrapper binary underneath.",
+    span: "lg:col-span-5",
   },
   {
     icon: Layers,
-    title: "Shadow DOM traversal",
-    description: "Web components, Chrome extensions, custom elements — all discovered in the same snapshot.",
+    title: "Shadow DOM, fully traversed",
+    body: "Web components and custom elements surface in the same snapshot as everything else.",
+    span: "lg:col-span-4",
   },
   {
     icon: ShieldAlert,
-    title: "Typed error recovery",
-    description: "Every failure is a typed BrowserError with a suggested RecoveryAction. Your agent decides.",
+    title: "Typed errors with a recovery",
+    body: "ELEMENT_STALE, RATE_LIMITED, AUTH_REQUIRED and the rest arrive as values with a suggested action, not strings to parse.",
+    span: "lg:col-span-4",
   },
   {
-    icon: Activity,
-    title: "Token trace",
-    description: "Every action recorded with timing and token cost. Export to JSONL for audit or replay.",
+    icon: ScrollText,
+    title: "Read mode",
+    body: "read() isolates the main content and keeps the heading trail on every block, so a claim can be cited back to a location.",
+    span: "lg:col-span-4",
   },
   {
-    icon: Plug,
-    title: "LLM adapters",
-    description: "OpenAI and Anthropic adapters ship out of the box. Bring your own via the LLMAdapter protocol.",
+    icon: Waypoints,
+    title: "Concurrent pages, and a trace of all of them",
+    body: "Every open() gets its own tab and its own CDP connection, so pages run in parallel. Every action is recorded with its timing and token cost and can be written out as a JSONL audit log.",
+    span: "lg:col-span-12",
   },
 ];
 
-const container = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.06 } },
-};
-
-const item = {
-  hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] } },
-};
-
 export function Features() {
   return (
-    <section className="px-6 py-24 max-w-6xl mx-auto">
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ once: true, margin: "-60px" }}
-        transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] as [number, number, number, number] }}
-        className="text-center mb-14"
-      >
-        <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-white">
-          Built for agents, not browsers
-        </h2>
-        <p className="mt-3 text-white/40 max-w-md mx-auto text-sm sm:text-base">
-          Every feature exists to save tokens, reduce hallucinations, and make agentic loops more reliable.
-        </p>
-      </motion.div>
+    <section className="px-6 py-24 sm:py-32">
+      <div className="mx-auto max-w-6xl">
+        <Reveal>
+          <Eyebrow index="05">Capabilities</Eyebrow>
+          <SectionHeading>Built for the loop, not for the test suite.</SectionHeading>
+          <Lede>
+            Everything here exists because an agent needed it mid-run: a page that
+            changed under it, a component in a shadow root, an error it had to
+            branch on.
+          </Lede>
+        </Reveal>
 
-      <motion.div
-        variants={container}
-        initial="hidden"
-        whileInView="show"
-        viewport={{ once: true, margin: "-60px" }}
-        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
-      >
-        {FEATURES.map((f) => (
-          <motion.div
-            key={f.title}
-            variants={item}
-            className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-6 hover:border-white/[0.14] hover:bg-white/[0.05] transition-colors duration-200 group"
-          >
-            <div className="mb-4 flex items-center justify-center w-9 h-9 rounded-xl border border-white/10 bg-white/[0.06] group-hover:bg-white/10 transition-colors">
-              <f.icon size={16} className="text-white/60" />
-            </div>
-            <h3 className="text-sm font-semibold text-white mb-1.5">{f.title}</h3>
-            <p className="text-sm text-white/40 leading-relaxed">{f.description}</p>
-          </motion.div>
-        ))}
-      </motion.div>
+        <div className="mt-14 grid gap-px overflow-hidden rounded-[12px] border border-border bg-border lg:grid-cols-12">
+          {FEATURES.map((feature, i) => (
+            <Reveal
+              key={feature.title}
+              delay={Math.min(i, 4) * 0.05}
+              className={`bg-background ${feature.span}`}
+            >
+              <div className="h-full p-6 sm:p-7">
+                <feature.icon
+                  className="size-4 text-muted-foreground"
+                  strokeWidth={1.75}
+                />
+                <h3 className="mt-4 text-[15px] font-medium tracking-[-0.01em]">
+                  {feature.title}
+                </h3>
+                <p className="mt-2 max-w-prose text-[13.5px] leading-[1.65] text-muted-foreground">
+                  {feature.body}
+                </p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      </div>
     </section>
   );
 }

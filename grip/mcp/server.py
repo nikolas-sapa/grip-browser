@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from grip.browser import Browser
-from grip.compression.delta import format_delta
+from grip.compression.delta import format_delta, is_worth_sending
 from grip.compression.summarizer import Summarizer
 from grip.page import Page
 
@@ -48,14 +48,6 @@ def _payload(page: Page) -> str:
     global _last_sent_version
     snap = page._current_snapshot
     delta = page.delta
-    # A delta is only readable against a baseline the client actually received.
-    # click()/type() snapshot implicitly when the ref cache is cold (which is the
-    # state goto() leaves behind), advancing the page's baseline without emitting
-    # anything. "A delta exists" is therefore not the same question as "the client
-    # can apply it", and getting that wrong describes refs it has never seen.
-    if delta is not None and delta.previous_version == _last_sent_version:
-        _last_sent_version = delta.version
-        return format_delta(delta)
     if snap is None:
         # Every path here snapshots first, so this is a bug in the caller, not a
         # page state. Raising is what a server can afford: main()'s _safe wrapper
@@ -65,8 +57,22 @@ def _payload(page: Page) -> str:
         raise RuntimeError(
             "_payload called before any snapshot; the page has no state to send"
         )
+    rendered_snapshot = _summarizer.format(snap)
+    # A delta is only readable against a baseline the client actually received.
+    # click()/type() snapshot implicitly when the ref cache is cold (which is the
+    # state goto() leaves behind), advancing the page's baseline without emitting
+    # anything. "A delta exists" is therefore not the same question as "the client
+    # can apply it", and getting that wrong describes refs it has never seen.
+    if delta is not None and delta.previous_version == _last_sent_version:
+        rendered_delta = format_delta(delta)
+        # Falling through to the snapshot has to move the baseline to the
+        # snapshot's version, not the delta's: the client is being shown the full
+        # page, and the next delta must be written against that.
+        if is_worth_sending(rendered_delta, rendered_snapshot):
+            _last_sent_version = delta.version
+            return rendered_delta
     _last_sent_version = snap.version
-    return _summarizer.format(snap)
+    return rendered_snapshot
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> str:

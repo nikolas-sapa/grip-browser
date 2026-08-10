@@ -43,6 +43,11 @@ jobs:
       # a browser binary, which ubuntu-latest runners ship. Without one they skip
       # (tests/conftest.py) rather than fail.
       - name: Run integration and gripsearch tests
+        # Each test launches its own Chrome, and a cold start on a 2-core runner
+        # under load blows well past the 10s local default. The knob exists so CI
+        # can be patient without making every developer's failure slower.
+        env:
+          GRIP_CHROME_LAUNCH_TIMEOUT: "60"
         run: pytest tests/integration/ tests/gripsearch/ -v
 
   lint:
@@ -61,8 +66,13 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # The mcp extra is a lint dependency, not just a runtime one. Without it
+      # `mcp.*` falls to the ignore_missing_imports override in pyproject, every
+      # symbol from it becomes Any, and strict mode's disallow_untyped_decorators
+      # fails all five @server.tool handlers in grip/mcp/server.py — errors nobody
+      # sees locally, where mcp is installed. Lint what users actually install.
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,mcp]"
 
       - name: ruff
         run: ruff check grip/ gripsearch/ evaluation/ benchmarks/

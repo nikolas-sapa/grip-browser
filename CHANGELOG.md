@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.5.0] - 2026-08-10
 
+### Correction to this entry
+
+The delta figure below — "628 tokens per turn becomes 42, a 75% cut" — is a
+single-page best case reported as if it were typical. It came from a synthetic
+five-turn loop that never navigated away from one document, which is the one
+condition under which the delta always fires. The original wording is left in
+place because 0.5.0 is published; this note corrects the record rather than
+erasing it.
+
+Measured since on four live sites, six real turns each (medians of per-scenario
+ratios, tiktoken `cl100k_base`):
+
+- compression, grip snapshot vs raw HTML, per turn: **11.3x** (2.9x–22.0x)
+- delta vs full snapshot every turn, per turn: **1.0x** (1.0x–8.8x) —
+  `build_delta` returns `None` on a URL change, so navigation turns send a full
+  snapshot by design
+- pruning, cumulative: **1.4x** (1.0x–2.2x)
+- end to end, raw HTML vs grip delta + pruning, cumulative: **17.8x**
+  (4.6x–41.8x per scenario; 16.9x–18.4x across repeat runs)
+
+On the 8 turns of 24 where a delta could fire, the saving was **9.1x** median,
+range **0.5x–175.0x**. Method, per-scenario tables and caveats:
+[`benchmarks/RESULTS_AB.md`](benchmarks/RESULTS_AB.md).
+
 ### Removed
 
 - **`Page.extract()` and `Page.observe()`.** Breaking. `extract()` returned the
