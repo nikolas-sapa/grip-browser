@@ -38,17 +38,21 @@ jobs:
       - name: Unit tests with coverage
         run: pytest tests/unit/ --cov=grip --cov-report=term-missing --cov-fail-under=80
 
-      # Integration and gripsearch tests drive real Chrome. They are offline —
-      # every one serves its own fixtures from a local http.server — but they need
-      # a browser binary, which ubuntu-latest runners ship. Without one they skip
-      # (tests/conftest.py) rather than fail.
+      # Integration and gripsearch tests drive real Chrome. Almost all of them are
+      # offline — each serves its own fixtures from a local http.server — but they
+      # need a browser binary, which ubuntu-latest runners ship. Without one they
+      # skip (tests/conftest.py) rather than fail. The exception is anything marked
+      # `network`: a handful of tests that deliberately hit live, real-world URLs
+      # (see tests/integration/test_discover_elements_perf_parity.py) rather than a
+      # fixture, and are excluded here so the default run doesn't depend on the
+      # public internet being reachable/stable from the runner.
       - name: Run integration and gripsearch tests
         # Each test launches its own Chrome, and a cold start on a 2-core runner
         # under load blows well past the 10s local default. The knob exists so CI
         # can be patient without making every developer's failure slower.
         env:
           GRIP_CHROME_LAUNCH_TIMEOUT: "60"
-        run: pytest tests/integration/ tests/gripsearch/ -v
+        run: pytest tests/integration/ tests/gripsearch/ -v -m "not network"
 
   lint:
     runs-on: ubuntu-latest

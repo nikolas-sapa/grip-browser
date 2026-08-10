@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Catalog task 5</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  fieldset { border: 1px solid #ccc; border-radius: 8px; margin-bottom: 16px; padding: 16px; }
+  label { display: block; margin: 8px 0 4px; font-size: 14px; }
+  input, select, textarea { width: 100%; padding: 8px; box-sizing: border-box; font-size: 14px; }
+  button { padding: 10px 18px; font-size: 14px; cursor: pointer; margin-top: 8px; }
+  .hidden { display: none; }
+  .item { border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin: 6px 0; }
+  .item.selected { border-color: #006bff; background: #eef5ff; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 6px; border-bottom: 1px solid #eee; }
+</style></head>
+<body>
+<h2>Catalog task 5</h2>
+
+<label for="filter">Category</label>
+<select id="filter">
+  <option value="all">All</option>
+  <option value="Electronics">Electronics</option><option value="Books">Books</option><option value="Home">Home</option><option value="Sports">Sports</option><option value="Toys">Toys</option>
+</select>
+<label for="sort">Sort by price</label>
+<select id="sort">
+  <option value="none">Default</option>
+  <option value="asc">Price: low to high</option>
+  <option value="desc">Price: high to low</option>
+</select>
+<div id="list"></div>
+<button type="button" id="prev">Previous page</button>
+<span id="pageno">Page 1</span>
+<button type="button" id="next">Next page</button>
+
+<script>
+var ITEMS = [{"id": 1, "name": "Item 5-1", "category": "Books", "price": 175}, {"id": 2, "name": "Item 5-2", "category": "Books", "price": 89}, {"id": 3, "name": "Item 5-3", "category": "Home", "price": 156}, {"id": 4, "name": "Item 5-4", "category": "Home", "price": 115}, {"id": 5, "name": "Item 5-5", "category": "Books", "price": 199}, {"id": 6, "name": "Item 5-6", "category": "Books", "price": 72}, {"id": 7, "name": "Item 5-7", "category": "Books", "price": 84}, {"id": 8, "name": "Item 5-8", "category": "Sports", "price": 178}, {"id": 9, "name": "Item 5-9", "category": "Electronics", "price": 122}];
+var PAGE_SIZE = 3;
+var state = { filter: 'all', sort: 'none', page: 1, selected: null };
+function render() {
+  var rows = ITEMS.filter(function(i) { return state.filter === 'all' || i.category === state.filter; });
+  if (state.sort === 'asc') rows.sort(function(a,b) { return a.price - b.price; });
+  if (state.sort === 'desc') rows.sort(function(a,b) { return b.price - a.price; });
+  var maxPage = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  if (state.page > maxPage) state.page = maxPage;
+  var start = (state.page - 1) * PAGE_SIZE;
+  var pageRows = rows.slice(start, start + PAGE_SIZE);
+  var el = document.getElementById('list');
+  el.innerHTML = '';
+  pageRows.forEach(function(it) {
+    var d = document.createElement('div');
+    d.className = 'item' + (state.selected === it.id ? ' selected' : '');
+    d.dataset.id = it.id;
+    d.textContent = it.name + ' — ' + it.category + ' — $' + it.price;
+    d.addEventListener('click', function() { state.selected = it.id; render(); });
+    el.appendChild(d);
+  });
+  document.getElementById('pageno').textContent = 'Page ' + state.page + ' of ' + maxPage;
+}
+document.getElementById('filter').addEventListener('change', function(e) {
+  state.filter = e.target.value; state.page = 1; render();
+});
+document.getElementById('sort').addEventListener('change', function(e) {
+  state.sort = e.target.value; render();
+});
+document.getElementById('next').addEventListener('click', function() { state.page += 1; render(); });
+document.getElementById('prev').addEventListener('click', function() { state.page = Math.max(1, state.page - 1); render(); });
+render();
+window.__bench_state = function() { return state; };
+window.__bench_verify = function() {
+  var t = {"filter": "Sports", "sort": "desc", "page": 1, "selected": 8};
+  return state.filter === t.filter && state.sort === t.sort &&
+         state.page === t.page && state.selected === t.selected;
+};
+</script>
+</body></html>

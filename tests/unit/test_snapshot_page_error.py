@@ -26,6 +26,8 @@ async def test_snapshot_detects_bot_block():
     page._engine.send.side_effect = [
         # Runtime.enable
         {},
+        # Fetch.enable
+        {},
         # DISCOVER_ELEMENTS_JS
         {"result": {"value": "[]"}},
         # PAGE_TEXT_JS
@@ -42,7 +44,8 @@ async def test_snapshot_detects_bot_block():
 async def test_snapshot_page_error_none_on_normal_page():
     page = _make_page()
     page._engine.send.side_effect = [
-        {},
+        {},   # Runtime.enable
+        {},   # Fetch.enable
         {"result": {"value": "[]"}},
         {"result": {"value": "Hello world"}},
         {"targetInfo": {"title": "Example Domain", "url": "https://example.com"}},

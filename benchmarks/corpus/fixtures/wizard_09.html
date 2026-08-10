@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Checkout task 9</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  fieldset { border: 1px solid #ccc; border-radius: 8px; margin-bottom: 16px; padding: 16px; }
+  label { display: block; margin: 8px 0 4px; font-size: 14px; }
+  input, select, textarea { width: 100%; padding: 8px; box-sizing: border-box; font-size: 14px; }
+  button { padding: 10px 18px; font-size: 14px; cursor: pointer; margin-top: 8px; }
+  .hidden { display: none; }
+  .item { border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin: 6px 0; }
+  .item.selected { border-color: #006bff; background: #eef5ff; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 6px; border-bottom: 1px solid #eee; }
+</style></head>
+<body>
+<h2>Checkout task 9</h2>
+
+<div id="step1" class="step">
+  <fieldset><legend>1. Shipping</legend>
+    <label for="addr">Street address</label>
+    <input id="addr" type="text">
+    <label for="city">City</label>
+    <input id="city" type="text">
+    <label for="zip">ZIP</label>
+    <input id="zip" type="text">
+    <button type="button" id="to2">Next: Payment</button>
+  </fieldset>
+</div>
+<div id="step2" class="step hidden">
+  <fieldset><legend>2. Payment</legend>
+    <label for="card">Card number</label>
+    <input id="card" type="text">
+    <label for="method">Shipping method</label>
+    <select id="method">
+      <option value="standard">Standard (5-7 days)</option>
+      <option value="express">Express (2 days)</option>
+    </select>
+    <button type="button" id="to3">Next: Review</button>
+  </fieldset>
+</div>
+<div id="step3" class="step hidden">
+  <fieldset><legend>3. Review &amp; confirm</legend>
+    <p id="summary"></p>
+    <button type="button" id="confirm">Confirm order</button>
+  </fieldset>
+</div>
+<div id="done" class="hidden">Order confirmed.</div>
+
+<script>
+var state = { step: 1, addr: '', city: '', zip: '', card: '', method: '', confirmed: false };
+function show(n) {
+  [1,2,3].forEach(function(i) {
+    document.getElementById('step' + i).classList.toggle('hidden', i !== n);
+  });
+  state.step = n;
+}
+document.getElementById('to2').addEventListener('click', function() {
+  state.addr = document.getElementById('addr').value;
+  state.city = document.getElementById('city').value;
+  state.zip = document.getElementById('zip').value;
+  show(2);
+});
+document.getElementById('to3').addEventListener('click', function() {
+  state.card = document.getElementById('card').value;
+  state.method = document.getElementById('method').value;
+  document.getElementById('summary').textContent =
+    state.addr + ', ' + state.city + ' ' + state.zip + ' — ' + state.method;
+  show(3);
+});
+document.getElementById('confirm').addEventListener('click', function() {
+  state.confirmed = true;
+  document.getElementById('done').classList.remove('hidden');
+});
+window.__bench_state = function() { return state; };
+window.__bench_verify = function() {
+  var t = {"addr": "8 River Rd", "city": "Miami", "zip": "33101", "card": "4111111111111119", "method": "standard"};
+  return state.addr === t.addr && state.city === t.city && state.zip === t.zip &&
+         state.card === t.card && state.method === t.method && state.confirmed === true;
+};
+</script>
+</body></html>

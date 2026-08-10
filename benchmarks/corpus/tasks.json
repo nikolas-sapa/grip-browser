@@ -1,0 +1,242 @@
+[
+  {
+    "id": "form-01",
+    "category": "form",
+    "file": "form_01.html",
+    "goal": "Fill in the form: full name 'Ada Lovelace', email 'ada@example.com', phone '5550101', role 'Engineer', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-02",
+    "category": "form",
+    "file": "form_02.html",
+    "goal": "Fill in the form: full name 'Grace Hopper', email 'grace@example.com', phone '5550102', role 'Engineer', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-03",
+    "category": "form",
+    "file": "form_03.html",
+    "goal": "Fill in the form: full name 'Margaret Hamilton', email 'margaret@example.com', phone '5550103', role 'Manager', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-04",
+    "category": "form",
+    "file": "form_04.html",
+    "goal": "Fill in the form: full name 'Katherine Johnson', email 'katherine@example.com', phone '5550104', role 'Engineer', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-05",
+    "category": "form",
+    "file": "form_05.html",
+    "goal": "Fill in the form: full name 'Radia Perlman', email 'radia@example.com', phone '5550105', role 'Engineer', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-06",
+    "category": "form",
+    "file": "form_06.html",
+    "goal": "Fill in the form: full name 'Barbara Liskov', email 'barbara@example.com', phone '5550106', role 'Designer', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-07",
+    "category": "form",
+    "file": "form_07.html",
+    "goal": "Fill in the form: full name 'Shafi Goldwasser', email 'shafi@example.com', phone '5550107', role 'Manager', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-08",
+    "category": "form",
+    "file": "form_08.html",
+    "goal": "Fill in the form: full name 'Frances Allen', email 'frances@example.com', phone '5550108', role 'Engineer', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-09",
+    "category": "form",
+    "file": "form_09.html",
+    "goal": "Fill in the form: full name 'Adele Goldberg', email 'adele@example.com', phone '5550109', role 'Designer', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "form-10",
+    "category": "form",
+    "file": "form_10.html",
+    "goal": "Fill in the form: full name 'Jean Bartik', email 'jean@example.com', phone '5550110', role 'Other', and check the newsletter subscription box. Then click Review & Submit.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 6
+  },
+  {
+    "id": "spa-01",
+    "category": "spa",
+    "file": "spa_01.html",
+    "goal": "Filter the catalog to category 'Toys', sort by price high to low, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-02",
+    "category": "spa",
+    "file": "spa_02.html",
+    "goal": "Filter the catalog to category 'Toys', sort by price high to low, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-03",
+    "category": "spa",
+    "file": "spa_03.html",
+    "goal": "Filter the catalog to category 'Sports', sort by price low to high, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-04",
+    "category": "spa",
+    "file": "spa_04.html",
+    "goal": "Filter the catalog to category 'Electronics', sort by price high to low, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-05",
+    "category": "spa",
+    "file": "spa_05.html",
+    "goal": "Filter the catalog to category 'Sports', sort by price high to low, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-06",
+    "category": "spa",
+    "file": "spa_06.html",
+    "goal": "Filter the catalog to category 'Home', sort by price high to low, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-07",
+    "category": "spa",
+    "file": "spa_07.html",
+    "goal": "Filter the catalog to category 'Electronics', sort by price low to high, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-08",
+    "category": "spa",
+    "file": "spa_08.html",
+    "goal": "Filter the catalog to category 'Toys', sort by price low to high, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-09",
+    "category": "spa",
+    "file": "spa_09.html",
+    "goal": "Filter the catalog to category 'Home', sort by price high to low, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "spa-10",
+    "category": "spa",
+    "file": "spa_10.html",
+    "goal": "Filter the catalog to category 'Toys', sort by price high to low, go to page 1, then click the first item shown on that page to select it.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 4
+  },
+  {
+    "id": "wizard-01",
+    "category": "wizard",
+    "file": "wizard_01.html",
+    "goal": "Complete checkout: shipping address '100 Main St', city 'Springfield', ZIP '62701'. On payment, card number '4111111111111111', shipping method 'Standard (5-7 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-02",
+    "category": "wizard",
+    "file": "wizard_02.html",
+    "goal": "Complete checkout: shipping address '22 Baker St', city 'London', ZIP 'NW16XE'. On payment, card number '4111111111111112', shipping method 'Express (2 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-03",
+    "category": "wizard",
+    "file": "wizard_03.html",
+    "goal": "Complete checkout: shipping address '5 Rue de Paris', city 'Paris', ZIP '75001'. On payment, card number '4111111111111113', shipping method 'Standard (5-7 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-04",
+    "category": "wizard",
+    "file": "wizard_04.html",
+    "goal": "Complete checkout: shipping address '9 Elm St', city 'Boston', ZIP '02108'. On payment, card number '4111111111111114', shipping method 'Express (2 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-05",
+    "category": "wizard",
+    "file": "wizard_05.html",
+    "goal": "Complete checkout: shipping address '3 Oak Ave', city 'Austin', ZIP '73301'. On payment, card number '4111111111111115', shipping method 'Standard (5-7 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-06",
+    "category": "wizard",
+    "file": "wizard_06.html",
+    "goal": "Complete checkout: shipping address '77 King Rd', city 'Toronto', ZIP 'M5H2N2'. On payment, card number '4111111111111116', shipping method 'Express (2 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-07",
+    "category": "wizard",
+    "file": "wizard_07.html",
+    "goal": "Complete checkout: shipping address '15 Park Ln', city 'Seattle', ZIP '98101'. On payment, card number '4111111111111117', shipping method 'Standard (5-7 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-08",
+    "category": "wizard",
+    "file": "wizard_08.html",
+    "goal": "Complete checkout: shipping address '42 Hill St', city 'Denver', ZIP '80201'. On payment, card number '4111111111111118', shipping method 'Express (2 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-09",
+    "category": "wizard",
+    "file": "wizard_09.html",
+    "goal": "Complete checkout: shipping address '8 River Rd', city 'Miami', ZIP '33101'. On payment, card number '4111111111111119', shipping method 'Standard (5-7 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  },
+  {
+    "id": "wizard-10",
+    "category": "wizard",
+    "file": "wizard_10.html",
+    "goal": "Complete checkout: shipping address '61 Lake Ave', city 'Chicago', ZIP '60601'. On payment, card number '4111111111111120', shipping method 'Express (2 days)'. Review and confirm the order.",
+    "verify": "window.__bench_verify()",
+    "min_actions": 7
+  }
+]

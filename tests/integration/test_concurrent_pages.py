@@ -12,6 +12,7 @@ import uuid
 import pytest
 
 from grip.browser import Browser
+from grip.cdp.launcher import _STEALTH_UA
 
 # data: is refused by the navigation policy (attacker-controlled markup in page
 # context); a real file on disk gives each tab a distinct URL just as well.
@@ -81,34 +82,48 @@ async def test_close_releases_the_tab():
         assert browser._pages == []
 
 
-@pytest.mark.asyncio
-async def test_stealth_is_off_by_default():
-    """grip is a general SDK — masking automation must be an explicit choice."""
-    async with Browser(headless=True, allow_file=True) as browser:
-        page = await browser.open("about:blank")
-        r = await page._engine.send(
-            "Runtime.evaluate",
-            {"expression": "navigator.webdriver", "returnByValue": True},
-        )
-        assert r["result"]["value"] is True
+async def _webdriver_and_ua(browser) -> tuple[bool, str]:
+    page = await browser.open("about:blank")
+    r = await page._engine.send(
+        "Runtime.evaluate",
+        {
+            "expression": "JSON.stringify([navigator.webdriver, navigator.userAgent])",
+            "returnByValue": True,
+        },
+    )
+    import json as _json
+
+    webdriver, ua = _json.loads(r["result"]["value"])
+    return webdriver, ua
 
 
 @pytest.mark.asyncio
-async def test_stealth_removes_the_two_free_tells():
-    async with Browser(headless=True, stealth=True, allow_file=True) as browser:
-        page = await browser.open("about:blank")
-        r = await page._engine.send(
-            "Runtime.evaluate",
-            {
-                "expression": "JSON.stringify([navigator.webdriver, navigator.userAgent])",
-                "returnByValue": True,
-            },
-        )
-        import json as _json
+async def test_stealth_changes_the_two_free_tells():
+    """grip is a general SDK — masking automation must be an explicit choice.
 
-        webdriver, ua = _json.loads(r["result"]["value"])
-        assert webdriver is False
-        assert "Headless" not in ua
+    navigator.webdriver's *default* value (true/false) is a Chrome-build
+    fact, not something this test can pin: the machine that wrote it may
+    resolve a pinned Chrome for Testing via _CACHED_CHROME_GLOBS, CI resolves
+    whatever `google-chrome` is on PATH, and
+    --disable-blink-features=AutomationControlled has no stable cross-version
+    effect on that flag. So this only asserts stealth *changes* webdriver
+    relative to the non-stealth baseline captured in the same run, plus the
+    one thing that is deterministic: the UA string.
+    """
+    async with Browser(headless=True, allow_file=True) as baseline_browser:
+        baseline_webdriver, baseline_ua = await _webdriver_and_ua(baseline_browser)
+
+    async with Browser(headless=True, stealth=True, allow_file=True) as stealth_browser:
+        stealth_webdriver, stealth_ua = await _webdriver_and_ua(stealth_browser)
+
+    assert stealth_webdriver != baseline_webdriver, (
+        f"stealth=True did not change navigator.webdriver (stayed {stealth_webdriver!r})"
+    )
+    # The two fully deterministic facts here, independent of Chrome build/version:
+    # stealth passes _STEALTH_UA verbatim via --user-agent=, and non-stealth does not.
+    assert stealth_ua == _STEALTH_UA
+    assert baseline_ua != _STEALTH_UA
+    assert "Headless" not in stealth_ua
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Form task 8</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  fieldset { border: 1px solid #ccc; border-radius: 8px; margin-bottom: 16px; padding: 16px; }
+  label { display: block; margin: 8px 0 4px; font-size: 14px; }
+  input, select, textarea { width: 100%; padding: 8px; box-sizing: border-box; font-size: 14px; }
+  button { padding: 10px 18px; font-size: 14px; cursor: pointer; margin-top: 8px; }
+  .hidden { display: none; }
+  .item { border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin: 6px 0; }
+  .item.selected { border-color: #006bff; background: #eef5ff; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 6px; border-bottom: 1px solid #eee; }
+</style></head>
+<body>
+<h2>Form task 8</h2>
+
+<form id="f">
+  <label for="full_name">Full name</label>
+  <input id="full_name" name="full_name" type="text">
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email">
+  <label for="phone">Phone</label>
+  <input id="phone" name="phone" type="tel">
+  <label for="role">Role</label>
+  <select id="role" name="role">
+    <option value="">Select...</option>
+    <option value="engineer">Engineer</option>
+    <option value="designer">Designer</option>
+    <option value="manager">Manager</option>
+    <option value="other">Other</option>
+  </select>
+  <label><input id="newsletter" name="newsletter" type="checkbox"> Subscribe to newsletter</label>
+  <label for="notes">Notes</label>
+  <textarea id="notes" name="notes" rows="3"></textarea>
+  <button type="button" id="submit_btn">Review &amp; Submit</button>
+</form>
+<div id="result" class="hidden">Submitted.</div>
+
+<script>
+document.getElementById('submit_btn').addEventListener('click', function() {
+  document.getElementById('result').classList.remove('hidden');
+});
+window.__bench_state = function() {
+  return {
+    full_name: document.getElementById('full_name').value,
+    email: document.getElementById('email').value,
+    phone: document.getElementById('phone').value,
+    role: document.getElementById('role').value,
+    newsletter: document.getElementById('newsletter').checked,
+    notes: document.getElementById('notes').value,
+    submitted: !document.getElementById('result').classList.contains('hidden')
+  };
+};
+window.__bench_verify = function() {
+  var s = window.__bench_state();
+  var t = {"full_name": "Frances Allen", "email": "frances@example.com", "phone": "5550108", "role": "engineer", "newsletter": true};
+  return s.full_name === t.full_name && s.email === t.email &&
+         s.phone === t.phone && s.role === t.role &&
+         s.newsletter === t.newsletter && s.submitted === true;
+};
+</script>
+</body></html>

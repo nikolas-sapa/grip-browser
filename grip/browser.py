@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Self
 from grip.cdp.engine import CDPEngine
 from grip.cdp.launcher import ChromeLauncher, default_launch_timeout
 from grip.page import Page
-from grip.security.policy import NavigationPolicy
+from grip.security.policy import NavigationPolicy, enforce as enforce_navigation
 from grip.trace import Trace
 
 if TYPE_CHECKING:
@@ -181,8 +181,7 @@ class Browser:
             # a non-http scheme cannot be laundered into an allowed one.
             url = "https://" + url
 
-        if reason := self._policy.check(url):
-            raise ValueError(f"navigation refused: {reason}")
+        enforce_navigation(self._policy, url)
 
         result = await self._engine.send("Target.createTarget", {"url": "about:blank"})
         target_id = result["targetId"]
@@ -196,6 +195,7 @@ class Browser:
             safe=self._safe,
             closer=self._close_target,
             block_resources=self._block_resources,
+            policy=self._policy,
         )
         self._pages.append(page)
         try:
@@ -232,9 +232,23 @@ class Browser:
             await self._engine.send("Target.closeTarget", {"targetId": target_id})
         self._pages = [p for p in self._pages if p._target_id != target_id]
 
+    @property
+    def pages(self) -> tuple[Page, ...]:
+        """Open tabs, oldest first. A snapshot copy — closing/opening tabs
+        after reading this does not retroactively change it; call again."""
+        return tuple(self._pages)
+
+    def get_page(self, target_id: str) -> Page | None:
+        """Look up an open tab by the target_id it was opened with, or None."""
+        for page in self._pages:
+            if page._target_id == target_id:
+                return page
+        return None
+
     async def run(self, goal: str, url: str) -> RunResult:
         from grip.runner import Runner
-        assert self._llm is not None, "Browser.run() requires an llm adapter"
+        if self._llm is None:
+            raise RuntimeError("Browser.run() requires an llm adapter")
         page = await self.open(url)
         runner = Runner(llm=self._llm, page=page, trace=self.trace)
         return await runner.run(goal)
@@ -261,6 +275,13 @@ class Browser:
                 await self._launcher.aterminate()
                 self._launcher = None
 
+    @staticmethod
+    def _origin_of(url: str) -> str | None:
+        parts = urllib.parse.urlsplit(url)
+        if not parts.scheme or not parts.netloc:
+            return None
+        return f"{parts.scheme}://{parts.netloc}"
+
     async def save_session(self, path: str) -> None:
         if not self._engine:
             raise RuntimeError("Browser is not connected. Use open() or async with first.")
@@ -270,15 +291,61 @@ class Browser:
         result = await self._engine.send("Storage.getCookies", {})
         cookies = result.get("cookies", [])
 
+        # localStorage has no browser-level endpoint the way cookies do — it
+        # only exists inside a renderer bound to one origin, so the only origins
+        # we can capture are the ones with a tab open right now. (Confirmed
+        # against real Chrome: DOMStorage.setDOMStorageItem/getDOMStorageItems
+        # from one tab's session targeting a *different* origin's storageId
+        # fails with "Frame not found for the given storage id" — cross-origin
+        # access isn't available at all, same-origin or nothing.) A save with
+        # no open tabs captures cookies only, same as before this change.
+        #
+        # sessionStorage is deliberately excluded: it's scoped to one browsing
+        # context, not one origin, so there is no origin-keyed slot to restore
+        # it into that means anything. IndexedDB is out of scope too — much
+        # larger surface, structured-clone semantics, not attempted here.
+        origins: dict[str, dict[str, dict[str, str]]] = {}
+        for page in self._pages:
+            # page._current_url is only populated by snapshot() — forcing one
+            # here just to read a URL would be a real side effect (ref-registry
+            # reset, a full DOM walk) for a save call. Target.getTargetInfo is
+            # the CDP-native way to ask a target its URL without touching the
+            # page at all.
+            info = await self._engine.send(
+                "Target.getTargetInfo", {"targetId": page._target_id}
+            )
+            origin = self._origin_of(info.get("targetInfo", {}).get("url", ""))
+            if origin is None or origin in origins:
+                continue
+            local = await page._engine.send(
+                "Runtime.evaluate",
+                {
+                    "expression": "JSON.stringify(Object.assign({}, window.localStorage))",
+                    "returnByValue": True,
+                },
+            )
+            raw = local.get("result", {}).get("value")
+            if not raw:
+                continue
+            items = json.loads(raw)
+            if items:
+                origins[origin] = {"localStorage": items}
+
         def _write() -> None:
-            # Cookies carry session tokens; never leave them world-readable.
-            # O_CREAT's mode applies only to a new inode, and re-saving over an
-            # existing 0644 file is the common path — fchmod on the fd we already
-            # hold tightens it with no path-race window.
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # Cookies (and now localStorage) carry session tokens; never leave
+            # them world-readable. O_CREAT's mode applies only to a new inode,
+            # and re-saving over an existing 0644 file is the common path —
+            # fchmod on the fd we already hold tightens it with no path-race
+            # window. O_NOFOLLOW refuses a pre-planted symlink at `path` rather
+            # than following it and writing the session blob somewhere else.
+            # O_EXCL is deliberately not added: re-saving over an existing
+            # session file is the normal, expected path here, not an error.
+            fd = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+            )
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as f:
-                json.dump(cookies, f, indent=2)
+                json.dump({"cookies": cookies, "origins": origins}, f, indent=2)
 
         await asyncio.to_thread(_write)
 
@@ -286,15 +353,75 @@ class Browser:
         if not self._engine:
             raise RuntimeError("Browser is not connected. Use open() or async with first.")
 
-        def _read() -> list[dict[str, Any]]:
+        def _read() -> Any:
             with Path(path).open() as f:
-                cookies: list[dict[str, Any]] = json.load(f)
-                return cookies
+                data: Any = json.load(f)
+                return data
 
         try:
-            cookies = await asyncio.to_thread(_read)
+            data = await asyncio.to_thread(_read)
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Session file not found: {path}") from e
         except json.JSONDecodeError as e:
             raise ValueError(f"Session file is not valid JSON: {path}") from e
+
+        # Old session files are a bare cookie list — the shape itself is the
+        # version marker, since old files predate any format with a version
+        # field to check. New files are a dict with "cookies" and "origins".
+        if isinstance(data, list):
+            cookies: list[dict[str, Any]] = data
+            origins: dict[str, dict[str, dict[str, str]]] = {}
+        elif isinstance(data, dict):
+            cookies = data.get("cookies", [])
+            origins = data.get("origins", {})
+        else:
+            raise ValueError(
+                f"Session file has an unrecognized shape: {path} "
+                "(expected a cookie list or a {{cookies, origins}} object)"
+            )
+
+        if not isinstance(cookies, list):
+            raise ValueError(f"Session file 'cookies' must be a list: {path}")
+        if not isinstance(origins, dict):
+            raise ValueError(f"Session file 'origins' must be an object: {path}")
+
         await self._engine.send("Storage.setCookies", {"cookies": cookies})
+
+        for origin, storage in origins.items():
+            if not isinstance(storage, dict):
+                raise ValueError(
+                    f"Session file 'origins[{origin!r}]' must be an object: {path}"
+                )
+            local_items = storage.get("localStorage", {})
+            if not local_items:
+                continue
+            if not isinstance(local_items, dict):
+                raise ValueError(
+                    f"Session file 'origins[{origin!r}].localStorage' must be "
+                    f"an object: {path}"
+                )
+            # Restoring localStorage needs a live document at that origin —
+            # same constraint as the read side. Reuse an already-open tab at
+            # this origin if there is one; otherwise open one just for the
+            # restore and close it again, so a failed or successful restore
+            # never leaves a tab behind that Browser.pages didn't have before.
+            page = None
+            for candidate in self._pages:
+                info = await self._engine.send(
+                    "Target.getTargetInfo", {"targetId": candidate._target_id}
+                )
+                if self._origin_of(info.get("targetInfo", {}).get("url", "")) == origin:
+                    page = candidate
+                    break
+            opened_here = page is None
+            if page is None:
+                page = await self.open(origin)
+            try:
+                expr = "".join(
+                    f"window.localStorage.setItem({json.dumps(k)}, {json.dumps(v)});"
+                    for k, v in local_items.items()
+                )
+                await page._engine.send("Runtime.evaluate", {"expression": expr})
+            finally:
+                if opened_here:
+                    await page.close()

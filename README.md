@@ -115,7 +115,7 @@ three runs and what this does not measure:
 
 **How does it cut tokens?** It sends the model only interactive elements (inputs, buttons, links) and visible text, indexed for fuzzy matching — not the full HTML tree, not a screenshot. On 2026-08-10 a trivial page like example.com came out at 50 tokens against 167 raw; the Wikipedia article on Python, the heaviest page in the corpus, came out at 19,946 against 459,193 raw.
 
-**Which LLMs does it work with?** Anthropic and OpenAI adapters ship in the box; any model works via the `LLMAdapter` protocol.
+**Which LLMs does it work with?** Anthropic, OpenAI, and Gemini adapters ship in the box, plus any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, OpenRouter, Together, Groq, ...) via `base_url`; any other model works via the `LLMAdapter` protocol.
 
 **Does it handle CAPTCHAs / bot blocks?** It detects and classifies them (`page.detect_challenge()`), and returns a typed error with a suggested recovery action (escalate, backoff, rotate). `page.solve_challenge()` attempts checkbox, Turnstile and slider stages in-process and only reports success it can verify; image-grid and text challenges come back to your model with a screenshot. No third-party solving service is used, and success rates are unmeasured — see [Challenges and automation tells](#challenges-and-automation-tells).
 
@@ -462,14 +462,27 @@ browser.trace.to_jsonl("audit.jsonl")  # machine-readable audit log
 
 ## LLM adapters
 
-grip ships with OpenAI and Anthropic adapters out of the box:
+grip ships with OpenAI, Anthropic, and Gemini adapters out of the box:
 
 ```python
 from grip.adapters.openai import OpenAIAdapter
 from grip.adapters.anthropic import AnthropicAdapter
+from grip.adapters.gemini import GeminiAdapter
 
-llm = OpenAIAdapter(api_key="sk-...")         # gpt-4o, gpt-4-turbo, etc.
-llm = AnthropicAdapter(api_key="sk-ant-...")  # claude-opus-4-7, etc.
+llm = OpenAIAdapter(api_key="sk-...")            # gpt-4o, gpt-4-turbo, etc.
+llm = AnthropicAdapter(api_key="sk-ant-...")     # claude-opus-4-7, etc.
+llm = GeminiAdapter(api_key="...")               # gemini-2.0-flash, etc.
+```
+
+`OpenAIAdapter` also takes a `base_url`, which is all that's needed to talk to
+any OpenAI-compatible endpoint — Ollama, vLLM, LM Studio, OpenRouter,
+Together, Groq, and anything else speaking the OpenAI wire format:
+
+```python
+llm = OpenAIAdapter(model="llama3", base_url="http://localhost:11434/v1")
+# api_key defaults to a placeholder when base_url is set, since most local
+# servers don't check it; pass one explicitly for hosted OpenAI-compatible
+# providers that do (OpenRouter, Together, Groq, ...).
 ```
 
 Or bring your own by implementing the `LLMAdapter` protocol:
@@ -503,7 +516,23 @@ pip install grip-browser[openai]
 
 # with Anthropic support
 pip install grip-browser[anthropic]
+
+# with Gemini support
+pip install grip-browser[gemini]
+
+# as an MCP server
+pip install grip-browser[mcp]
 ```
+
+---
+
+## MCP Server
+
+`grip-mcp` runs grip as a stdio MCP server — eight tools (`open`, `goto`,
+`snapshot`, `click`, `type`, `read`, `screenshot`, `run`), the same delta
+compression as the SDK, and no session registry (one browser, one page, per
+process). Copy-paste config for Claude Code, Claude Desktop, and Cursor, plus
+the full tool reference: **[docs/mcp.md](docs/mcp.md)**.
 
 ---
 

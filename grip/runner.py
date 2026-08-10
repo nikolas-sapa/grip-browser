@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from grip.adapters.base import LLMAdapter
-from grip.compression.delta import format_delta, is_worth_sending
 from grip.compression.summarizer import Summarizer
 from grip.errors import GripError
 from grip.page import Page
@@ -103,35 +102,13 @@ class Runner:
     # Turn 2 onward, the model already has the page in context; re-sending it costs
     # the full snapshot every turn and, because the transcript grows, re-sends every
     # earlier one too. Measured at 89% of prompt tokens by turn 20.
+    #
+    # The delta-vs-snapshot decision itself lives on Page.payload() — grip.mcp.server
+    # needs the identical logic and used to carry its own copy, which is exactly the
+    # kind of drift a shared implementation exists to prevent.
     def _page_payload(self) -> str:
-        snap = self._page._current_snapshot
-        delta = self._page.delta
-        if snap is None:
-            # Every path here snapshots first — run() before the opening message,
-            # _dispatch after each action. Reaching this means a new caller skipped
-            # that. Deliberately not a GripError: run() converts those into a tool
-            # result and keeps going, which would hand the model an empty page as
-            # if it were the truth. This is a bug in the caller, not a page state.
-            raise RuntimeError(
-                "_page_payload called before any snapshot; the page has no state to send"
-            )
-        rendered_snapshot = self._summarizer.format(snap)
-        # A delta is only readable against a baseline the model actually received.
-        # click()/type() snapshot implicitly when the ref cache is cold (which is
-        # the state goto() leaves behind), advancing the page's baseline without
-        # emitting anything. "A delta exists" is therefore not the same question
-        # as "the model can apply it", and getting that wrong describes refs it
-        # has never seen.
-        if delta is not None and delta.previous_version == self._last_sent_version:
-            rendered_delta = format_delta(delta)
-            # Falling through to the snapshot has to move the baseline to the
-            # snapshot's version, not the delta's: the model is being shown the
-            # full page, and the next delta must be written against that.
-            if is_worth_sending(rendered_delta, rendered_snapshot):
-                self._last_sent_version = delta.version
-                return rendered_delta
-        self._last_sent_version = snap.version
-        return rendered_snapshot
+        text, self._last_sent_version = self._page.payload(self._last_sent_version)
+        return text
 
     # A delta describes a change against the state the model was last shown, so
     # only the newest full snapshot has to stay verbatim. Older ones are the same

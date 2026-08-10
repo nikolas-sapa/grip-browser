@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 from urllib.parse import urlparse
+
+from grip.errors.types import BrowserError, ErrorType, GripError
 
 # The metadata addresses are the ones that matter on a cloud runner:
 # 169.254.169.254 is the AWS/GCP/Azure instance metadata endpoint, 169.254.170.2
 # is ECS's. Reaching either from a page the agent was told to visit hands out
 # credentials.
 _METADATA_HOSTS = {"169.254.169.254", "169.254.170.2", "metadata.google.internal"}
+
+
+def _canonical_ipv4(host: str) -> str | None:
+    """Normalize IPv4 spellings Chrome/inet_aton accept but ipaddress.ip_address
+    rejects — decimal (2130706433), octal (0177.0.0.1), hex (0x7f000001), and
+    short dotted-quad (127.1) — to a canonical dotted-quad string. Matches
+    inet_aton's a / a.b / a.b.c / a.b.c.d parsing (trailing part fills the
+    remaining bits). Returns None if `host` isn't an inet_aton-parseable IPv4
+    form, in which case it's either a normal dotted-quad, an IPv6 literal, or
+    a DNS name — all handled unchanged below."""
+    try:
+        return socket.inet_ntoa(socket.inet_aton(host))
+    except (OSError, UnicodeError):
+        return None
 
 
 class NavigationPolicy:
@@ -18,22 +35,37 @@ class NavigationPolicy:
     A default-open policy makes every "summarize this URL" feature an SSRF plus
     a local-file read.
 
-    Two residual gaps, stated plainly rather than implied away:
+    One residual gap, stated plainly rather than implied away:
 
     * A DNS name is resolved inside Chrome, so this policy never sees the
       address the request lands on. `internal.corp.example` pointing at
       10.0.0.5 passes. Pinning the resolved IP would mean resolving here and
       forcing Chrome onto that address; that is out of scope.
-    * Only the URL handed to open() is checked. A public URL that 302s to
-      169.254.169.254 is not caught — redirects happen inside Chrome, same
-      blind spot.
 
-    So this closes the direct-navigation hole, not the whole SSRF class.
+    * WebSocket handshakes are not covered. CDP's Fetch domain — the
+      mechanism Page uses to pause and refuse a request before it leaves
+      (see Page._ensure_fetch_interception) — does not intercept
+      `Fetch.requestPaused` for WebSocket upgrades; this is a Chromium
+      limitation, not a gap in how Page wires it up. Page JS running
+      `new WebSocket('ws://169.254.169.254/')` reaches the internal host
+      regardless of this policy. There is no in-process fix for this.
+
+    Every navigation entry point (Browser.open(), Page.goto(), and each
+    Document-level redirect leg) runs the URL through `enforce()` below, so a
+    302 from a public URL to 169.254.169.254 is refused too — see Page.goto().
     """
 
     def __init__(self, allow_private: bool = False, allow_file: bool = False) -> None:
         self._allow_private = allow_private
         self._allow_file = allow_file
+
+    @property
+    def allow_private(self) -> bool:
+        """Whether this policy has anything left to enforce against private/
+        loopback/link-local targets. Callers that gate expensive enforcement
+        machinery (e.g. Page's Fetch-domain interception) on "is this policy
+        actually restrictive" read this instead of reaching into `_allow_private`."""
+        return self._allow_private
 
     def check(self, url: str) -> str | None:
         """Return a human-readable refusal reason, or None if the URL is allowed."""
@@ -53,17 +85,36 @@ class NavigationPolicy:
                 return None
             return f"scheme {parsed.scheme!r} is not allowed (http/https only)"
         host = parsed.hostname or ""
-        if host in _METADATA_HOSTS:
+        # Canonicalize before any check below: 2130706433, 0177.0.0.1,
+        # 0x7f000001 and 127.1 are all loopback to Chrome (inet_aton
+        # semantics) but ipaddress.ip_address rejects every one of them,
+        # which used to fall through to the "it's a DNS name" branch.
+        check_host = _canonical_ipv4(host) or host
+        if check_host in _METADATA_HOSTS:
             return f"{host} is a cloud metadata endpoint"
         if host == "localhost" or host.endswith(".localhost"):
             if not self._allow_private:
                 return "localhost is not allowed (pass allow_private=True to permit)"
             return None
         try:
-            addr = ipaddress.ip_address(host)
+            addr = ipaddress.ip_address(check_host)
         except ValueError:
             # A DNS name — see the class docstring for why this is a pass.
             return None
         if (addr.is_private or addr.is_loopback or addr.is_link_local) and not self._allow_private:
             return f"{host} is a private or internal address"
         return None
+
+
+def enforce(policy: NavigationPolicy, url: str) -> None:
+    """Raise if `policy` refuses `url`. The one place that turns a refusal
+    reason into a typed error, so every navigation entry point — Browser.open(),
+    Page.goto(), and its redirect-leg recheck — raises the same GripError
+    instead of each growing its own ValueError/RuntimeError."""
+    if reason := policy.check(url):
+        raise GripError(BrowserError(
+            type=ErrorType.NAVIGATION_REFUSED,
+            message=f"navigation refused: {reason}",
+            confidence=1.0,
+            recovery=[],
+        ))

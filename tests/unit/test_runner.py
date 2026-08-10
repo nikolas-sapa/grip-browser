@@ -20,6 +20,7 @@ def make_page_mock():
     snap.tokens_estimated = 40
     snap.version = 1
     page.snapshot.return_value = snap
+    page.payload = MagicMock(return_value=("PAGE: mock", 1))
     return page
 
 
@@ -73,6 +74,11 @@ class FakePage:
         self._previous_snapshot = snap
         self._current_snapshot = snap
         return snap
+
+    def payload(self, last_sent_version):
+        from grip.compression.summarizer import Summarizer
+        from grip.page import render_payload
+        return render_payload(self._current_snapshot, self.delta, last_sent_version, Summarizer())
 
     async def click(self, target):
         # The real Page.click snapshots itself when the ref cache is cold, which is
@@ -346,9 +352,14 @@ async def test_read_tool_returns_prose_not_a_document_repr():
 
 
 def _payload_with(delta, snapshot, last_sent):
-    runner = Runner(llm=MagicMock(), page=MagicMock(), trace=Trace())
-    runner._page._current_snapshot = snapshot
-    runner._page.delta = delta
+    from grip.compression.summarizer import Summarizer
+    from grip.page import render_payload
+
+    page = MagicMock()
+    page._current_snapshot = snapshot
+    page.delta = delta
+    page.payload = lambda last_sent_version: render_payload(snapshot, delta, last_sent_version, Summarizer())
+    runner = Runner(llm=MagicMock(), page=page, trace=Trace())
     runner._last_sent_version = last_sent
     return runner, runner._page_payload()
 

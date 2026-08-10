@@ -38,7 +38,20 @@ class CDPEngine:
             await self._ws.close()
             self._ws = None
 
-    async def send(self, method: str, params: dict[str, Any] | None = None) -> Any:
+    async def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        """`session_id` addresses a flattened child session (Target.setAutoAttach
+        with flatten=True) sharing this same websocket — CDPEngine has always been
+        one connection per CDP target, and this does not change that. It only lets
+        a caller that already holds a browser- or page-level connection reach a
+        session Chrome attached on top of it (a popup paused via
+        waitForDebuggerOnStart, an OOPIF) without opening a second websocket.
+        Response ids are unique per connection regardless of session, so the
+        existing _pending lookup needs no changes to keep working."""
         if self._ws is None:
             raise RuntimeError("CDPEngine is not connected. Call connect() first.")
         if self._closed_reason is not None:
@@ -48,7 +61,10 @@ class CDPEngine:
         msg_id = self._next_id()
         fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[msg_id] = fut
-        payload = json.dumps({"id": msg_id, "method": method, "params": params or {}})
+        message: dict[str, Any] = {"id": msg_id, "method": method, "params": params or {}}
+        if session_id is not None:
+            message["sessionId"] = session_id
+        payload = json.dumps(message)
         await self._ws.send(payload)
         try:
             return await asyncio.wait_for(fut, timeout=30.0)
