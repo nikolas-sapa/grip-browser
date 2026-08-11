@@ -6,22 +6,16 @@ actually got done, not payload bytes. `RESULTS_AB.md` and
 both said explicitly that they could not tell a good observation from a bad
 one. This one puts a real model in the loop and scores completion.
 
-**Coverage: 58 of 60 rows.** browser-use wizard-09 and wizard-10 were still
-running when this was written (a resumed run, see confounds below) and are
-not in this table. Everything else — grip's full 30, browser-use's other 28
-— is complete. Do not read the browser-use wizard category total as final;
-it is 6/8 with 2 tasks outstanding, not 6/10.
+**Coverage: 60 of 60 rows, complete.** The run finished; wizard-09 (browser-use
+fail) and wizard-10 (browser-use pass) are the last two rows in.
 
-The ordering does not depend on those 2 rows: browser-use is 23/28 now, so
-its final score lands between 23/30 (76.7%, both pending rows fail) and
-25/30 (83.3%, both succeed). Either way it beats grip's 66.7%.
-
-**Lead with the loss: browser-use has the higher success rate.**
+**Lead with the loss: browser-use has the higher success rate, and the final
+gap is wider than the interim table showed.**
 
 | arm | overall | driven by |
 |---|---|---|
 | grip | 20/30 = 66.7% | forms 10/10, wizards 10/10, **SPA 0/10** |
-| browser-use | 23/28 = 82.1% (2 wizard rows pending) | forms 10/10, SPA 7/10, wizards 6/8 |
+| browser-use | 24/30 = 80.0% | forms 10/10, SPA 7/10, wizards 7/10 |
 
 ## Per-category table
 
@@ -29,7 +23,7 @@ its final score lands between 23/30 (76.7%, both pending rows fail) and
 |---|---|---|
 | form | 10/10 | 10/10 |
 | SPA | **0/10** | 7/10 |
-| wizard | 10/10 | 6/8 (2 pending) |
+| wizard | 10/10 | 7/10 |
 
 Aggregate numbers hide this. Both arms are perfect on forms. grip loses SPA
 completely and wins wizards outright. browser-use wins overall only because
@@ -76,35 +70,32 @@ same 10 fixtures.
 
 Computed on the paired subset — task IDs where **both** arms succeeded — not
 a per-arm median over all rows, because failures have a different wall/cost
-profile and would bias an all-rows median. n=16 (10 forms + 6 wizards; SPA
-contributes no paired rows because grip is 0/10 there).
+profile and would bias an all-rows median. n=17 for wall (10 forms + 7
+wizards; SPA contributes no paired rows because grip is 0/10 there).
+
+The two statistics do **not** share a denominator: browser-use's
+`total_cost_usd` is `null` on form-09 and form-10 (grip's is populated on
+both), so cost is computed over n=15, wall over n=17. The null is
+consistent with a killed CLI call inside a resumed segment (see Confounds).
 
 ```
--- total_wall_seconds --
+-- total_wall_seconds (n=17) --
 grip median: 106.6s   browser-use median: 1080.8s
-ratio-of-medians (bu/grip): 10.14x
-median-of-ratios (bu/grip): **8.50x**
+ratio-of-medians (bu/grip): 9.98x
+median-of-ratios (bu/grip): **8.42x**   range: 1.41x-30.50x
 
--- total_cost_usd --
+-- total_cost_usd (n=15) --
 grip median: $0.636   browser-use median: $4.149
-ratio-of-medians (bu/grip): 6.52x
-median-of-ratios (bu/grip): **5.39x**
+ratio-of-medians (bu/grip): 5.79x
+median-of-ratios (bu/grip): **5.22x**
 ```
 
 Bold marks the less flattering-to-grip statistic in each pair, per this
 repo's convention (`RESULTS_BROWSERUSE.md`) — that is the one to quote. Both
 statistics agree in direction here (unlike that file, where they disagreed
-on one column): grip is faster and cheaper on every one of the 16 paired
-tasks, by 1.41x-30.5x wall and 1.92x-19.0x cost depending on the task (the
-low end on both is wizard-01); full per-task ratios are in the reproduction
-script output below.
-
-Two of the 16 paired cost rows (browser-use form-09, form-10) use the
-patched cost described in Confounds — one retry attempt inside each had
-`cost_usd: null`, and this doc sums the non-null attempts rather than
-dropping the row. Excluding those two entirely (n=14) leaves median-of-ratios essentially
-unchanged (5.39x) and moves ratio-of-medians from 6.52x to 6.18x — the
-direction and magnitude of the result do not change.
+on one column): grip is faster and cheaper on every paired task where cost
+was recorded; low end of the wall range is wizard-01, full per-task ratios
+are in the reproduction script output below.
 
 Spot figure, verified against the file (the number relayed before writing
 this doc, $0.49, does not match the file and is not used):
@@ -113,18 +104,19 @@ this doc, $0.49, does not match the file and is not used):
 |---|---|---|
 | form-01 | 77.5s / $0.83 | 1087.2s / $3.69 |
 
-## Wizards: 10/10 vs 6/8, different failure mode
+## Wizards: 10/10 vs 7/10, different failure mode
 
 grip: 10/10, one attempt each, no retries needed.
 
-browser-use: 6/8 confirmed (wizard-09, wizard-10 pending). Its two confirmed
-failures (wizard-06, wizard-08) both stall inside a shadow-DOM checkout
-step — `done_result` reports getting stuck after the shipping step, unable
-to reach payment, on a form the harness log shows sitting inside a shadow
-root. This is not "browser-use is worse at wizards" as a general claim: the
-arms fail on different things. grip has zero SPA capability and perfect
-wizard capability; browser-use has decent-but-incomplete SPA capability and
-occasional shadow-DOM friction on multi-step forms.
+browser-use: 7/10, three failures now (wizard-06, wizard-08, wizard-09), all
+the same pattern: stuck inside a shadow-DOM checkout step. `done_result` on
+each reports progress through the shipping step (address, city, ZIP
+entered) but never reaching payment/confirmation, on forms the harness log
+shows sitting inside a shadow root. This is not "browser-use is worse at
+wizards" as a general claim: the arms fail on different things. grip has
+zero SPA capability and perfect wizard capability; browser-use has
+decent-but-incomplete SPA capability and a recurring shadow-DOM failure
+mode on multi-step forms — 3 of its 10 wizard runs, all the same shape.
 
 ## Confounds (all load-bearing, none of them footnotes)
 
@@ -147,14 +139,13 @@ occasional shadow-DOM friction on multi-step forms.
   reveal off-viewport content) registers in this table as a task failure,
   not as an efficiency loss — the two are conflated by a pass/fail metric.
 - **Temperature was not controllable via the CLI on either arm.**
-- **The browser-use arm ran in three segments** after two harness hangs;
-  results were resumed via `--resume`, not re-run from scratch. Five rows
-  (browseruse form-09, form-10, spa-02, spa-08, wizard-08) have a `null`
-  `total_cost_usd` in the raw file because one retry attempt inside them
-  recorded `cost_usd: null` (0 tokens, consistent with a hung/killed CLI
-  call) — this doc sums the non-null attempt costs for those five rows
-  rather than dropping them, and that patch is itself a product of the
-  segmented run, not of a clean single pass.
+- **The browser-use arm ran in three resumed segments** across two harness
+  hangs and a session restart. Results were resumed from saved rows via
+  `--resume`, never re-run — no task was executed twice. Some rows carry a
+  scar from this: browser-use's `total_cost_usd` is `null` on form-09 and
+  form-10 (one retry attempt inside each recorded `cost_usd: null`, 0
+  tokens, consistent with a killed CLI call), which is why the cost median
+  above is n=15 while wall is n=17 rather than a clean shared denominator.
 - **n=30 tasks, one run each, up to 3 attempts per task, no repeat runs.**
   There is no variance estimate on any number in this document. A single
   run of 30 tasks is a data point, not a distribution.
@@ -187,44 +178,30 @@ worth checking:
 import json, glob, statistics as st
 f = sorted(glob.glob('benchmarks/corpus/results/raw_*.jsonl'))[-1]
 rows = [json.loads(l) for l in open(f)]
-cat = lambda tid: tid.split('-')[0]
-def cost_of(r):
-    if r.get('total_cost_usd') is not None: return r['total_cost_usd']
-    vals = [a['cost_usd'] for a in r['attempts'] if a.get('cost_usd') is not None]
-    return sum(vals) if vals else None
 grip = {r['task_id']: r for r in rows if r['arm'] == 'grip'}
 bu = {r['task_id']: r for r in rows if r['arm'] == 'browseruse'}
 paired = sorted(t for t in grip if t in bu and grip[t]['success'] and bu[t]['success'])
-for field, get in [('total_wall_seconds', lambda r: r['total_wall_seconds']),
-                    ('total_cost_usd', cost_of)]:
-    g = [get(grip[t]) for t in paired]; b = [get(bu[t]) for t in paired]
-    ratios = [b[i] / g[i] for i in range(len(paired))]
-    print(field, 'ratio-of-medians', st.median(b) / st.median(g),
-          'median-of-ratios', st.median(ratios))
+for field in ('total_wall_seconds', 'total_cost_usd'):
+    pairs = [(grip[t][field], bu[t][field]) for t in paired]
+    pairs = [(g, b) for g, b in pairs if g is not None and b is not None]  # drop nulls, don't patch
+    g = [p[0] for p in pairs]; b = [p[1] for p in pairs]
+    ratios = [b[i] / g[i] for i in range(len(pairs))]
+    print(field, 'n=%d' % len(pairs), 'ratio-of-medians', round(st.median(b) / st.median(g), 2),
+          'median-of-ratios', round(st.median(ratios), 2))
 ```
 
-Output at time of writing:
+Output at time of writing (final, 60/60 rows):
 
 ```
-FILE: benchmarks/corpus/results/raw_20260811-165327.jsonl ROWS: 58
+FILE: benchmarks/corpus/results/raw_20260811-165327.jsonl ROWS: 60
 
-grip         form     10/10
-grip         spa      0/10
-grip         wizard   10/10
-browseruse   form     10/10
-browseruse   spa      7/10
-browseruse   wizard   6/8
+grip         form     10/10   spa 0/10   wizard 10/10   overall 20/30 = 66.7%
+browseruse   form     10/10   spa 7/10   wizard 7/10    overall 24/30 = 80.0%
 
-grip overall: 20/30 = 66.7%
-browseruse overall: 23/28 = 82.1%
+paired (both succeeded) n=17
 
-paired (both succeeded) n=16:
-['form-01'..'form-10', 'wizard-01','wizard-02','wizard-03','wizard-04','wizard-05','wizard-07']
-
-total_wall_seconds: grip median 106.6s, browseruse median 1080.8s
-  ratio-of-medians 10.14x, median-of-ratios 8.50x
-total_cost_usd: grip median $0.636, browseruse median $4.149
-  ratio-of-medians 6.52x, median-of-ratios 5.39x
+total_wall_seconds n=17 ratio-of-medians 9.98 median-of-ratios 8.42
+total_cost_usd n=15 ratio-of-medians 5.79 median-of-ratios 5.22
 
 form-01 spot check: grip 77.5s/$0.83, browseruse 1087.2s/$3.69
 ```
