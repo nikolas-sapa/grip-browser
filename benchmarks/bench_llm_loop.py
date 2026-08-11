@@ -56,10 +56,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import http.server
 import json
 import os
 import shutil
+import signal
 import socket
 import statistics
 import subprocess
@@ -111,13 +113,31 @@ TASKS_PATH = CORPUS_DIR / "tasks.json"
 
 SCRATCH = Path.home() / "scratch" / "browseruse"
 BU_PYTHON = SCRATCH / ".venv" / "bin" / "python"
-# 1800s (30min) was sized for API calls. A CLI round-trip is ~10-30x slower
-# per turn (subprocess + full session bootstrap each call, see
-# claude_cli_llm.py's docstring on why --resume isn't used to avoid that).
-# This is a safety ceiling for the WHOLE task list run sequentially in one
-# subprocess, not a per-call budget — sized generously; see
-# RESULTS_LLM_LOOP.md for the measured per-turn time this was set against.
-BU_TIMEOUT_SECONDS = 21600  # 6h
+# POSTMORTEM (2026-08-10 overnight run): the browser-use arm ran as ONE
+# subprocess for all 30 tasks with capture_output=True and a single
+# BU_TIMEOUT_SECONDS ceiling for the whole batch. It hung: subprocess.run()'s
+# TimeoutExpired handler kills the *direct* child, but the child's Chromium
+# grandchildren keep the inherited stdout/stderr pipe write-ends open, so the
+# post-kill communicate() drain blocks on read() forever (0.0% CPU, matches
+# what was observed). Worse, the child (browseruse_tasks.py) wasn't in its
+# own process group, so killing the *parent* harness process (as was done to
+# recover) orphaned it instead of terminating it — it kept launching fresh
+# Chromium instances and spending `claude -p` calls, unsupervised, for hours
+# after the parent died. Confirmed via `ps`: the child had PPID 1 (reparented
+# to init) and a live Chromium process only minutes old at investigation
+# time — it was making real progress, just invisible and unkillable through
+# the normal path.
+#
+# Fix: one subprocess PER TASK (not per batch), start_new_session=True so it
+# gets its own process group, stdout/stderr redirected to a per-task LOG FILE
+# instead of PIPE (eliminates the pipe-deadlock class entirely — nothing to
+# drain), and on timeout os.killpg() the whole group, not proc.kill() on the
+# direct child alone. See run_browseruse_tasks below.
+#
+# Sizing: measured worst case is MAX_STEPS turns * LLM_TIMEOUT_SECONDS per
+# attempt, times up to RETRY_BUDGET+1 attempts, plus slack for browser
+# startup/teardown and the post-run verify/state eval calls.
+BU_PER_TASK_TIMEOUT_SECONDS = MAX_STEPS * LLM_TIMEOUT_SECONDS * (RETRY_BUDGET + 1) + 600
 
 # Spliced verbatim into TASK_SCRIPT so the browser-use arm runs the exact
 # same CLI-calling code as the grip arm (see claude_cli_llm.py's docstring).
@@ -496,8 +516,19 @@ async def run_one(task, chrome):
             history = await asyncio.wait_for(
                 agent.run(max_steps=MAX_STEPS), timeout=%(bu_task_timeout)r
             )
-            verify_raw = await eval_js(agent.browser_session, task["verify"])
-            state_raw = await eval_js(agent.browser_session, "window.__bench_state()")
+            # Unguarded post-run CDP calls were part of what let the 2026-08-10
+            # hang go undetected inside a single attempt (see
+            # BU_PER_TASK_TIMEOUT_SECONDS docstring in bench_llm_loop.py) — the
+            # outer process-level watchdog now bounds the whole task either
+            # way, but bounding these individually gives a faster, cleaner
+            # failure (a clear "eval timed out" instead of a killpg) when only
+            # the post-run state read wedges, not the agent loop itself.
+            verify_raw = await asyncio.wait_for(
+                eval_js(agent.browser_session, task["verify"]), timeout=30
+            )
+            state_raw = await asyncio.wait_for(
+                eval_js(agent.browser_session, "window.__bench_state()"), timeout=30
+            )
             # Cost/tokens come from CLI_LEDGER (every real claude-cli call made
             # during this attempt, including browser-use's own summarizer/judge
             # calls if any), not history.usage: browser-use's own accounting is
@@ -530,11 +561,11 @@ async def run_one(task, chrome):
             })
         finally:
             try:
-                await orig_close()
+                await asyncio.wait_for(orig_close(), timeout=30)
             except Exception:
                 pass
             try:
-                await session.kill()
+                await asyncio.wait_for(session.kill(), timeout=30)
             except Exception:
                 pass
         row["wall_seconds"] = time.monotonic() - t0
@@ -588,13 +619,34 @@ def _bu_env() -> dict[str, str]:
     return env
 
 
-def run_browseruse_tasks(
-    tasks: list[dict], fixture_base: str, chrome: str
-) -> tuple[list[dict], str]:
-    """Returns (results, error). error is "" on a clean subprocess exit; a
-    non-empty error still returns whatever partial results file existed."""
+# Tracks the currently-live child's process group so a SIGTERM/SIGINT to
+# this harness can take the child (and its Chromium tree) down with it,
+# instead of orphaning it the way the 2026-08-10 hang did (see
+# BU_PER_TASK_TIMEOUT_SECONDS docstring). Best-effort only: a SIGKILL to this
+# process can't be intercepted and will still orphan the child — the real
+# fix for that is that each child is now bounded to
+# BU_PER_TASK_TIMEOUT_SECONDS instead of living indefinitely.
+_LIVE_BU_PGID: int | None = None
+
+
+def _kill_live_bu_child(*_a) -> None:
+    global _LIVE_BU_PGID
+    if _LIVE_BU_PGID is not None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(_LIVE_BU_PGID, signal.SIGKILL)
+        _LIVE_BU_PGID = None
+    raise SystemExit(1)
+
+
+signal.signal(signal.SIGTERM, _kill_live_bu_child)
+signal.signal(signal.SIGINT, _kill_live_bu_child)
+
+
+def ensure_browseruse_script() -> str | None:
+    """Writes the TASK_SCRIPT shim once; returns an error string if the
+    browser-use venv is missing, else None."""
     if not BU_PYTHON.exists():
-        return [], (
+        return (
             f"missing {BU_PYTHON}; create it with `python3 -m venv {SCRATCH / '.venv'} "
             f"&& {BU_PYTHON} -m pip install browser-use`"
         )
@@ -607,25 +659,113 @@ def run_browseruse_tasks(
         "bu_task_timeout": LLM_TIMEOUT_SECONDS * MAX_STEPS,
         "cli_shim_src": _CLI_SHIM_SRC,
     })
-    tasks_with_urls = [{**t, "url": f"{fixture_base}/{t['file']}"} for t in tasks]
+    return None
+
+
+def run_browseruse_task(
+    task: dict, fixture_base: str, chrome: str,
+    per_task_timeout: float = BU_PER_TASK_TIMEOUT_SECONDS,
+) -> dict:
+    """Runs ONE task in its own subprocess, own process group. Never raises:
+    on any failure mode (missing venv, timeout, crash) returns a row shaped
+    like a normal result row with success=False so the caller's loop and the
+    raw JSONL never lose a task to an exception. On timeout, kills the WHOLE
+    process group (os.killpg), not just the direct child — the 2026-08-10
+    hang left Chromium grandchildren alive after the direct child was killed,
+    which is what made the pipe-based capture_output design deadlock; see the
+    BU_PER_TASK_TIMEOUT_SECONDS comment above."""
+    global _LIVE_BU_PGID
+    venv_err = ensure_browseruse_script()
+    if venv_err:
+        return {
+            "arm": "browseruse", "task_id": task["id"], "success": False,
+            "attempts": [], "attempts_used": 0, "total_tokens": 0, "llm_calls": 0,
+            "total_cost_usd": None, "total_wall_seconds": 0.0, "turns": 0,
+            "harness_error": venv_err, "timeout": False,
+        }
+    script_path = SCRATCH / "browseruse_tasks.py"
+    task_with_url = {**task, "url": f"{fixture_base}/{task['file']}"}
+    t0 = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:
         tasks_path = Path(tmp) / "tasks.json"
         out_path = Path(tmp) / "out.json"
-        tasks_path.write_text(json.dumps(tasks_with_urls))
-        try:
-            proc = subprocess.run(
+        log_path = Path(tmp) / "log.txt"
+        tasks_path.write_text(json.dumps([task_with_url]))
+        timed_out = False
+        with log_path.open("w") as logf:
+            proc = subprocess.Popen(
                 [str(BU_PYTHON), str(script_path), str(tasks_path), str(out_path), chrome],
-                cwd=SCRATCH, capture_output=True, text=True, env=_bu_env(),
-                timeout=BU_TIMEOUT_SECONDS,
+                cwd=SCRATCH, stdout=logf, stderr=subprocess.STDOUT, env=_bu_env(),
+                start_new_session=True,  # own process group -> killpg can reach Chromium too
             )
-        except subprocess.TimeoutExpired:
-            return [], f"browseruse_tasks.py exceeded {BU_TIMEOUT_SECONDS}s"
+            _LIVE_BU_PGID = os.getpgid(proc.pid)
+            try:
+                proc.wait(timeout=per_task_timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(_LIVE_BU_PGID, signal.SIGKILL)
+                proc.wait()  # reap; safe now, no pipes to drain (log went to a file)
+            finally:
+                _LIVE_BU_PGID = None
+        wall = time.monotonic() - t0
+        if timed_out:
+            log_tail = log_path.read_text(errors="replace")[-1500:] if log_path.exists() else ""
+            return {
+                "arm": "browseruse", "task_id": task["id"], "success": False,
+                "attempts": [], "attempts_used": 0, "total_tokens": 0, "llm_calls": 0,
+                "total_cost_usd": None, "total_wall_seconds": wall, "turns": 0,
+                "harness_error": (
+                    f"TIMEOUT: exceeded {per_task_timeout:.0f}s, process group killed. "
+                    f"log tail: {log_tail}"
+                ),
+                "timeout": True,
+            }
         if not out_path.exists():
-            return [], (
-                f"browseruse_tasks.py exited {proc.returncode}: "
-                f"{proc.stderr.strip()[-1500:]}"
-            )
-        return json.loads(out_path.read_text()), ""
+            log_tail = log_path.read_text(errors="replace")[-1500:] if log_path.exists() else ""
+            return {
+                "arm": "browseruse", "task_id": task["id"], "success": False,
+                "attempts": [], "attempts_used": 0, "total_tokens": 0, "llm_calls": 0,
+                "total_cost_usd": None, "total_wall_seconds": wall, "turns": 0,
+                "harness_error": f"browseruse_tasks.py exited {proc.returncode}: {log_tail}",
+                "timeout": False,
+            }
+        rows = json.loads(out_path.read_text())
+        row = rows[0] if rows else {
+            "arm": "browseruse", "task_id": task["id"], "success": False,
+            "attempts": [], "attempts_used": 0, "total_tokens": 0, "llm_calls": 0,
+            "total_cost_usd": None, "total_wall_seconds": wall, "turns": 0,
+            "harness_error": "browseruse_tasks.py produced no rows", "timeout": False,
+        }
+        row.setdefault("timeout", False)
+        return row
+
+
+def run_browseruse_tasks(
+    tasks: list[dict], fixture_base: str, chrome: str,
+    per_task_timeout: float = BU_PER_TASK_TIMEOUT_SECONDS,
+    on_row=None,
+) -> tuple[list[dict], str]:
+    """Runs every task, one subprocess each (see run_browseruse_task). Always
+    returns a row per task — errors and timeouts are recorded per-row, not
+    raised — so this never loses the whole batch to one bad task the way the
+    single-subprocess-for-30-tasks design did on 2026-08-10. `on_row`, if
+    given, is called after each task with (index, total, row) for progress
+    logging / incremental persistence; the second tuple element ("error") is
+    kept only for a venv-missing precondition that blocks every task."""
+    if not BU_PYTHON.exists():
+        err = (
+            f"missing {BU_PYTHON}; create it with `python3 -m venv {SCRATCH / '.venv'} "
+            f"&& {BU_PYTHON} -m pip install browser-use`"
+        )
+        return [], err
+    rows = []
+    for i, task in enumerate(tasks):
+        row = run_browseruse_task(task, fixture_base, chrome, per_task_timeout)
+        rows.append(row)
+        if on_row is not None:
+            on_row(i, len(tasks), row)
+    return rows, ""
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +959,18 @@ def report(
         for tid, err in startup_failures:
             print(f"    {tid}: {err}")
 
+    # TIMEOUT: the per-task watchdog killed the process group after
+    # BU_PER_TASK_TIMEOUT_SECONDS (see that constant's docstring for why this
+    # exists — a task that hangs is now recorded and moved past, not lost).
+    # A per-task cap browser-use pays and grip never did is itself a confound
+    # worth restating here, not just in the module docstring.
+    timeout_ids = {r["task_id"] for r in bu_rows if r.get("timeout")}
+    if timeout_ids:
+        print(f"\n*** browser-use TIMED OUT (process group killed) on "
+              f"{len(timeout_ids)} task(s) after {BU_PER_TASK_TIMEOUT_SECONDS:.0f}s each "
+              f"— counted as a loss, not silently dropped. This per-task cap is a "
+              f"harness confound the grip arm was never subject to: {sorted(timeout_ids)} ***")
+
     # NOTE on the columns below: "turns" is the LAST attempt's turn count
     # (or the successful attempt's, if any succeeded), but "$" and "s" are
     # SUMMED across every retry attempt for the task. On any task with
@@ -843,7 +995,9 @@ def report(
     for tid in sorted(set(by_g) | set(by_b)):
         g, b = by_g.get(tid), by_b.get(tid)
         g_ok = "yes" if g and g["success"] else ("no" if g else "-")
-        if tid in startup_failed_ids:
+        if tid in timeout_ids:
+            b_ok = "TIMEOUT"
+        elif tid in startup_failed_ids:
             b_ok = "STARTUP-ERR"
         else:
             b_ok = "yes" if b and b["success"] else ("no" if b else "-")
@@ -917,7 +1071,42 @@ def report(
 # Orchestration
 # ---------------------------------------------------------------------------
 
-async def run_full(tasks: list[dict]) -> None:
+def _load_grip_rows(path: Path) -> list[dict]:
+    """Loads previously-saved grip-arm rows from a raw JSONL (arm=='grip'
+    lines only) so `--arm browser-use` can merge into a full report without
+    re-running a 5+ hour grip pass that already produced valid data."""
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("arm") == "grip":
+            rows.append(row)
+    return rows
+
+
+def _load_prior_rows(path: Path, arm: str) -> list[dict]:
+    """Loads previously-saved rows for a given arm ('grip' or 'browseruse')
+    from a prior raw JSONL, for --resume. Same shape as _load_grip_rows but
+    keyed on whichever arm value is actually stored in the row (grip rows are
+    written with arm=='grip', browser-use rows with arm=='browseruse')."""
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("arm") == arm:
+            rows.append(row)
+    return rows
+
+
+async def run_full(
+    tasks: list[dict],
+    arm: str = "both",
+    grip_results_path: Path | None = None,
+    bu_task_timeout: float = BU_PER_TASK_TIMEOUT_SECONDS,
+    resume_path: Path | None = None,
+) -> None:
     print("measuring baseline CLI overhead (one trivial call, same flags as every real turn)...")
     baseline_cost = await measure_baseline_overhead(MODEL)
     print(f"baseline overhead: {baseline_cost}")
@@ -928,25 +1117,66 @@ async def run_full(tasks: list[dict]) -> None:
     ts = time.strftime("%Y%m%d-%H%M%S")
     raw_path = RESULTS_DIR / f"raw_{ts}.jsonl"
     grip_rows: list[dict] = []
+    bu_rows: list[dict] = []
+    bu_error = ""
     try:
         with raw_path.open("w") as f:
-            for i, task in enumerate(tasks):
-                url = server.url_for(task)
-                t0 = time.monotonic()
-                row = await run_grip_task(task, url)
-                grip_rows.append(row)
-                f.write(json.dumps(row) + "\n")
-                f.flush()
-                print(
-                    f"[grip {i + 1}/{len(tasks)}] {task['id']} "
-                    f"{'OK' if row['success'] else 'FAIL'} in {time.monotonic() - t0:.1f}s"
-                )
+            if arm in ("grip", "both"):
+                for i, task in enumerate(tasks):
+                    url = server.url_for(task)
+                    t0 = time.monotonic()
+                    row = await run_grip_task(task, url)
+                    grip_rows.append(row)
+                    f.write(json.dumps(row) + "\n")
+                    f.flush()
+                    print(
+                        f"[grip {i + 1}/{len(tasks)}] {task['id']} "
+                        f"{'OK' if row['success'] else 'FAIL'} in {time.monotonic() - t0:.1f}s"
+                    )
+            elif grip_results_path is not None:
+                grip_rows = _load_grip_rows(grip_results_path)
+                print(f"--arm {arm}: loaded {len(grip_rows)} existing grip rows from "
+                      f"{grip_results_path} (not re-run)")
+                for row in grip_rows:
+                    f.write(json.dumps(row) + "\n")
+            else:
+                print(f"--arm {arm}: grip arm not run and no --grip-results given; "
+                      "report will show grip as absent")
 
-            chrome = find_chrome() or ""
-            print(f"grip arm done. starting browser-use arm ({len(tasks)} tasks)...")
-            bu_rows, bu_error = run_browseruse_tasks(tasks, base, chrome)
-            for row in bu_rows:
-                f.write(json.dumps(row) + "\n")
+            if arm in ("browser-use", "both"):
+                bu_tasks = tasks
+                if resume_path is not None:
+                    done_rows = _load_prior_rows(resume_path, "browseruse")
+                    done_ids = {r["task_id"] for r in done_rows}
+                    bu_rows.extend(done_rows)
+                    for row in done_rows:
+                        f.write(json.dumps(row) + "\n")
+                    f.flush()
+                    bu_tasks = [t for t in tasks if t["id"] not in done_ids]
+                    print(f"--resume {resume_path}: {len(done_rows)} browseruse rows "
+                          f"already done ({sorted(done_ids)}), skipping; "
+                          f"{len(bu_tasks)} remaining")
+
+                chrome = find_chrome() or ""
+                print(f"starting browser-use arm ({len(bu_tasks)} tasks, "
+                      f"{bu_task_timeout:.0f}s per-task cap, one subprocess per task "
+                      "so a hung task can't block the rest)...")
+
+                def _on_row(i: int, total: int, row: dict) -> None:
+                    f.write(json.dumps(row) + "\n")
+                    f.flush()
+                    status = "TIMEOUT" if row.get("timeout") else (
+                        "OK" if row["success"] else "FAIL"
+                    )
+                    print(
+                        f"[browseruse {i + 1}/{total}] {row['task_id']} {status} "
+                        f"in {row['total_wall_seconds']:.1f}s"
+                    )
+
+                new_bu_rows, bu_error = run_browseruse_tasks(
+                    bu_tasks, base, chrome, per_task_timeout=bu_task_timeout, on_row=_on_row
+                )
+                bu_rows.extend(new_bu_rows)
     finally:
         server.stop()
 
@@ -956,7 +1186,8 @@ async def run_full(tasks: list[dict]) -> None:
         "config": {
             "model": MODEL, "temperature": "not controllable via CLI",
             "max_steps": MAX_STEPS, "retry_budget": RETRY_BUDGET, "use_vision": USE_VISION,
-            "baseline_cli_overhead_usd": baseline_cost,
+            "baseline_cli_overhead_usd": baseline_cost, "arm": arm,
+            "bu_per_task_timeout_seconds": bu_task_timeout,
         },
         "verdict": verdict, "n_tasks": len(tasks),
         "grip_rows": grip_rows, "browseruse_rows": bu_rows, "browseruse_error": bu_error,
@@ -1004,11 +1235,49 @@ async def run_dry_run() -> None:
         for task in smoke_tasks:
             grip_rows.append(await run_grip_task(task, server.url_for(task)))
         chrome = find_chrome() or ""
-        bu_rows, bu_error = run_browseruse_tasks(smoke_tasks, base, chrome)
+        bu_rows, bu_error = run_browseruse_tasks(
+            smoke_tasks, base, chrome, on_row=lambda i, t, r: print(
+                f"  [browseruse {i + 1}/{t}] {r['task_id']} "
+                f"{'TIMEOUT' if r.get('timeout') else ('OK' if r['success'] else 'FAIL')}"
+            )
+        )
         RETRY_BUDGET = saved
     finally:
         server.stop()
     report(grip_rows, bu_rows, bu_error)
+
+    print("\n--- dry-run stage 3: induced-timeout proof (proves the anti-hang machinery, "
+          "not just the happy path) ---")
+    print("running 1 task with a deliberately tiny 15s per-task cap; expect a TIMEOUT row, "
+          "the loop returning promptly, and no leftover chromium/browseruse_tasks.py process")
+    server = FixtureServer()
+    base = server.start()
+    try:
+        chrome = find_chrome() or ""
+        t0 = time.monotonic()
+        timeout_row = run_browseruse_task(smoke_tasks[0], base, chrome, per_task_timeout=15.0)
+        elapsed = time.monotonic() - t0
+    finally:
+        server.stop()
+    ok = timeout_row.get("timeout") is True and elapsed < 60
+    timeout_row_brief = {k: v for k, v in timeout_row.items() if k != "harness_error"}
+    print(f"  timeout row: {json.dumps(timeout_row_brief)}")
+    print(f"  returned in {elapsed:.1f}s (must be well under the "
+          f"{BU_PER_TASK_TIMEOUT_SECONDS:.0f}s normal cap, close to the induced 15s one)")
+
+    def _pgrep(pattern: str) -> str:
+        return subprocess.run(
+            ["pgrep", "-f", pattern], capture_output=True, text=True
+        ).stdout.strip()
+
+    leftover = await asyncio.to_thread(_pgrep, "browseruse_tasks.py")
+    leftover_chrome = await asyncio.to_thread(_pgrep, "browser-use-user-data-dir")
+    print(f"  leftover browseruse_tasks.py pids: {leftover or '(none)'}")
+    print(f"  leftover browser-use chromium pids: {leftover_chrome or '(none)'}")
+    print(
+        f"  === INDUCED-TIMEOUT PROOF: "
+        f"{'PASS' if ok and not leftover and not leftover_chrome else 'FAIL'} ==="
+    )
 
 
 def main() -> None:
@@ -1017,6 +1286,27 @@ def main() -> None:
     parser.add_argument(
         "--n", type=int, default=None, help="limit corpus to N tasks (stratified across categories)"
     )
+    parser.add_argument(
+        "--arm", choices=["grip", "browser-use", "both"], default="both",
+        help="which arm(s) to run. Use browser-use with --grip-results to re-run only "
+             "the browser-use arm and merge with a prior grip pass's saved data."
+    )
+    parser.add_argument(
+        "--grip-results", type=Path, default=None,
+        help="path to a prior raw_*.jsonl to load existing grip rows from when --arm "
+             "browser-use (skips re-running the grip arm)"
+    )
+    parser.add_argument(
+        "--bu-task-timeout", type=float, default=BU_PER_TASK_TIMEOUT_SECONDS,
+        help="per-task wall-clock cap (seconds) for the browser-use arm; on expiry the "
+             "task's whole process group is killed and it's recorded as a TIMEOUT"
+    )
+    parser.add_argument(
+        "--resume", type=Path, default=None,
+        help="path to a prior raw_*.jsonl; rows already recorded for the arm(s) being "
+             "run are loaded and skipped, remaining tasks are appended to a fresh "
+             "raw_*.jsonl (the prior file is never modified)"
+    )
     args = parser.parse_args()
 
     if args.dry_run:
@@ -1024,7 +1314,10 @@ def main() -> None:
         return
 
     tasks = load_tasks(limit=args.n)
-    asyncio.run(run_full(tasks))
+    asyncio.run(run_full(
+        tasks, arm=args.arm, grip_results_path=args.grip_results,
+        bu_task_timeout=args.bu_task_timeout, resume_path=args.resume,
+    ))
 
 
 if __name__ == "__main__":
