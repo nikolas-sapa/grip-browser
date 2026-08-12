@@ -10,6 +10,13 @@ import weakref
 from pathlib import Path
 from typing import Any, cast
 
+# Fallback only — grip/browser.py derives the real stealth UA at runtime from
+# Browser.getVersion() (Browser._stealth_ua), so it can never drift out of sync
+# with the Chrome build actually running the way a hardcoded version number
+# would (measured 2026-08-12: a pinned "Chrome/149" next to a running 151
+# binary is exactly the kind of self-inconsistency a scoring detector would
+# catch). This constant is used only when that CDP call is unavailable, e.g. a
+# remote cdp_url endpoint that does not implement Browser.getVersion.
 _STEALTH_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
@@ -184,12 +191,20 @@ class ChromeLauncher:
         if proxy:
             args.append(f"--proxy-server={proxy}")
         if stealth:
-            # Two tells, both free to remove. navigator.webdriver is set by the
-            # automation flag; the UA string literally contains "HeadlessChrome".
+            # navigator.webdriver is set by the automation flag; removing it is
+            # free at launch time. The other free tell — "HeadlessChrome" in the
+            # UA — used to be patched here too via a hardcoded --user-agent=, but
+            # that flag also silently blanks navigator.userAgentData entirely
+            # (measured 2026-08-12: Chromium only preserves Client Hints when an
+            # explicit userAgentMetadata payload accompanies the override) with
+            # no way to supply one from a launch flag. grip/browser.py applies
+            # the UA fix instead via Network.setUserAgentOverride once the
+            # engine is connected (Browser._stealth_ua), where the real,
+            # currently-running version is known and the same call can be
+            # extended to carry metadata if that gap is ever closed.
             # Deliberately NOT a full evasion suite — canvas/WebGL/timing spoofing
             # is a maintained arms race this project is not entering.
             args.append("--disable-blink-features=AutomationControlled")
-            args.append(f"--user-agent={_STEALTH_UA}")
         # stderr goes to a file rather than DEVNULL or a pipe: a pipe nobody drains
         # deadlocks a chatty Chrome, and DEVNULL is why a launch timeout used to
         # report nothing but "timed out". Nothing reads this on the happy path.

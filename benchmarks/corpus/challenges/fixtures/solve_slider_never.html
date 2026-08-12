@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>slider that never verifies (false-solved probe)</title></head>
+<body>
+
+<h1>Slide to verify</h1>
+<div class="geetest_slider" id="track"
+     style="position:relative;width:300px;height:40px;background:#eee">
+  <div class="geetest_slider_button" id="handle"
+       style="position:absolute;left:0;top:0;width:40px;height:40px;
+              background:#4CAF50;cursor:pointer"></div>
+</div>
+<script>
+// Handle moves under the pointer but the widget never accepts any position
+// as correct: this stands in for a provider that scores server-side and
+// silently refuses, same as solve_checkbox_never.html.
+(function () {
+  var handle = document.getElementById('handle');
+  var track = document.getElementById('track');
+  var dragging = false, startX = 0, startLeft = 0;
+  handle.addEventListener('pointerdown', function (e) {
+    dragging = true; startX = e.clientX; startLeft = handle.offsetLeft;
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener('pointermove', function (e) {
+    if (!dragging) return;
+    var left = Math.max(0, Math.min(track.clientWidth - handle.offsetWidth,
+      startLeft + (e.clientX - startX)));
+    handle.style.left = left + 'px';
+  });
+  handle.addEventListener('pointerup', function () { dragging = false; });
+})();
+window.__challenge_state = function () { return {}; };
+</script>
+
+</body></html>

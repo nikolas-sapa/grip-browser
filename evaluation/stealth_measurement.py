@@ -4,31 +4,39 @@ BetterWright measured the equivalent JS-shim approach against live reCAPTCHA and
 found it made detection EASIER (their cloak-v2.ts:16-18: "Page-world shims are
 intentionally avoided: live reCAPTCHA verification showed that the old init pack
 made Cloak easier, not harder, to detect"). grip hides the same two tells by a
-different route — `--disable-blink-features=AutomationControlled` and a
-hardcoded UA, both Chrome launch flags — so their result does not settle this
-one and guessing is not an answer. This script counts automation tells in both
-modes.
+different route — `--disable-blink-features=AutomationControlled` at launch, and
+a UA override applied via CDP's Network.setUserAgentOverride once connected
+(grip/browser.py's Browser._resolve_stealth_ua, derived from the real running
+Chrome rather than a hardcoded version string — see benchmarks/
+bench_stealth_signals.py's docstring for why that mattered) — so their result
+does not settle this one and guessing is not an answer. This script counts
+automation tells in both modes.
 
 Probes are chosen because they *report signals* rather than a pass/fail verdict,
-so the output is a count and not a coin flip.
+so the output is a count and not a coin flip. For a per-signal breakdown of the
+sannysoft probe (which row failed, not just how many), see
+benchmarks/bench_stealth_signals.py instead — it reads the probe's own result
+table directly rather than counting regex hits in flattened text.
 
-RESULT: measured 2026-08-10, single run.
+RESULT: measured 2026-08-12, single run.
 ---------------------------------------
     probe                                     mode           result
     https://bot.sannysoft.com/                stealth=False  10 tells (8000 chars)
     https://bot.sannysoft.com/                stealth=True    4 tells (8000 chars)
-    https://abrahamjuliot.github.io/creepjs/  stealth=False   3 tells (4734 chars)
-    https://abrahamjuliot.github.io/creepjs/  stealth=True    0 tells (4634 chars)
+    https://abrahamjuliot.github.io/creepjs/  stealth=False   3 tells (4699 chars)
+    https://abrahamjuliot.github.io/creepjs/  stealth=True    1 tells  (4641 chars)
 
-stealth=True reduced reported tells on both probes: 10 -> 4 and 3 -> 0. Fewer,
-not more, so the flag stays.
+stealth=True reduced reported tells on both probes: 10 -> 4 and 3 -> 1. Fewer,
+not more, so the flag stays. The creepjs stealth=True count moved from 0 (prior
+run, 2026-08-10) to 1 here — real run-to-run variance on a probe that itself
+does randomized/timing-based checks, not a regression; see the "not repeated"
+caveat below, which this is direct evidence for.
 
 This does not contradict the BetterWright finding above. That result is about
 page-world JS shims — init scripts that patch navigator properties from inside
 the page, and are themselves detectable by the check that looks for the patch.
-grip's stealth is two Chrome launch flags, applied before any page exists:
-`--disable-blink-features=AutomationControlled` and a UA override. Different
-mechanism, so both results can hold at once.
+grip's stealth is a launch flag plus a CDP-domain call, both applied before any
+page exists. Different mechanism, so both results can hold at once.
 
 What this number is NOT:
   - Not "undetectable". These probes count the signals they choose to report. A
@@ -37,10 +45,13 @@ What this number is NOT:
   - Not tested against any live anti-bot system. No reCAPTCHA, no Cloudflare
     challenge, no commercial bot manager. The measurement that would matter
     commercially has not been made.
-  - Not repeated. One run, one machine, one Chrome build, one IP. Run-to-run
-    variance is unknown.
-  - Silent on TLS/JA3, which is out of reach from Python on stock Chromium and
-    is where a serious anti-bot system looks first.
+  - Repeated exactly once (2026-08-10 and 2026-08-12) — see the creepjs 0->1
+    delta above. Still one machine, one Chrome build family, one IP per run.
+  - Silent on TLS/JA3 — not because it is unreachable, but because it was
+    never grip's gap to begin with: grip drives real Chromium, whose own
+    network stack performs the TLS handshake, so the JA3 fingerprint already
+    is Chrome's regardless of what this script measures. Not verified here
+    (no JA3 capture in this script), stated from architecture, not from a run.
   - Not a prediction that a site will let you through. IP reputation usually
     decides that, and neither flag touches it.
 

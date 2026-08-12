@@ -1,0 +1,576 @@
+{
+  "before": [
+    {
+      "name": "User Agent\n(Old)",
+      "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+      "cls": "failed result"
+    },
+    {
+      "name": "WebDriver\n(New)",
+      "value": "present (failed)",
+      "cls": "failed result"
+    },
+    {
+      "name": "WebDriver Advanced",
+      "value": "passed",
+      "cls": "result passed"
+    },
+    {
+      "name": "Chrome\n(New)",
+      "value": "present (passed)",
+      "cls": "result passed"
+    },
+    {
+      "name": "Permissions\n(New)",
+      "value": "denied",
+      "cls": "result passed"
+    },
+    {
+      "name": "Plugins Length\n(Old)",
+      "value": "5",
+      "cls": "result passed"
+    },
+    {
+      "name": "Plugins is of type PluginArray",
+      "value": "passed",
+      "cls": "result passed"
+    },
+    {
+      "name": "Languages\n(Old)",
+      "value": "en-US",
+      "cls": "result passed"
+    },
+    {
+      "name": "WebGL Vendor",
+      "value": "Google Inc. (Apple)",
+      "cls": "passed"
+    },
+    {
+      "name": "WebGL Renderer",
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+      "cls": "passed"
+    },
+    {
+      "name": "Broken Image Dimensions",
+      "value": "16x16",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_UA",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_PROPERTIES",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_ETSL",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_LANGUAGE",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_WEBSOCKET",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "MQ_SCREEN",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_OVERFLOW",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_WINDOW_HEIGHT",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_UA",
+      "value": "FAIL",
+      "cls": "failed"
+    },
+    {
+      "name": "HEADCHR_CHROME_OBJ",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_PERMISSIONS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_PLUGINS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_IFRAME",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "CHR_DEBUG_TOOLS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "SELENIUM_DRIVER",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "CHR_BATTERY",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "CHR_MEMORY",
+      "value": "FAIL",
+      "cls": "failed"
+    },
+    {
+      "name": "TRANSPARENT_PIXEL",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "SEQUENTUM",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "VIDEO_CODECS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "navigator.cookieEnabled",
+      "value": "true",
+      "cls": ""
+    },
+    {
+      "name": "navigator.doNotTrack",
+      "value": "null",
+      "cls": ""
+    },
+    {
+      "name": "navigator.msDoNotTrack",
+      "value": "undefined",
+      "cls": ""
+    },
+    {
+      "name": "navigator.sendBeacon",
+      "value": "",
+      "cls": ""
+    },
+    {
+      "name": "navigator.cookieEnabled",
+      "value": "true",
+      "cls": ""
+    },
+    {
+      "name": "navigator.userAgent",
+      "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+      "cls": ""
+    },
+    {
+      "name": "navigator.appName",
+      "value": "Netscape",
+      "cls": ""
+    },
+    {
+      "name": "navigator.vendor",
+      "value": "Google Inc.",
+      "cls": ""
+    },
+    {
+      "name": "navigator.appCodeName",
+      "value": "Mozilla",
+      "cls": ""
+    },
+    {
+      "name": "navigator.getUserMedia",
+      "value": "",
+      "cls": ""
+    },
+    {
+      "name": "navigator.sayswho",
+      "value": "undefined",
+      "cls": ""
+    },
+    {
+      "name": "navigator.javaEnabled",
+      "value": "false",
+      "cls": ""
+    },
+    {
+      "name": "navigator.plugins",
+      "value": "{\"0\":{\"0\":{},\"1\":{}},\"1\":{\"0\":{},\"1\":{}},\"2\":{\"0\":{},\"1\":{}},\"3\":{\"0\":{},\"1\":{}},\"4\":{\"0\":{},\"1\":{}}}",
+      "cls": ""
+    },
+    {
+      "name": "screen.width",
+      "value": "800",
+      "cls": ""
+    },
+    {
+      "name": "screen.height",
+      "value": "600",
+      "cls": ""
+    },
+    {
+      "name": "screen.colorDepth",
+      "value": "24",
+      "cls": ""
+    },
+    {
+      "name": "navigator.language",
+      "value": "en-US",
+      "cls": ""
+    },
+    {
+      "name": "navigator.loadPurpose",
+      "value": "undefined",
+      "cls": ""
+    },
+    {
+      "name": "navigator.platform",
+      "value": "MacIntel",
+      "cls": ""
+    },
+    {
+      "name": "navigator.mediaDevices",
+      "value": "audioinput: id =\nvideoinput: id =\naudiooutput: id =",
+      "cls": ""
+    },
+    {
+      "name": "navigator.getBattery details",
+      "value": "Charging: false\nLevel: 0.82",
+      "cls": ""
+    },
+    {
+      "name": "Canvas1",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas2",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas3 (iframe sandbox)",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas4 (iframe sandbox)",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas5 (iframe)",
+      "value": "Hash: 848649027",
+      "cls": ""
+    }
+  ],
+  "after": [
+    {
+      "name": "User Agent\n(Old)",
+      "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+      "cls": "result passed"
+    },
+    {
+      "name": "WebDriver\n(New)",
+      "value": "missing (passed)",
+      "cls": "result passed"
+    },
+    {
+      "name": "WebDriver Advanced",
+      "value": "passed",
+      "cls": "result passed"
+    },
+    {
+      "name": "Chrome\n(New)",
+      "value": "present (passed)",
+      "cls": "result passed"
+    },
+    {
+      "name": "Permissions\n(New)",
+      "value": "denied",
+      "cls": "result passed"
+    },
+    {
+      "name": "Plugins Length\n(Old)",
+      "value": "5",
+      "cls": "result passed"
+    },
+    {
+      "name": "Plugins is of type PluginArray",
+      "value": "passed",
+      "cls": "result passed"
+    },
+    {
+      "name": "Languages\n(Old)",
+      "value": "en-US",
+      "cls": "result passed"
+    },
+    {
+      "name": "WebGL Vendor",
+      "value": "Google Inc. (Apple)",
+      "cls": "passed"
+    },
+    {
+      "name": "WebGL Renderer",
+      "value": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+      "cls": "passed"
+    },
+    {
+      "name": "Broken Image Dimensions",
+      "value": "16x16",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_UA",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_PROPERTIES",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_ETSL",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_LANGUAGE",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_WEBSOCKET",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "MQ_SCREEN",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_OVERFLOW",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "PHANTOM_WINDOW_HEIGHT",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_UA",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_CHROME_OBJ",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_PERMISSIONS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_PLUGINS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "HEADCHR_IFRAME",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "CHR_DEBUG_TOOLS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "SELENIUM_DRIVER",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "CHR_BATTERY",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "CHR_MEMORY",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "TRANSPARENT_PIXEL",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "SEQUENTUM",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "VIDEO_CODECS",
+      "value": "ok",
+      "cls": "passed"
+    },
+    {
+      "name": "navigator.cookieEnabled",
+      "value": "true",
+      "cls": ""
+    },
+    {
+      "name": "navigator.doNotTrack",
+      "value": "null",
+      "cls": ""
+    },
+    {
+      "name": "navigator.msDoNotTrack",
+      "value": "undefined",
+      "cls": ""
+    },
+    {
+      "name": "navigator.sendBeacon",
+      "value": "",
+      "cls": ""
+    },
+    {
+      "name": "navigator.cookieEnabled",
+      "value": "true",
+      "cls": ""
+    },
+    {
+      "name": "navigator.userAgent",
+      "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+      "cls": ""
+    },
+    {
+      "name": "navigator.appName",
+      "value": "Netscape",
+      "cls": ""
+    },
+    {
+      "name": "navigator.vendor",
+      "value": "Google Inc.",
+      "cls": ""
+    },
+    {
+      "name": "navigator.appCodeName",
+      "value": "Mozilla",
+      "cls": ""
+    },
+    {
+      "name": "navigator.getUserMedia",
+      "value": "",
+      "cls": ""
+    },
+    {
+      "name": "navigator.sayswho",
+      "value": "undefined",
+      "cls": ""
+    },
+    {
+      "name": "navigator.javaEnabled",
+      "value": "false",
+      "cls": ""
+    },
+    {
+      "name": "navigator.plugins",
+      "value": "{\"0\":{\"0\":{},\"1\":{}},\"1\":{\"0\":{},\"1\":{}},\"2\":{\"0\":{},\"1\":{}},\"3\":{\"0\":{},\"1\":{}},\"4\":{\"0\":{},\"1\":{}}}",
+      "cls": ""
+    },
+    {
+      "name": "screen.width",
+      "value": "800",
+      "cls": ""
+    },
+    {
+      "name": "screen.height",
+      "value": "600",
+      "cls": ""
+    },
+    {
+      "name": "screen.colorDepth",
+      "value": "24",
+      "cls": ""
+    },
+    {
+      "name": "navigator.language",
+      "value": "en-US",
+      "cls": ""
+    },
+    {
+      "name": "navigator.loadPurpose",
+      "value": "undefined",
+      "cls": ""
+    },
+    {
+      "name": "navigator.platform",
+      "value": "MacIntel",
+      "cls": ""
+    },
+    {
+      "name": "navigator.mediaDevices",
+      "value": "audioinput: id =\nvideoinput: id =\naudiooutput: id =",
+      "cls": ""
+    },
+    {
+      "name": "navigator.getBattery details",
+      "value": "Charging: false\nLevel: 0.82",
+      "cls": ""
+    },
+    {
+      "name": "Canvas1",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas2",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas3 (iframe sandbox)",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas4 (iframe sandbox)",
+      "value": "Hash: 848649027",
+      "cls": ""
+    },
+    {
+      "name": "Canvas5 (iframe)",
+      "value": "Hash: 848649027",
+      "cls": ""
+    }
+  ]
+}

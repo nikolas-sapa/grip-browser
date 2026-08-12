@@ -125,7 +125,7 @@ def _frame_tree(urls):
     }
 
 
-def _responses(html, frames, token=""):
+def _responses(html, frames, token="", slider_geom=None):
     """A CDP stub answering the three calls the solver makes."""
     async def send(method, params=None):
         if method == "Runtime.evaluate":
@@ -134,6 +134,8 @@ def _responses(html, frames, token=""):
                 return {"result": {"value": token}}
             if "gripChallengePoint" in expr:
                 return {"result": {"value": {"x": 40, "y": 20}}}
+            if "gripChallengeSlider" in expr:
+                return {"result": {"value": slider_geom}}
             return {"result": {"value": html}}
         if method == "Page.getFrameTree":
             return _frame_tree(["https://site.test/"] + list(frames))
@@ -143,9 +145,9 @@ def _responses(html, frames, token=""):
     return send
 
 
-def _page_with(html, frames, token=""):
+def _page_with(html, frames, token="", slider_geom=None):
     engine = MagicMock()
-    engine.send = AsyncMock(side_effect=_responses(html, frames, token))
+    engine.send = AsyncMock(side_effect=_responses(html, frames, token, slider_geom))
     return Page(engine=engine, trace=Trace())
 
 
@@ -217,3 +219,107 @@ async def test_solve_is_traced():
     page = _page_with("<h1>hi</h1>", frames=[])
     await page.solve_challenge(timeout=1.0)
     assert "solve_challenge" in [e.action for e in page._trace.actions]
+
+
+# --- false-positive regressions (benchmarks/RESULTS_CHALLENGES.md) --------
+
+
+def test_prose_about_captchas_is_not_a_challenge():
+    """'a browser game where you solve a captcha puzzle' is editorial prose,
+    not an interstitial -- it must not trip the imperative+captcha pattern
+    just because the words co-occur within range."""
+    from grip.challenge import ChallengeStage, detect_challenge_from_html
+    html = (
+        "<article><h1>Puzzle games worth your time</h1>"
+        "<p>Our reviewer's favourite: a browser game where you solve a "
+        "captcha puzzle as fast as you can against the clock, purely for "
+        "fun.</p></article>"
+    )
+    assert detect_challenge_from_html(html, frames=[]) is ChallengeStage.NONE
+
+
+def test_unqualified_human_check_wording_stays_unknown():
+    """The captcha branch now requires a continuation clause; the
+    human-check/not-a-robot branch must stay unqualified or real bare
+    Cloudflare-style wording stops being detected."""
+    from grip.challenge import ChallengeStage, detect_challenge_from_html
+    stage = detect_challenge_from_html("<p>Please verify you are human.</p>", frames=[])
+    assert stage is ChallengeStage.UNKNOWN
+
+
+def test_turnstile_snippet_quoted_as_text_is_not_a_challenge():
+    """A docs page's <pre><code> block escapes the tag as text
+    (&lt;div class="cf-turnstile"&gt;), so it never contains a real `<` tag
+    delimiter -- the classifier must not match the substring in isolation."""
+    from grip.challenge import ChallengeStage, detect_challenge_from_html
+    html = (
+        "<article><h1>Embedding Turnstile</h1>"
+        "<p>Drop this snippet into your page:</p>"
+        '<pre><code>&lt;div class="cf-turnstile" '
+        'data-sitekey="PLACEHOLDER"&gt;&lt;/div&gt;</code></pre>'
+        "<p>No widget is actually loaded on this documentation page.</p>"
+        "</article>"
+    )
+    assert detect_challenge_from_html(html, frames=[]) is ChallengeStage.NONE
+
+
+def test_a_real_turnstile_element_still_classifies():
+    from grip.challenge import ChallengeStage, detect_challenge_from_html
+    stage = detect_challenge_from_html('<div class="cf-turnstile"></div>', frames=[])
+    assert stage is ChallengeStage.TURNSTILE
+
+
+# --- slider track self-match regression ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slider_probe_self_match_reports_a_reason_not_zero_drag():
+    """Old bug: handle.closest('[class*="slider"]') matched the handle's own
+    class ('geetest_slider_button' contains 'slider'), so track === handle
+    and the computed drag distance collapsed to ~0px. The probe result is
+    stubbed here as the fixed JS would answer for a handle with no real
+    ancestor track (track === handle candidate rejected by the width check):
+    a reason, not silently-zero geometry."""
+    page = _page_with(
+        '<div class="geetest_slider_button"></div>',
+        frames=[],
+        slider_geom={"reason": "track_not_wider_than_handle"},
+    )
+    result = await page.solve_challenge(timeout=1.0)
+    assert result.status == "unsupported"
+    assert "track_not_wider_than_handle" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_slider_probe_missing_endx_never_raises():
+    """Guards the isinstance(geom, dict) check: once the probe can return a
+    dict on failure (a reason), `int(geom["x"])` must not be reached."""
+    page = _page_with(
+        '<div class="geetest_slider_button"></div>', frames=[], slider_geom=None
+    )
+    result = await page.solve_challenge(timeout=1.0)
+    assert result.status == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_slider_with_real_geometry_drags_the_full_computed_distance():
+    """A real, resolved track/handle pair (endX present) must reach drag()
+    with a meaningful, non-zero span -- this is the plumbing half of the fix;
+    tests/integration covers the actual DOM track-resolution."""
+    page = _page_with(
+        '<div class="geetest_slider_button"></div>',
+        frames=[],
+        slider_geom={"x": 20, "y": 20, "endX": 280},
+    )
+    drag_calls = []
+    orig_drag = page.drag
+
+    async def spy_drag(start, end, **kwargs):
+        drag_calls.append((start, end))
+        return await orig_drag(start, end, **kwargs)
+
+    page.drag = spy_drag  # type: ignore[method-assign]
+    await page.solve_challenge(timeout=0.4)
+    assert drag_calls, "drag() was never called"
+    (start, end) = drag_calls[0]
+    assert end[0] - start[0] >= 200, f"drag span too small: {drag_calls[0]}"

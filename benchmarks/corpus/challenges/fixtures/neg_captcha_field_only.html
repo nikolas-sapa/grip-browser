@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>captcha-named field, no image</title></head>
+<body>
+
+<h1>Contact us</h1>
+<form>
+  <label>Message <textarea name="message"></textarea></label>
+  <!-- A field named after "captcha" with no image behind it is a form
+       field, not a challenge: detect_challenge_from_html requires both
+       halves (_TEXT_IMG and _TEXT_INPUT) before calling it TEXT. -->
+  <label>Confirmation code <input type="text" name="captcha_code"></label>
+  <button type="submit">Send</button>
+</form>
+
+</body></html>

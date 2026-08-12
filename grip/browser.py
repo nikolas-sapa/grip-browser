@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from grip.cdp.engine import CDPEngine
-from grip.cdp.launcher import ChromeLauncher, default_launch_timeout
+from grip.cdp.launcher import ChromeLauncher, _STEALTH_UA, default_launch_timeout
 from grip.page import Page
 from grip.security.policy import NavigationPolicy, enforce as enforce_navigation
 from grip.trace import Trace
@@ -144,6 +144,11 @@ class Browser:
         if geolocation is not None and "geolocation" not in (permissions or {}):
             self._permissions["geolocation"] = True
         self._geolocation = geolocation
+        # Resolved in _connect() from Browser.getVersion() once the engine is
+        # up, not hardcoded — see the comment on _STEALTH_UA in launcher.py for
+        # why a pinned version string goes stale. None until then, and stays
+        # None entirely when stealth=False.
+        self._stealth_ua: str | None = None
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
@@ -173,6 +178,7 @@ class Browser:
                 engine = CDPEngine()
                 await engine.connect(self._cdp_url)
                 await self._apply_permissions(engine)
+                await self._resolve_stealth_ua(engine)
                 self._engine = engine
                 return
             launcher = ChromeLauncher(
@@ -198,11 +204,38 @@ class Browser:
                 engine = CDPEngine()
                 await engine.connect(ws_url)
                 await self._apply_permissions(engine)
+                await self._resolve_stealth_ua(engine)
             except BaseException:
                 launcher.terminate()
                 raise
             self._launcher = launcher
             self._engine = engine
+
+    async def _resolve_stealth_ua(self, engine: CDPEngine) -> None:
+        """Derives the stealth-mode UA from whatever Chrome is actually
+        running, rather than a hardcoded version string that drifts out of
+        sync with it (measured 2026-08-12: a pinned "Chrome/149" next to a
+        running 151 binary — see _STEALTH_UA's comment in launcher.py). A
+        no-op when stealth=False: _stealth_ua stays None and open() never
+        applies an override, so a caller who never asked for stealth sees no
+        behavior change at all.
+
+        Best-effort like _apply_permissions above: a remote CDP endpoint
+        (attach mode via cdp_url) may not implement Browser.getVersion, and
+        that must not block attaching to it — falls back to the hardcoded
+        constant rather than leaving stealth half-applied.
+        """
+        if not self._stealth:
+            return
+        try:
+            info = await engine.send("Browser.getVersion")
+            real_ua = info.get("userAgent", "")
+            self._stealth_ua = (
+                real_ua.replace("HeadlessChrome/", "Chrome/") if real_ua else _STEALTH_UA
+            )
+        except Exception:
+            logger.debug("Failed to resolve real UA for stealth mode", exc_info=True)
+            self._stealth_ua = _STEALTH_UA
 
     async def _apply_permissions(self, engine: CDPEngine) -> None:
         """Grant/deny the configured permissions browser-wide, so a
@@ -271,6 +304,10 @@ class Browser:
             closer=self._close_target,
             block_resources=self._block_resources,
             policy=self._policy,
+            # Not vp["mobile"]: a mobile-emulating page still opens desktop
+            # popups (the mobile UA is set directly on this page's own target
+            # by _apply_viewport and is a separate override from stealth's).
+            stealth_ua=self._stealth_ua,
         )
         self._pages.append(page)
         try:
@@ -290,7 +327,16 @@ class Browser:
     async def _apply_viewport(self, engine: CDPEngine) -> None:
         """Deterministic size/DPR on every tab, plus touch and a matching UA when
         emulating mobile — a mobile viewport with a desktop UA still gets served
-        the desktop layout by any site that branches on UA rather than width."""
+        the desktop layout by any site that branches on UA rather than width.
+
+        mobile= wins over stealth= when both are set: a caller who explicitly
+        asked to emulate a phone gets that UA, not a spoofed desktop one —
+        stealth's whole point is not surprising a caller who asked for
+        something else. Applied here, before goto() in open(), for the same
+        reason CLOSED_SHADOW_PATCH_JS has to be armed before goto(): a page's
+        own scripts must never see the unmasked (or wrong) UA even on the
+        very first navigation.
+        """
         vp = self._viewport
         await engine.send(
             "Emulation.setDeviceMetricsOverride",
@@ -304,6 +350,8 @@ class Browser:
         await engine.send("Emulation.setTouchEmulationEnabled", {"enabled": vp["touch"]})
         if vp["mobile"]:
             await engine.send("Network.setUserAgentOverride", {"userAgent": _MOBILE_UA})
+        elif self._stealth_ua:
+            await engine.send("Network.setUserAgentOverride", {"userAgent": self._stealth_ua})
 
     def _page_ws_url(self, target_id: str) -> str:
         """Websocket for one tab.

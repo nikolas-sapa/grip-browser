@@ -1054,6 +1054,86 @@ async def test_popups_allowed_when_opted_in(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stealth_ua_applied_to_popup_session_before_resume(monkeypatch):
+    """A masked opener (Browser(stealth=True)) must not spawn an unmasked
+    popup: window.open() gets its own CDP target with independent
+    Network-domain state (same reasoning _ensure_popup_blocking's docstring
+    gives for the Fetch domain), so the opener's own per-target override
+    (applied once in Browser.open()) does not reach it. Page threads
+    stealth_ua through so _resume_popup_target can re-apply it on the
+    popup's own session — and must do so *before* resuming it, matching the
+    pause-then-resume ordering test_blocked_popup... already pins for
+    Runtime.runIfWaitingForDebugger.
+    """
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(
+        engine=engine, trace=Trace(), policy=NavigationPolicy(allow_popups=True),
+        stealth_ua="Mozilla/5.0 stealth-ua-sentinel",
+    )
+
+    async def navigate_side_effect():
+        _fire_attached(listeners, "popup-session", "popup-target", "page", url="https://oauth.test/")
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)
+    await asyncio.sleep(0)
+
+    ua_calls = [
+        (m, p) for m, p in sent if m == "Network.setUserAgentOverride"
+    ]
+    assert len(ua_calls) == 1
+    assert ua_calls[0][1] == {"userAgent": "Mozilla/5.0 stealth-ua-sentinel"}
+    assert ("Network.setUserAgentOverride", "popup-session") in session_sent
+    assert ("Runtime.runIfWaitingForDebugger", "popup-session") in session_sent
+
+    # Ordering: the override must land on the wire before the resume, not
+    # merely both be sent — a popup released before it is masked has already
+    # had the chance to run unmasked JS on its very first paint.
+    ua_index = next(i for i, (m, _) in enumerate(sent) if m == "Network.setUserAgentOverride")
+    resume_index = next(
+        i for i, (m, _) in enumerate(sent) if m == "Runtime.runIfWaitingForDebugger"
+    )
+    assert ua_index < resume_index
+
+
+@pytest.mark.asyncio
+async def test_no_stealth_ua_means_no_popup_override(monkeypatch):
+    """A caller who never asked for stealth (stealth_ua=None, the default)
+    must see no new CDP call and no behavior change at all."""
+    engine, listeners, sent, _session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy(allow_popups=True))
+
+    async def navigate_side_effect():
+        _fire_attached(listeners, "popup-session", "popup-target", "page", url="https://oauth.test/")
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert not any(m == "Network.setUserAgentOverride" for m, _ in sent)
+
+
+@pytest.mark.asyncio
 async def test_non_popup_attached_target_is_resumed_not_closed(monkeypatch):
     """An OOPIF (out-of-process iframe) or worker also arrives through the same
     auto-attach — those are ordinary parts of rendering this page, not popups,

@@ -523,12 +523,21 @@ class Page:
         settle_timeout: float = _SETTLE_TIMEOUT_S,
         dialog_policy: dict[str, bool] | None = None,
         dismiss_consent_banners: bool = True,
+        stealth_ua: str | None = None,
     ) -> None:
         self._engine = engine
         self._trace = trace
         self._target_id = target_id
         self._safe = safe
         self._closer = closer
+        # Set only under Browser(stealth=True) (see Browser._resolve_stealth_ua)
+        # — None for every other caller, so this Page's own target already got
+        # the override from Browser.open()'s _apply_viewport() and there is
+        # nothing left to do with it here except cover popups this page opens
+        # (see _resume_popup_target): a popup is a brand-new CDP target with
+        # its own independent Network-domain state, unreachable from the
+        # opener's own override.
+        self._stealth_ua = stealth_ua
         # Fail-closed default: a Page built without going through Browser.open()
         # (a direct construction, or a future call site that forgets to thread
         # the Browser's policy through) still refuses private/file/metadata
@@ -1023,7 +1032,7 @@ class Page:
             self._popup_queue.put_nowait(
                 PopupInfo(target_id=target_id, url=popup_url, session_id=session_id)
             )
-            self._spawn_bg(self._resume_attached_target(session_id))
+            self._spawn_bg(self._resume_popup_target(session_id))
             return
         self._spawn_bg(self._resume_attached_target(session_id))
 
@@ -1062,6 +1071,30 @@ class Page:
             await self._engine.send(
                 "Runtime.runIfWaitingForDebugger", {}, session_id=session_id
             )
+
+    async def _resume_popup_target(self, session_id: str) -> None:
+        """Same resume as _resume_attached_target, but for a popup: applies
+        this Page's stealth UA to the popup's own session first, so a masked
+        opener never spawns an unmasked child.
+
+        A popup gets a brand-new CDP target with independent per-domain state
+        (see _ensure_popup_blocking's docstring for the same point about the
+        Fetch domain) — Network.setUserAgentOverride on this page's own
+        session does nothing for it. Sent while the popup is still paused
+        (waitForDebuggerOnStart), before Runtime.runIfWaitingForDebugger lets
+        its own scripts run, for the same "before any script" reason
+        CLOSED_SHADOW_PATCH_JS has to be armed before goto(). Best-effort: a
+        popup target that closed between attach and here should not block
+        resuming whatever attached targets remain.
+        """
+        if self._stealth_ua:
+            with contextlib.suppress(Exception):
+                await self._engine.send(
+                    "Network.setUserAgentOverride",
+                    {"userAgent": self._stealth_ua},
+                    session_id=session_id,
+                )
+        await self._resume_attached_target(session_id)
 
     async def goto(self, url: str, timeout: float = 30.0) -> None:
         """Navigate this tab and wait for the load event.
@@ -2607,12 +2640,12 @@ class Page:
     ) -> ChallengeResult:
         deadline = time.monotonic() + timeout
         geom = await self._eval(SLIDER_PROBE_JS)
-        if not isinstance(geom, dict):
-            return ChallengeResult(
-                status="unsupported",
-                stage=stage,
-                detail="Could not locate the slider handle and its track.",
-            )
+        if not isinstance(geom, dict) or "endX" not in geom:
+            reason = geom.get("reason") if isinstance(geom, dict) else None
+            detail = "Could not locate the slider handle and its track."
+            if reason:
+                detail = f"{detail} ({reason})"
+            return ChallengeResult(status="unsupported", stage=stage, detail=detail)
         await self.drag(
             (int(geom["x"]), int(geom["y"])),
             (int(geom["endX"]), int(geom["y"])),

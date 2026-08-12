@@ -266,37 +266,117 @@ recorded. The default stays the JS path — it is faster and works headless —
 and `human=True` is for challenge flows.
 
 Chrome under CDP sets `navigator.webdriver` and puts `HeadlessChrome` in the user
-agent. `Browser(stealth=True)` removes both. It is off by default because grip is a
-general-purpose SDK and silently masking automation would surprise anyone using it
-for ordinary testing. Measured once, on 2026-08-10, with
-`evaluation/stealth_measurement.py`:
+agent. `Browser(stealth=True)` removes both — the first via a launch flag
+(`--disable-blink-features=AutomationControlled`), the second via CDP's
+`Network.setUserAgentOverride`, applied once the engine connects rather than at
+launch, and derived from whatever Chrome build is actually running rather than
+a hardcoded version string (so the UA grip reports can't drift out of sync with
+the binary serving it — verified against both the JS-visible `navigator.userAgent`
+and the actual outgoing `User-Agent` request header, not just the former). It is
+off by default because grip is a general-purpose SDK and silently masking
+automation would surprise anyone using it for ordinary testing.
+
+The override is per-target: applied to every tab `Browser.open()` creates,
+full stop. It does not automatically extend to any other target — a popup
+opened via `window.open()` under `allow_popups=True` is a distinct CDP target
+with its own independent Network-domain state, so the opener's masked UA does
+not reach it by itself. `Page._resume_popup_target` re-applies the override to
+a popup's own session before releasing it, but this is **verified only by unit
+test against a mocked engine, not against a real popup**: on this Chrome/CDP
+version, `Target.attachedToTarget` was never observed to fire for a
+`window.open()` popup at all — a pre-existing gap, unrelated to this change,
+already documented at `tests/integration/test_capabilities.py:279`
+(`test_wait_for_popup_observes_a_real_popup`, skipped). The popup code path
+this stealth fix adds could not be exercised end to end on this build.
+
+Measured 2026-08-12, per-signal, against the sannysoft table directly (57 rows;
+`benchmarks/bench_stealth_signals.py`) on Chrome for Testing 151.0.7922.34,
+macOS arm64, `--headless=new`:
+
+```
+signal                    stealth=False           stealth=True
+User Agent                HeadlessChrome/151 FAIL Chrome/151 pass
+WebDriver                 present (FAIL)          missing (pass)
+HEADCHR_UA                FAIL                     ok (pass)
+CHR_MEMORY                FAIL                     ok (pass)
+navigator.userAgent       HeadlessChrome/151 FAIL Chrome/151 pass
+(52 other rows)           pass                     pass
+total FAIL rows           5 / 57                   0 / 57
+
+.venv/bin/python benchmarks/bench_stealth_signals.py
+```
+
+All 5 pre-existing failures flipped to pass under the same change — the UA
+override and `navigator.webdriver` removal, the only two tells `stealth=True`
+was ever designed to remove. Four of the five name their own mechanism in the
+row itself (`User Agent`, `navigator.userAgent`, `HEADCHR_UA`: UA string;
+`WebDriver`: `navigator.webdriver`); `CHR_MEMORY` does not name what it checks
+and was only observed to flip along with the rest, not traced to a specific
+API — stated as observed, not explained. Every other row on this probe
+(plugins, languages, WebGL vendor/renderer, permissions consistency,
+`window.chrome`, screen dimensions, canvas) was **already passing before any
+change here**, on this build — not because grip patched them, but because a
+modern `--headless=new` Chrome with a real GPU already reports them honestly.
+That is a fact about this host (Apple Silicon, ANGLE Metal renderer, not
+SwiftShader) and is not claimed for GPU-less environments (Linux CI/Docker),
+which were not measured.
+
+Coarser, older method (regex "tell" count over flattened page text, not
+per-signal — `evaluation/stealth_measurement.py`), re-measured the same day:
 
 ```
 probe                                     stealth=False  stealth=True
 https://bot.sannysoft.com/                10 tells        4 tells
-https://abrahamjuliot.github.io/creepjs/   3 tells        0 tells
+https://abrahamjuliot.github.io/creepjs/   3 tells        1 tell
 
 .venv/bin/python -m evaluation.stealth_measurement
 ```
 
-Read that narrowly. These probes count the signals they choose to report, so
-fewer tells is not "undetectable" — a service that scores rather than lists may
-weigh signals these pages never surface. It was **not** tested against any live
-anti-bot system: no reCAPTCHA, no Cloudflare challenge, no commercial bot
-manager. It is one run on one machine, one Chrome build and one IP, so
-run-to-run variance is unknown. It says nothing about TLS/JA3. And it does not
-predict that a site will let you through — IP reputation usually decides that,
-and neither flag touches it. (A competitor measured the *page-world shim*
-approach against live reCAPTCHA and found it made detection easier; that is a
-different mechanism — init scripts patching navigator from inside the page —
-than the two launch flags measured here, so both results can hold.)
+Read all of this narrowly. These probes count the signals they choose to
+report, so fewer tells/fails is not "undetectable" — a service that scores
+rather than lists may weigh signals these pages never surface. Neither was
+tested against any live anti-bot system: no reCAPTCHA, no Cloudflare challenge,
+no commercial bot manager. Both are one run on one machine, one Chrome build
+and one IP — the creepjs count above (1, vs. 0 on a run two days earlier) is
+itself the run-to-run variance this caveat has always named, not a regression.
+Neither predicts that a site will let you through — IP reputation usually
+decides that, and neither flag touches it. (A competitor measured the
+*page-world shim* approach against live reCAPTCHA and found it made detection
+easier; that is a different mechanism — init scripts patching navigator from
+inside the page — than the CDP-level launch flag and override measured here,
+so both results can hold.)
 
-grip does **not** hide that it is automation at the network layer. TLS/JA3
-fingerprints, and full headless fingerprint parity, live below the Chrome
-DevTools Protocol and cannot be reached from a Python client driving stock
-Chromium. If a site blocks you on IP reputation or TLS fingerprint, no flag in
-this library will change that — that is an egress problem, and the answer is a
-residential or mobile proxy, which grip supports via `proxy=`.
+One known gap this leaves open, and why it stays open: overriding the UA string
+at all — with or without this fix, on this Chrome build — makes
+`navigator.userAgentData` (Client Hints / `Sec-CH-UA`) come back `undefined`.
+Chromium only preserves it when an explicit `userAgentMetadata` payload
+accompanies the override, and that payload's randomized "GREASE" brand entry is
+only readable from an already-loaded real page — exactly what stealth mode
+intercepts *before*. Fabricating one by hand would trade a real leak for a
+different, static, and arguably more suspicious one (a Client Hints payload
+that never varies across sessions the way a real browser's does), so grip does
+not attempt it. A real desktop Chrome always has `navigator.userAgentData`
+present; under `stealth=True` it does not — that inconsistency is real,
+unfixed, and stated here rather than left for someone else to find. (The
+`Sec-CH-UA*` request headers themselves were observed absent in both modes on
+this build over plain HTTP to loopback — no header-side mismatch to fix; the
+gap above is JS-side only, on `navigator.userAgentData`.)
+
+grip does **not** hide that it is automation at the network layer — but that
+was never true the way it used to be stated here. grip drives real Chromium, so
+the TLS/JA3 fingerprint already **is** Chrome's own: the handshake is performed
+by Chromium's own network stack, not by anything a Python client controls or
+could get wrong, and this was never a gap for CDP to reach. (Not independently
+verified by capturing a JA3 hash in this repo — stated from how grip is
+built, not from a packet capture.) What genuinely lives below CDP and stays
+unmeasured/unaddressed here is CDP-attachment detection itself — grip's
+snapshot pipeline depends on `Runtime.enable`/`Runtime.evaluate`
+(`grip/page.py`), and a page that can detect the DevTools protocol session
+being attached operates at a layer no injected script can reach or hide,
+unfixable by design for a tool built on CDP. IP reputation is a separate,
+genuine gap: if a site blocks you on that, no flag in this library changes it —
+that is an egress problem, and the answer is a residential or mobile proxy,
+which grip supports via `proxy=`.
 
 ## With an LLM (autonomous mode)
 

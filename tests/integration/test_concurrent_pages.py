@@ -12,7 +12,6 @@ import uuid
 import pytest
 
 from grip.browser import Browser
-from grip.cdp.launcher import _STEALTH_UA
 
 # data: is refused by the navigation policy (attacker-controlled markup in page
 # context); a real file on disk gives each tab a distinct URL just as well.
@@ -119,11 +118,55 @@ async def test_stealth_changes_the_two_free_tells():
     assert stealth_webdriver != baseline_webdriver, (
         f"stealth=True did not change navigator.webdriver (stayed {stealth_webdriver!r})"
     )
-    # The two fully deterministic facts here, independent of Chrome build/version:
-    # stealth passes _STEALTH_UA verbatim via --user-agent=, and non-stealth does not.
-    assert stealth_ua == _STEALTH_UA
-    assert baseline_ua != _STEALTH_UA
+    # stealth derives its UA from the real running Chrome (Browser._resolve_stealth_ua)
+    # rather than a hardcoded version string — pinning this test to the literal
+    # _STEALTH_UA fallback would make it pass even if that derivation broke and
+    # silently fell back. Assert the actual, version-independent invariant instead:
+    # same UA as baseline except "HeadlessChrome" swapped for "Chrome".
+    assert stealth_ua == baseline_ua.replace("HeadlessChrome/", "Chrome/")
     assert "Headless" not in stealth_ua
+
+
+@pytest.mark.asyncio
+async def test_stealth_ua_changes_the_outgoing_header_not_just_navigator_ua():
+    """Network.setUserAgentOverride is documented to affect both the
+    JS-visible navigator.userAgent AND the outgoing User-Agent request
+    header — every other assertion in this file only ever checked the JS
+    side. A request header still saying HeadlessChrome while JS claims
+    Chrome would be a worse, trivially server-side-detectable regression
+    from this change, not a fix — this is the one test that would catch it.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen_headers: dict[str, str] = {}
+
+    class _Echo(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen_headers.update(dict(self.headers))
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", 0), _Echo)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_port}/"
+        async with Browser(headless=True, stealth=True, allow_private=True) as browser:
+            await browser.open(url)
+    finally:
+        httpd.shutdown()
+
+    ua_header = seen_headers.get("User-Agent", "")
+    assert ua_header, "the request never reached the local server"
+    assert "Headless" not in ua_header, (
+        f"outgoing User-Agent header still says Headless: {ua_header!r}"
+    )
 
 
 @pytest.mark.asyncio

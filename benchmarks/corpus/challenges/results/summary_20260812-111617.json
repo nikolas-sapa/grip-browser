@@ -1,0 +1,476 @@
+{
+  "generated_at": "2026-08-12T11:18:29.463371+00:00",
+  "n_runs_per_fixture": 5,
+  "classification": [
+    {
+      "fixture": "neg_plain.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "page_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "fixture": "neg_login_no_captcha.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "page_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "fixture": "neg_captcha_field_only.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "page_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "fixture": "neg_captcha_img_only.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "page_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "fixture": "neg_blog_solve_a_captcha.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 0,
+      "page_correct": 0,
+      "runs": 5,
+      "pure_fn_observed": [
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ],
+      "page_observed": [
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ]
+    },
+    {
+      "fixture": "neg_security_check_footer.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "page_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "fixture": "neg_turnstile_docs_snippet.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 0,
+      "page_correct": 0,
+      "runs": 5,
+      "pure_fn_observed": [
+        "turnstile",
+        "turnstile",
+        "turnstile",
+        "turnstile",
+        "turnstile"
+      ],
+      "page_observed": [
+        "turnstile",
+        "turnstile",
+        "turnstile",
+        "turnstile",
+        "turnstile"
+      ]
+    },
+    {
+      "fixture": "neg_carousel_slider.html",
+      "source": "synthetic-fixture",
+      "expected": "none",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "page_observed": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "fixture": "pos_checkbox_recaptcha.html",
+      "source": "synthetic-fixture",
+      "expected": "checkbox",
+      "pure_fn_correct": 0,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible"
+      ],
+      "page_observed": [
+        "checkbox",
+        "checkbox",
+        "checkbox",
+        "checkbox",
+        "checkbox"
+      ]
+    },
+    {
+      "fixture": "pos_checkbox_hcaptcha.html",
+      "source": "synthetic-fixture",
+      "expected": "checkbox",
+      "pure_fn_correct": 0,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible"
+      ],
+      "page_observed": [
+        "checkbox",
+        "checkbox",
+        "checkbox",
+        "checkbox",
+        "checkbox"
+      ]
+    },
+    {
+      "fixture": "pos_image_grid.html",
+      "source": "synthetic-fixture",
+      "expected": "image_grid",
+      "pure_fn_correct": 0,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible"
+      ],
+      "page_observed": [
+        "image_grid",
+        "image_grid",
+        "image_grid",
+        "image_grid",
+        "image_grid"
+      ]
+    },
+    {
+      "fixture": "pos_slider.html",
+      "source": "synthetic-fixture",
+      "expected": "slider",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "slider",
+        "slider",
+        "slider",
+        "slider",
+        "slider"
+      ],
+      "page_observed": [
+        "slider",
+        "slider",
+        "slider",
+        "slider",
+        "slider"
+      ]
+    },
+    {
+      "fixture": "pos_text_captcha.html",
+      "source": "synthetic-fixture",
+      "expected": "text",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "text",
+        "text",
+        "text",
+        "text",
+        "text"
+      ],
+      "page_observed": [
+        "text",
+        "text",
+        "text",
+        "text",
+        "text"
+      ]
+    },
+    {
+      "fixture": "pos_invisible.html",
+      "source": "synthetic-fixture",
+      "expected": "invisible",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible"
+      ],
+      "page_observed": [
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible",
+        "invisible"
+      ]
+    },
+    {
+      "fixture": "pos_unknown_prose.html",
+      "source": "synthetic-fixture",
+      "expected": "unknown",
+      "pure_fn_correct": 5,
+      "page_correct": 5,
+      "runs": 5,
+      "pure_fn_observed": [
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ],
+      "page_observed": [
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown"
+      ]
+    }
+  ],
+  "solve_synthetic": [
+    {
+      "fixture": "solve_checkbox_success.html",
+      "source": "synthetic-fixture",
+      "expected_status": "solved",
+      "runs": 5,
+      "attempted": 5,
+      "matched_expected": 0,
+      "false_solved": 0,
+      "observed_statuses": [
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout"
+      ],
+      "notes": []
+    },
+    {
+      "fixture": "solve_checkbox_never.html",
+      "source": "synthetic-fixture",
+      "expected_status": "timeout",
+      "runs": 5,
+      "attempted": 5,
+      "matched_expected": 5,
+      "false_solved": 0,
+      "observed_statuses": [
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout"
+      ],
+      "notes": []
+    },
+    {
+      "fixture": "solve_checkbox_zero_size.html",
+      "source": "synthetic-fixture",
+      "expected_status": "unsupported",
+      "runs": 5,
+      "attempted": 5,
+      "matched_expected": 5,
+      "false_solved": 0,
+      "observed_statuses": [
+        "unsupported",
+        "unsupported",
+        "unsupported",
+        "unsupported",
+        "unsupported"
+      ],
+      "notes": []
+    },
+    {
+      "fixture": "solve_slider_success.html",
+      "source": "synthetic-fixture",
+      "expected_status": "solved",
+      "runs": 5,
+      "attempted": 5,
+      "matched_expected": 0,
+      "false_solved": 0,
+      "observed_statuses": [
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout"
+      ],
+      "notes": []
+    },
+    {
+      "fixture": "solve_slider_never.html",
+      "source": "synthetic-fixture",
+      "expected_status": "timeout",
+      "runs": 5,
+      "attempted": 5,
+      "matched_expected": 5,
+      "false_solved": 0,
+      "observed_statuses": [
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout"
+      ],
+      "notes": []
+    },
+    {
+      "fixture": "solve_slider_no_track.html",
+      "source": "synthetic-fixture",
+      "expected_status": "unsupported",
+      "runs": 5,
+      "attempted": 5,
+      "matched_expected": 5,
+      "false_solved": 0,
+      "observed_statuses": [
+        "unsupported",
+        "unsupported",
+        "unsupported",
+        "unsupported",
+        "unsupported"
+      ],
+      "notes": []
+    }
+  ],
+  "solve_turnstile_live": [
+    {
+      "fixture": "turnstile-always-passes",
+      "source": "real-widget(cloudflare-test-key)",
+      "expected_status": "solved",
+      "runs": 3,
+      "attempted": 3,
+      "matched_expected": 0,
+      "false_solved": 0,
+      "observed_statuses": [
+        "unsupported",
+        "unsupported",
+        "unsupported"
+      ],
+      "notes": []
+    },
+    {
+      "fixture": "turnstile-always-fails",
+      "source": "real-widget(cloudflare-test-key)",
+      "expected_status": "timeout",
+      "runs": 3,
+      "attempted": 3,
+      "matched_expected": 0,
+      "false_solved": 0,
+      "observed_statuses": [
+        "unsupported",
+        "unsupported",
+        "unsupported"
+      ],
+      "notes": []
+    }
+  ],
+  "caveats": [
+    "Synthetic fixtures live in this repo and decide their own pass/fail; they measure whether grip finds the right target and dispatches the right interaction against markup this corpus controls, not whether grip defeats any real anti-bot scoring backend.",
+    "Turnstile rows use Cloudflare's own published test sitekeys (1x00000000000000000000AA / 2x00000000000000000000AB), a handful of runs, no loops or retries against the live service."
+  ]
+}

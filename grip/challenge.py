@@ -90,13 +90,40 @@ _TEXT_INPUT = re.compile(r"<input[^>]+(?:name|id)=[\"'][^\"']*captcha", re.IGNOR
 # Wording a challenge interstitial uses. Deliberately imperative: an article
 # titled "A history of the captcha" must not trip it, or every agent run on a
 # security blog stops to solve a challenge that is not there.
+#
+# "captcha" alone is too weak an object: ordinary prose *about* captchas
+# ("a browser game where you solve a captcha puzzle") pairs it with an
+# imperative verb too, so the captcha branch additionally requires the
+# continuation clause a real interstitial uses ("to continue" / "required")
+# within range of the match, same as the second alternative already did.
+# "you are human" / "not a robot" are left unqualified — nobody narrates
+# "a game where you verify you are human" — so real bare Cloudflare-style
+# wording ("Please verify you are human.") still fires.
 _PROSE_CHALLENGE = re.compile(
-    r"(?:complete|solve|verify|confirm)[^.<>]{0,40}"
-    r"(?:captcha|you\s+are\s+human|not\s+a\s+robot)"
+    r"(?:complete|solve|verify|confirm)[^.<>]{0,40}captcha"
+    r"(?:[^.<>]{0,20}(?:to\s+continue|before\s+continuing|required))"
+    r"|(?:complete|solve|verify|confirm)[^.<>]{0,40}"
+    r"(?:you\s+are\s+human|not\s+a\s+robot)"
     r"|(?:captcha|security\s+check)[^.<>]{0,40}(?:to\s+continue|required)"
     r"|checking\s+your\s+browser",
     re.IGNORECASE,
 )
+
+
+def _has_widget_element(html: str, marker: str) -> bool:
+    """True only if `marker` names a live element's class, not quoted text.
+
+    A docs page showing `&lt;div class="cf-turnstile"&gt;` as a code sample
+    contains the substring "cf-turnstile" too, but never preceded by a real
+    `<` tag delimiter (the entity survives a DOM round-trip as literal text).
+    Requiring a literal `<tag ... class="...marker..."` match tells a
+    rendered widget apart from a quoted snippet.
+    """
+    pattern = re.compile(
+        r"<[a-zA-Z][\w-]*\b[^>]*\bclass\s*=\s*[\"'][^\"']*\b" + re.escape(marker) + r"\b",
+        re.IGNORECASE,
+    )
+    return bool(pattern.search(html))
 
 
 def detect_challenge_from_html(html: str, frames: list[str]) -> ChallengeStage:
@@ -111,7 +138,7 @@ def detect_challenge_from_html(html: str, frames: list[str]) -> ChallengeStage:
     if _RECAPTCHA_BFRAME in joined or _RECAPTCHA_ENTERPRISE_BFRAME in joined:
         return ChallengeStage.IMAGE_GRID
 
-    if _TURNSTILE_HOST in joined or "cf-turnstile" in lowered:
+    if _TURNSTILE_HOST in joined or _has_widget_element(html, "cf-turnstile"):
         return ChallengeStage.TURNSTILE
 
     for marker in _SLIDER_MARKERS:
@@ -123,7 +150,9 @@ def detect_challenge_from_html(html: str, frames: list[str]) -> ChallengeStage:
         or _RECAPTCHA_ENTERPRISE_ANCHOR in joined
         or _HCAPTCHA_HOST in joined
     )
-    widget = next((s for m, s in _WIDGET_MARKERS.items() if m in lowered), None)
+    widget = next(
+        (s for m, s in _WIDGET_MARKERS.items() if _has_widget_element(html, m)), None
+    )
 
     if has_anchor:
         return ChallengeStage.CHECKBOX
@@ -195,21 +224,40 @@ POINT_PROBE_JS = """
 })()
 """
 
-# Handle and track geometry for a slider. Without a track width there is nothing
-# to drag along, so a missing rail returns null rather than a guessed distance.
+# Handle and track geometry for a slider. Without a track width meaningfully
+# wider than the handle there is nothing to drag along, so a missing or
+# self-matched rail returns a reason instead of a guessed near-zero distance.
 SLIDER_PROBE_JS = """
 (function gripChallengeSlider() {
   var handle = document.querySelector(
     '.geetest_slider_button, .nc_iconfont.btn_slide, [class*="slider-btn"],'
     + '[class*="slider_button"], [class*="handler"]');
-  if (!handle) return null;
-  var track = handle.closest(
-    '.geetest_slider, .nc_scale, [class*="slider-track"], [class*="slider"]')
-    || handle.parentElement;
-  if (!track) return null;
+  if (!handle) return {reason: 'no_handle'};
   var h = handle.getBoundingClientRect();
+  if (h.width === 0) return {reason: 'handle_zero_size'};
+
+  // Walk real ancestors only, starting at the handle's parent -- never the
+  // handle itself or one of its descendants. A handle's own class often
+  // contains "slider" too (e.g. "geetest_slider_button" matches
+  // `[class*="slider"]`), so `handle.closest(...)` self-matches and must
+  // not be used here.
+  // No blind parentElement fallback: an unrecognised ancestor (e.g. <body>)
+  // is not a "genuine ancestor track", it is just some wider box, and
+  // dragging to its edge would overshoot the real rail by a lot further
+  // than the old zero-px bug undershot it.
+  var trackSel = '.geetest_slider, .nc_scale, [class*="slider-track"], [class*="slider"]';
+  var track = null;
+  for (var el = handle.parentElement; el; el = el.parentElement) {
+    if (el.matches && el.matches(trackSel)) { track = el; break; }
+  }
+  if (!track) return {reason: 'no_track_ancestor'};
+
   var t = track.getBoundingClientRect();
-  if (h.width === 0 || t.width === 0) return null;
+  // A real track is a rail the handle travels along, not a same-size
+  // wrapper -- require it to be meaningfully wider than the handle so a
+  // near-self match can never collapse the drag distance to ~0px.
+  if (t.width < h.width * 1.5) return {reason: 'track_not_wider_than_handle'};
+
   return {
     x: Math.round(h.left + h.width / 2),
     y: Math.round(h.top + h.height / 2),

@@ -4,6 +4,65 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.1] - 2026-08-12
+
+Measurement release. Two things the site called "unmeasured" got measured,
+and the measuring found real bugs.
+
+### Fixed
+
+- **The slider solver never worked.** `SLIDER_PROBE_JS` resolved the track
+  with `handle.closest('[class*="slider"]')`, which matched the handle
+  itself (its own class contains "slider"), so the drag distance collapsed
+  to roughly zero and every attempt timed out — including on markup
+  matching grip's own documented geetest example. The track is now resolved
+  from a genuine ancestor wider than the handle, and bails with a stated
+  reason instead of silently dragging nothing. Benchmarked 0/5 → 5/5.
+- **Two challenge classifier false positives**, both deterministic: ordinary
+  prose containing "solve a captcha puzzle" classified as a challenge, and a
+  documentation page merely quoting the `cf-turnstile` embed snippet as text
+  classified as Turnstile. False-positive rate on the negative fixtures went
+  10/40 → 0/40.
+- **The stealth user agent was pinned to a Chrome version that was not
+  running.** `_STEALTH_UA` hardcoded `Chrome/149` while the launched binary
+  was 151 — self-inconsistent, and worse with every Chrome release. It is
+  now derived from `Browser.getVersion()` at runtime, applied via
+  `Network.setUserAgentOverride` so it fixes the outgoing request header and
+  not only `navigator.userAgent`, and re-applied to popup targets.
+
+### Added
+
+- **`benchmarks/bench_challenges.py`** with 26 local fixtures: measures
+  classification accuracy (including negatives, so false positives count),
+  solve rate, and whether a "solved" claim is ever false. Across 30 solve
+  runs, zero false-solved — the "reports solved only when verified" claim
+  holds up.
+- **`benchmarks/bench_stealth_signals.py`**, which reads bot.sannysoft's own
+  57-row result table rather than regexing page text.
+
+### Measured
+
+On real Chrome for Testing 151, macOS arm64, `--headless=new`: 5 of 57
+sannysoft signals failed with stealth off, 0 of 57 with it on. All five were
+user-agent related. Every other commonly-cited leak — plugins, mimeTypes,
+languages, WebGL vendor/renderer, permissions consistency, window.chrome,
+screen dimensions — already passed before any change, on this host. No
+page-world JS shims were added: patching signals that already pass is how
+you manufacture a new tell.
+
+TLS/JA3 was never a gap. grip drives real Chromium, so the handshake is
+Chromium's own.
+
+### Still true
+
+`navigator.userAgentData` is left undefined under UA override rather than
+fabricated. A page that detects the DevTools session itself is below
+anything an injected script can reach — unfixable for any CDP-based tool.
+IP reputation remains an egress problem. Challenge solve rates outside
+these synthetic fixtures remain unmeasured, and Cloudflare's public test
+sitekeys short-circuit the real widget flow, so production Turnstile's
+click path is still untested here.
+
 ## [0.8.0] - 2026-08-12
 
 Three audits of the agent-facing surface (ergonomics, browser capability

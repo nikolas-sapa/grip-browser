@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>anchor that ignores clicks</title></head>
+<body>
+
+<style>html,body{margin:0;height:100%}</style>
+<body style="position:relative">
+<div id="checkbox" style="position:absolute;left:16px;top:50%;transform:translateY(-50%);width:28px;height:28px;border:2px solid #555;border-radius:3px;cursor:pointer"></div>
+<script>
+// Deliberately does not postMessage on click: this stands in for a widget
+// that scores the interaction server-side and refuses silently.
+document.getElementById('checkbox').addEventListener('click', function () {
+  this.style.background = '#f44336';
+});
+</script>
+</body>
+
+</body></html>
