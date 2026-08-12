@@ -71,9 +71,11 @@ async def test_snapshot_increments_version():
         {"result": {"value": "[]"}},
         {"result": {"value": ""}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
+        {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
         {"result": {"value": "[]"}},
         {"result": {"value": ""}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
+        {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
     ]
     page = Page(engine=engine, trace=Trace())
     s1 = await page.snapshot()
@@ -625,9 +627,11 @@ async def test_second_snapshot_exposes_a_delta():
         {"result": {"value": "[]"}},
         {"result": {"value": "hello"}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
+        {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
         {"result": {"value": "[]"}},
         {"result": {"value": "hello"}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
+        {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
     ]
     page = Page(engine=engine, trace=Trace())
     await page.snapshot()

@@ -18,6 +18,7 @@ from grip.cdp.shadow import (
     CLICK_REVEAL_JS,
     DISCOVER_ELEMENTS_JS,
     PAGE_TEXT_JS,
+    PROBE_CLICKABLE_JS,
     READ_CONTENT_JS,
     SCROLL_BOTTOM_JS,
     TYPE_ELEMENT_JS,
@@ -50,6 +51,34 @@ from grip.trace import Trace, TraceEntry
 # An element still has to be listed and clickable after its label is cut, so the
 # label is replaced rather than the element dropped.
 _ELIDED = "[elided: detected instruction-like text]"
+
+# Only a real 'click' listener counts. Page JS cannot introspect its own
+# addEventListener calls, so PROBE_CLICKABLE_JS (grip/cdp/shadow.py) only
+# ranks and bounds *candidates*; this is the ground truth, decided from CDP
+# DOMDebugger.getEventListeners against the live page. Deliberately narrow:
+# mousedown/pointerdown-only elements (drag handles, custom scroll targets)
+# are excluded rather than guessed at — a false positive here hands the model
+# a "clickable" element that does nothing, which is worse than the element
+# not appearing at all.
+_CLICK_LISTENER_TYPES = frozenset({"click"})
+
+# Wall-clock ceiling on the whole probe pass (JS eval + object resolution +
+# every DOMDebugger.getEventListeners call). This is a heuristic add-on to
+# snapshot(), never allowed to turn a working snapshot into a failed one — see
+# Page._discover_probe_elements.
+_PROBE_TIMEOUT_S = 2.0
+
+_PROBE_OBJECT_GROUP = "grip-probe"
+
+
+def _has_click_listener(listeners: list[dict[str, Any]]) -> bool:
+    """Pure so the false-positive control — a plain container div, or any
+    element with only non-click listeners, must not be treated as clickable —
+    is unit-testable without a real browser."""
+    return any(
+        (listener or {}).get("type") in _CLICK_LISTENER_TYPES
+        for listener in listeners
+    )
 
 # upload() resolves against its own discovery pass rather than the shared
 # DISCOVER_ELEMENTS_JS/snapshot pipeline (grip/cdp/shadow.py): that pipeline's
@@ -617,12 +646,19 @@ class Page:
             # all but the slowest of the three. Measured on local fixtures
             # (benchmarks/bench_grip.py): ~15-30% faster than sequential, with
             # no behaviour change since none of the three mutate page state.
-            raw_elements, page_text, (title, url) = await asyncio.gather(
-                self._discover_elements(), self._get_page_text(), self._get_page_info()
+            raw_elements, page_text, (title, url), probe_elements = await asyncio.gather(
+                self._discover_elements(), self._get_page_text(), self._get_page_info(),
+                self._discover_probe_elements(),
             )
         except Exception as e:
             err = self._classifier.classify_cdp_error(str(e))
             raise GripError(err) from e
+
+        # Appended after the semantic elements, not merged in document order:
+        # every existing element keeps its index, so callers matching by
+        # earlier snapshot position are unaffected, and a real button/link
+        # still wins over a same-text div in _find_element's first-match scan.
+        raw_elements = raw_elements + probe_elements
 
         if self._current_url and url != self._current_url:
             self._refs.reset()
@@ -1575,6 +1611,124 @@ class Page:
             )
             for d in raw_data
         ]
+
+    async def _resolve_probe_object_ids(self, handles: list[str]) -> dict[str, str]:
+        """Resolves every stamped handle to its live DOM object id in one
+        Runtime.evaluate (an array of elements) plus one Runtime.getProperties
+        call, rather than one Runtime.evaluate per handle — the 2 (not 2N)
+        round trips this pass is bounded to before the per-node listener
+        checks, which are unavoidably one CDP call each."""
+        expr = (
+            "(function(hs){ return hs.map(function(h){"
+            " return document.querySelector('[data-grip-h=\"' + h + '\"]'); }); })"
+            f"({json.dumps(handles)})"
+        )
+        result = await self._engine.send(
+            "Runtime.evaluate",
+            {"expression": expr, "returnByValue": False, "objectGroup": _PROBE_OBJECT_GROUP},
+        )
+        array_object_id = result.get("result", {}).get("objectId")
+        if not array_object_id:
+            return {}
+        props = await self._engine.send(
+            "Runtime.getProperties", {"objectId": array_object_id, "ownProperties": True}
+        )
+        out: dict[str, str] = {}
+        for prop in props.get("result", []):
+            name = prop.get("name", "")
+            if not name.isdigit():
+                continue
+            idx = int(name)
+            if idx >= len(handles):
+                continue
+            value = prop.get("value", {})
+            obj_id = value.get("objectId")
+            # A handle DISCOVER's own pass stamped a moment earlier but that has
+            # since been removed (page re-rendered mid-snapshot) resolves to
+            # null here — skipped rather than probed.
+            if obj_id and value.get("subtype") != "null":
+                out[handles[idx]] = obj_id
+        return out
+
+    async def _has_click_listener_for(self, object_id: str) -> bool:
+        try:
+            result = await self._engine.send(
+                "DOMDebugger.getEventListeners", {"objectId": object_id}
+            )
+        except Exception:
+            return False
+        return _has_click_listener(result.get("listeners", []))
+
+    async def _discover_probe_elements(self) -> list[RawElement]:
+        """Bounded second pass (grip/cdp/shadow.py:PROBE_CLICKABLE_JS + CDP
+        DOMDebugger.getEventListeners) for elements that are clickable only
+        via a JS listener — no role, no tabindex, no native semantics.
+        Never allowed to fail a snapshot: any error anywhere in this path
+        degrades to "no probe elements found" rather than raising, since this
+        is a heuristic add-on to the semantic DISCOVER path snapshot()
+        already depends on."""
+        try:
+            async with asyncio.timeout(_PROBE_TIMEOUT_S):
+                return await self._discover_probe_elements_inner()
+        except Exception:
+            return []
+
+    async def _discover_probe_elements_inner(self) -> list[RawElement]:
+        result = await self._engine.send(
+            "Runtime.evaluate", {"expression": PROBE_CLICKABLE_JS, "returnByValue": True}
+        )
+        raw = result.get("result", {}).get("value")
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        if not raw:
+            return []
+        handles = [d.get("handle", "") for d in raw if d.get("handle")]
+        if not handles:
+            return []
+        try:
+            object_ids = await self._resolve_probe_object_ids(handles)
+            if not object_ids:
+                return []
+            # One CDP call per node is unavoidable (DOMDebugger.getEventListeners
+            # is per-object), but the N calls run concurrently rather than
+            # sequentially, so wall time tracks the slowest single call, not N
+            # times a single call's latency.
+            handles_checked = list(object_ids.keys())
+            checks = await asyncio.gather(
+                *(self._has_click_listener_for(object_ids[h]) for h in handles_checked),
+                return_exceptions=True,
+            )
+            clickable_handles = {
+                h for h, ok in zip(handles_checked, checks, strict=True) if ok is True
+            }
+        finally:
+            with contextlib.suppress(Exception):
+                await self._engine.send(
+                    "Runtime.releaseObjectGroup", {"objectGroup": _PROBE_OBJECT_GROUP}
+                )
+        out = []
+        for d in raw:
+            handle = d.get("handle", "")
+            if handle not in clickable_handles:
+                continue
+            out.append(RawElement(
+                tag=d.get("tag", ""),
+                role=d.get("role") or d.get("tag", ""),
+                text=d.get("text", ""),
+                placeholder=None,
+                in_shadow_dom=d.get("inShadowDom", False),
+                cx=d.get("cx", 0),
+                cy=d.get("cy", 0),
+                computed_display="block",
+                computed_visibility="visible",
+                computed_opacity="1",
+                aria_hidden=False,
+                width=1,
+                height=1,
+                href=None,
+                handle=handle,
+            ))
+        return out
 
     async def _get_page_text(self) -> str:
         result = await self._engine.send(

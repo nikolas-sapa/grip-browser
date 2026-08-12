@@ -202,6 +202,153 @@ _COLLECT_CANDIDATES_JS = _ACCESSIBLE_TEXT_JS + """
   }
 """
 
+# Second pass over the DOM for elements that are clickable only via a JS
+# addEventListener('click') — no role, no tabindex, no native semantics — e.g.
+# `<div class="item" data-id="4">` built by client-side JS. Page script cannot
+# see its own listeners, so this only *narrows the field*: it is cheap,
+# no-layout ranking of "plausibly interactive" nodes. The actual listener check
+# happens in Python (grip/page.py) via CDP DOMDebugger.getEventListeners, which
+# is per-node and therefore the part that must stay bounded.
+#
+# Kept as a wholly separate eval from DISCOVER_ELEMENTS_JS/gripCollect rather
+# than merged into it: DISCOVER_ELEMENTS_JS's output is pinned byte-for-byte
+# against a frozen baseline (tests/integration/test_discover_elements_perf_parity.py),
+# and its shape (the tag/role candidate set) is unrelated to this heuristic
+# working or not. Extending it would either break that pin or force it to also
+# encode CDP-listener knowledge it has no way to verify client-side.
+_PROBE_CANDIDATES_JS = _COLLECT_CANDIDATES_JS + """
+  // Two bounds, not one. PRE_RANK_LIMIT caps how many elements get a cheap,
+  // no-layout score (attribute/text checks only — safe to run over a large
+  // set). MAX_LISTENER_PROBE_NODES caps how many of the top-scored survivors
+  // go on to the expensive, layout-forcing gripIsHidden() + cursor check
+  // before being handed to Python for the actual (per-node CDP) listener
+  // probe. Ranking on cheap signals first, THEN paying for layout only on the
+  // pre-ranked shortlist, is what keeps a large page from being walked with
+  // getComputedStyle on every leaf-text node it contains.
+  const PRE_RANK_LIMIT = __GRIP_PRE_RANK_LIMIT__;
+  const MAX_LISTENER_PROBE_NODES = __GRIP_MAX_LISTENER_PROBE_NODES__;
+
+  // Prose/text-flow tags are almost never themselves a delegated click target
+  // (the click target is a card/row/item wrapping them) and are by far the
+  // most numerous own-text leaves on a real content page. Excluding them is
+  // what keeps PRE_RANK_LIMIT from being spent entirely on paragraph runs.
+  const _PROBE_DENY_TAGS = new Set([
+    'html','head','body','script','style','template','noscript','meta','link',
+    'title','p','pre','blockquote','code','b','i','strong','em','small','sup',
+    'sub','br','hr','option','style'
+  ]);
+
+  // "Not a pure container": true only when the element has its own direct
+  // text node, not text that lives entirely inside child elements. A wrapper
+  // div built purely to lay out children (e.g. `<div id="list">`) never has
+  // one and is excluded before anything layout-forcing runs.
+  function gripHasOwnText(el) {
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3 && n.textContent && n.textContent.trim().length > 0) return true;
+    }
+    return false;
+  }
+
+  // Cheap (no getComputedStyle/getBoundingClientRect) score used only to
+  // shortlist candidates down to PRE_RANK_LIMIT before any layout is forced.
+  function gripCheapScore(el) {
+    let s = 0;
+    if (el.hasAttribute('onclick')) s += 3;
+    if (el.tabIndex >= 0) s += 2;
+    for (const a of el.attributes) { if (a.name.startsWith('data-')) { s += 2; break; } }
+    if ((el.className || '').length > 0) s += 1;
+    const ownLen = (el.textContent || '').trim().length;
+    if (ownLen > 0 && ownLen <= 60) s += 1;
+    return s;
+  }
+
+  function gripCollectProbeCandidates() {
+    const shortlist = [];
+    function walk(root, inShadow) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+      let node = walker.currentNode;
+      while (node) {
+        const el = node;
+        if (el.tagName) {
+          const tag = el.tagName.toLowerCase();
+          if (!_PROBE_DENY_TAGS.has(tag)) {
+            const role = gripRole(el);
+            if (!gripIsCandidate(el, tag, role) && gripHasOwnText(el)) {
+              shortlist.push({ el: el, tag: tag, role: role, inShadow: inShadow,
+                                score: gripCheapScore(el) });
+            }
+          }
+          if (el.shadowRoot) walk(el.shadowRoot, true);
+        }
+        node = walker.nextNode();
+      }
+    }
+    walk(document.body, false);
+
+    // Stable sort (Array#sort is stable per spec): ties keep DOM order, so a
+    // page with nothing but zero-score candidates degrades to the old
+    // DOM-order behaviour rather than an arbitrary one.
+    shortlist.sort(function (a, b) { return b.score - a.score; });
+    const ranked = shortlist.slice(0, PRE_RANK_LIMIT);
+
+    // Only now — on a shortlist bounded by PRE_RANK_LIMIT, not the whole page
+    // — do the layout-forcing calls gripIsHidden() needs. cursor:pointer is
+    // read off the same getComputedStyle call gripIsHidden already makes, so
+    // it is a free extra signal here, not an extra layout pass (this is the
+    // one place cursor:pointer is used: as one ranking signal among several,
+    // never as the sole admission gate).
+    const out = [];
+    for (const c of ranked) {
+      const el = c.el;
+      if (gripIsHidden(el)) continue;
+      const style = window.getComputedStyle(el);
+      let score = c.score;
+      if (style.cursor === 'pointer') score += 2;
+      out.push({ el: el, tag: c.tag, role: c.role, inShadow: c.inShadow, score: score });
+    }
+    out.sort(function (a, b) { return b.score - a.score; });
+    return out.slice(0, MAX_LISTENER_PROBE_NODES).map(function (c) {
+      const el = c.el;
+      const rect = el.getBoundingClientRect();
+      return {
+        handle: gripStamp(el),
+        tag: c.tag,
+        role: c.role || c.tag,
+        text: gripAccessibleText(el).slice(0, 120),
+        inShadowDom: c.inShadow,
+        cx: Math.round(rect.left + rect.width / 2),
+        cy: Math.round(rect.top + rect.height / 2)
+      };
+    });
+  }
+"""
+
+# Named, not magic: PRE_RANK_LIMIT bounds the cheap (no-layout) scoring pass,
+# MAX_LISTENER_PROBE_NODES bounds the expensive per-node CDP
+# DOMDebugger.getEventListeners calls grip/page.py makes against the result of
+# this JS. Both are interpolated into the JS text (see below) so there is one
+# Python-level source of truth a test can assert against, rather than a number
+# duplicated by hand between the .py and .js text.
+GRIP_PRE_RANK_LIMIT = 150
+GRIP_MAX_LISTENER_PROBE_NODES = 40
+
+_PROBE_CANDIDATES_JS = (
+    _PROBE_CANDIDATES_JS
+    .replace("__GRIP_PRE_RANK_LIMIT__", str(GRIP_PRE_RANK_LIMIT))
+    .replace("__GRIP_MAX_LISTENER_PROBE_NODES__", str(GRIP_MAX_LISTENER_PROBE_NODES))
+)
+
+# Standalone eval: returns the ranked, bounded shortlist as JSON. Page.py sends
+# this after DISCOVER_ELEMENTS_JS and only pays for the CDP listener probe on
+# whatever comes back (at most MAX_LISTENER_PROBE_NODES elements).
+PROBE_CLICKABLE_JS = """
+(function() {
+""" + _PROBE_CANDIDATES_JS + """
+  return JSON.stringify(gripCollectProbeCandidates());
+})();
+"""
+
+
 DISCOVER_ELEMENTS_JS = """
 (function() {
 """ + _COLLECT_CANDIDATES_JS + """
