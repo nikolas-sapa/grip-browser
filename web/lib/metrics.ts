@@ -18,7 +18,7 @@
  * competitor tool.
  */
 
-export const VERSION = "0.8.0";
+export const VERSION = "0.8.1";
 
 export const BENCHMARK = {
   date: "2026-08-10",
@@ -214,9 +214,9 @@ export const liveTimings = {
 } as const;
 
 export const tests = {
-  unit: 470,
+  unit: 483,
   gripsearch: 33,
-  integration: 108,
+  integration: 111,
 } as const;
 
 /**
@@ -227,11 +227,11 @@ export const tests = {
 export const limits = [
   {
     title: "Challenges are detected, not defeated",
-    body: "grip classifies checkbox, Turnstile, slider, image-grid, text and invisible challenges from the DOM, and attempts checkbox, Turnstile and slider in-process. It reports \"solved\" only when it can verify the outcome. Image-grid and text challenges come back to your model with a screenshot. No third-party solving service, and solve rates are unmeasured.",
+    body: "grip classifies checkbox, Turnstile, slider, image-grid, text and invisible challenges from the DOM, and attempts checkbox, Turnstile and slider in-process. It reports \"solved\" only when it can verify the outcome. Image-grid and text challenges come back to your model with a screenshot. No third-party solving service. Solve rates against real anti-bot backends are still unmeasured: 0.8.1 added a benchmark over 26 local fixtures, which is evidence that grip finds the right element and dispatches the right interaction, not that it defeats anything. Building it found that the slider solver had never worked at all — the track selector matched the drag handle itself, so every attempt moved zero pixels. Cloudflare's public test sitekeys short-circuit the widget, so production Turnstile's click path remains untested here.",
   },
   {
-    title: "No fingerprint parity",
-    body: "grip does not hide that it is automation at the network layer. TLS/JA3 fingerprints and full headless fingerprint parity live below the DevTools Protocol and cannot be reached from a Python client driving stock Chromium. If a site blocks you on IP reputation, that is an egress problem, so route through a proxy.",
+    title: "Fingerprint parity: partly a real ceiling, partly a claim we got wrong",
+    body: "This page used to say TLS/JA3 fingerprints and headless parity sit below the DevTools Protocol and are unreachable. Half of that was wrong. grip drives real Chromium, so the TLS handshake is Chromium's own — JA3 was never a gap. And the headless surface is reachable: measured against bot.sannysoft's 57-signal table on Chrome 151, five signals failed with stealth off and none with it on. All five were user-agent related, including a stealth UA pinned to a Chrome version that was not the one running. Everything else people usually patch — plugins, languages, WebGL vendor, permissions consistency, window.chrome — already passed untouched, so no shims were added: patching a signal that already passes is how you manufacture a new tell. What genuinely cannot be fixed: navigator.userAgentData is left undefined under override rather than fabricated, a page that detects the DevTools session itself is below anything an injected script can reach, and IP reputation is an egress problem — route through a proxy.",
   },
   {
     title: "The delta is guarded against costing more than the page it replaces",
