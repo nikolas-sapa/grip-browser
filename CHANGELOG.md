@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Popup blocking is now an explicit `NavigationPolicy` option, not an
+  unreviewed side effect of v0.6.0.** `window.open()`/`target="_blank"` still
+  fails under the default policy — that has not changed — but it is now a
+  documented choice (`NavigationPolicy(allow_popups=True)` / `Browser(...,
+  allow_popups=True)`) rather than a silent one. Opting in permits popups at
+  the cost of the same protection blocking existed for: the popup's CDP
+  target has no Fetch interception, so `NavigationPolicy` is not enforced
+  inside it.
+- A blocked popup is no longer silent. It now logs a `WARNING` explaining why
+  nothing happened and is counted on `Page.popups_blocked`, and each block is
+  recorded as a `"popup_blocked"` entry in `Page`'s `Trace`.
+
 ## [0.6.0] - 2026-08-10
 
 ### Security

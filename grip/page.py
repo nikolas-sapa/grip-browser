@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import math
 import random
 import time
@@ -47,6 +48,8 @@ from grip.security.injection import InjectionDetector
 from grip.security.policy import NavigationPolicy, enforce as enforce_navigation
 from grip.security.sanitizer import RawElement
 from grip.trace import Trace, TraceEntry
+
+logger = logging.getLogger(__name__)
 
 # An element still has to be listed and clickable after its label is cut, so the
 # label is replaced rather than the element dropped.
@@ -303,6 +306,9 @@ class Page:
         # lifetime, from goto()'s gather — same "once, not per-navigation"
         # reasoning as _fetch_enabled above.
         self._popup_block_armed = False
+        # Programmatic visibility into blocking a caller can't otherwise see —
+        # see popups_blocked and _on_target_attached below.
+        self._popups_blocked = 0
         # Fire-and-forget tasks spawned from synchronous CDP event handlers
         # (_on_fetch_paused, _on_target_attached) below, which cannot await
         # directly. asyncio only holds a weak reference to a task started via
@@ -319,6 +325,16 @@ class Page:
         self._download_dir: Path | None = None
         self._download_events_armed = False
         self._download_queue: asyncio.Queue[Path | None] | None = None
+
+    @property
+    def popups_blocked(self) -> int:
+        """Count of window.open()/target="_blank" attempts refused by popup
+        blocking (see _ensure_popup_blocking) over this Page's lifetime. Zero
+        under `NavigationPolicy(allow_popups=True)`, since blocking is never
+        armed there. The programmatic half of "why did nothing happen when I
+        clicked Login" — pair with the WARNING-level log line at the point of
+        each block."""
+        return self._popups_blocked
 
     def _assert_not_safe(self, action: str) -> None:
         if self._safe:
@@ -457,9 +473,17 @@ class Page:
         instead means the popup never gets far enough to request anything.
 
         Gated the same as Fetch interception: nothing to enforce once the
-        caller has opted into allow_private.
+        caller has opted into allow_private. Also skipped entirely when the
+        caller has opted into `NavigationPolicy(allow_popups=True)` — see that
+        flag's docstring for what accepting the popup costs — in which case
+        auto-attach is never armed at all and Chrome runs window.open() as it
+        normally would, unintercepted.
         """
-        if self._popup_block_armed or self._policy.allow_private:
+        if (
+            self._popup_block_armed
+            or self._policy.allow_private
+            or self._policy.allow_popups
+        ):
             return
         self._popup_block_armed = True
         self._engine.on("Target.attachedToTarget", self._on_target_attached)
@@ -481,6 +505,28 @@ class Page:
         session_id = params.get("sessionId", "")
         if target_info.get("type") == "page":
             target_id = target_info.get("targetId", "")
+            popup_url = target_info.get("url", "")
+            # A blocked popup is otherwise silent: the target is closed before
+            # it runs any JS, and the caller who clicked "Login" just sees
+            # nothing happen. Make it legible — a log line to explain it, plus
+            # a counter and a Trace entry so it's also visible to code, not
+            # just a human reading logs.
+            self._popups_blocked += 1
+            logger.warning(
+                "popup blocked: window.open()/target=_blank to %r was refused "
+                "(NavigationPolicy.allow_popups=False, the default) — pass "
+                "allow_popups=True to permit popups, at the cost of Fetch "
+                "interception inside them",
+                popup_url,
+            )
+            self._trace.add(TraceEntry(
+                timestamp=time.time(),
+                action="popup_blocked",
+                input={"url": popup_url},
+                output={},
+                tokens_consumed=0,
+                duration_ms=0,
+            ))
             if target_id:
                 self._spawn_bg(self._close_popup_target(target_id))
             return

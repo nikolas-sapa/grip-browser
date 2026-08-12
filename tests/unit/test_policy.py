@@ -104,3 +104,18 @@ def test_browser_threads_allow_private_into_its_policy():
 
     assert Browser()._policy.check("http://127.0.0.1:8080/") is not None
     assert Browser(allow_private=True)._policy.check("http://127.0.0.1:8080/") is None
+
+
+def test_allow_popups_defaults_to_false():
+    """Popups stay blocked unless a caller opts in explicitly — the whole
+    point of making this a named policy option instead of an implicit side
+    effect of v0.6.0's Fetch interception."""
+    assert NavigationPolicy().allow_popups is False
+    assert NavigationPolicy(allow_popups=True).allow_popups is True
+
+
+def test_browser_threads_allow_popups_into_its_policy():
+    from grip.browser import Browser
+
+    assert Browser()._policy.allow_popups is False
+    assert Browser(allow_popups=True)._policy.allow_popups is True

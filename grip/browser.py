@@ -85,6 +85,7 @@ class Browser:
         block_resources: bool = False,
         allow_private: bool = False,
         allow_file: bool = False,
+        allow_popups: bool = False,
         user_data_dir: str | None = None,
         cdp_url: str | None = None,
         launch_timeout: float | None = None,
@@ -96,7 +97,7 @@ class Browser:
         self._stealth = stealth
         self._block_resources = block_resources
         self._policy = NavigationPolicy(
-            allow_private=allow_private, allow_file=allow_file
+            allow_private=allow_private, allow_file=allow_file, allow_popups=allow_popups
         )
         self._user_data_dir = user_data_dir
         self._cdp_url = cdp_url

@@ -340,11 +340,13 @@ def _fire_paused(listeners, url, request_id, resource_type="Document", frame_id=
         cb(params)
 
 
-def _fire_attached(listeners, session_id, target_id, target_type, opener_id=""):
+def _fire_attached(listeners, session_id, target_id, target_type, opener_id="", url=""):
     for cb in listeners.get("Target.attachedToTarget", []):
         cb({
             "sessionId": session_id,
-            "targetInfo": {"targetId": target_id, "type": target_type, "openerId": opener_id},
+            "targetInfo": {
+                "targetId": target_id, "type": target_type, "openerId": opener_id, "url": url,
+            },
             "waitingForDebugger": True,
         })
 
@@ -518,6 +520,74 @@ async def test_popup_target_is_closed_from_its_paused_state(monkeypatch):
     assert not any(m == "Runtime.runIfWaitingForDebugger" for m, _ in sent), (
         "the popup must never be resumed — even briefly — before it is closed"
     )
+
+
+@pytest.mark.asyncio
+async def test_blocked_popup_is_counted_logged_and_traced(monkeypatch, caplog):
+    """A blocked popup must not be silent: the caller needs a way to find out
+    why "nothing happened" when a page tried to window.open(). Covered three
+    ways — a WARNING log line, Page.popups_blocked, and a Trace entry."""
+    import logging
+
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        _fire_attached(
+            listeners, "popup-session", "popup-target", "page",
+            opener_id="T1", url="https://evil.test/popup",
+        )
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    with caplog.at_level(logging.WARNING):
+        await page.goto("https://public.test/", timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert page.popups_blocked == 1
+    assert any("popup blocked" in r.message for r in caplog.records)
+    popup_entries = [e for e in page._trace.actions if e.action == "popup_blocked"]
+    assert len(popup_entries) == 1
+    assert popup_entries[0].input == {"url": "https://evil.test/popup"}
+
+
+@pytest.mark.asyncio
+async def test_popups_allowed_when_opted_in(monkeypatch):
+    """NavigationPolicy(allow_popups=True) skips arming popup blocking
+    entirely — Target.setAutoAttach is never sent, so Chrome runs
+    window.open() unintercepted, and nothing is ever counted as blocked."""
+    engine, listeners, sent, session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy(allow_popups=True))
+
+    async def navigate_side_effect():
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None, session_id=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params, session_id)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert not any(m == "Target.setAutoAttach" for m, _ in sent), (
+        "allow_popups=True must not arm the block at all"
+    )
+    assert page.popups_blocked == 0
 
 
 @pytest.mark.asyncio

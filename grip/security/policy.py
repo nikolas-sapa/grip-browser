@@ -50,14 +50,23 @@ class NavigationPolicy:
       `new WebSocket('ws://169.254.169.254/')` reaches the internal host
       regardless of this policy. There is no in-process fix for this.
 
+    * `window.open()` / `target="_blank"` is closed outright, not merely
+      unenforced — see `allow_popups` below.
+
     Every navigation entry point (Browser.open(), Page.goto(), and each
     Document-level redirect leg) runs the URL through `enforce()` below, so a
     302 from a public URL to 169.254.169.254 is refused too — see Page.goto().
     """
 
-    def __init__(self, allow_private: bool = False, allow_file: bool = False) -> None:
+    def __init__(
+        self,
+        allow_private: bool = False,
+        allow_file: bool = False,
+        allow_popups: bool = False,
+    ) -> None:
         self._allow_private = allow_private
         self._allow_file = allow_file
+        self._allow_popups = allow_popups
 
     @property
     def allow_private(self) -> bool:
@@ -66,6 +75,33 @@ class NavigationPolicy:
         machinery (e.g. Page's Fetch-domain interception) on "is this policy
         actually restrictive" read this instead of reaching into `_allow_private`."""
         return self._allow_private
+
+    @property
+    def allow_popups(self) -> bool:
+        """Whether `window.open()` / `target="_blank"` is permitted to actually
+        open, instead of being closed on attach (see Page._ensure_popup_blocking).
+
+        Default is False — the secure, previously-unreviewed v0.6.0 behaviour
+        stays the default, it just becomes an explicit, documented choice
+        instead of a silent one.
+
+        Opting in costs exactly what blocking exists to prevent: a popup opens
+        a brand-new CDP target with its own independent Fetch-domain state, and
+        this policy is NOT enforced inside it — no SSRF/private-address check,
+        no scheme check, nothing. A page that can `window.open()` at all can
+        reach `http://169.254.169.254/` or `file:///etc/passwd` from inside the
+        popup regardless of how this policy is otherwise configured. Set this
+        only when you trust the target to open windows — e.g. driving an OAuth
+        provider you already trust.
+
+        ponytail: the proper long-term fix is per-target Fetch interception —
+        arm Fetch.enable on the popup's session before resuming it from its
+        paused state, so the same policy applies there too. That needs
+        session-scoped command routing and demuxing Fetch.requestPaused by
+        session, which CDPEngine does not do today (one target per websocket).
+        This flag is the stopgap until that lands.
+        """
+        return self._allow_popups
 
     def check(self, url: str) -> str | None:
         """Return a human-readable refusal reason, or None if the URL is allowed."""
