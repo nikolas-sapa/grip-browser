@@ -1,0 +1,1111 @@
+{
+  "config": {
+    "model": "sonnet",
+    "temperature": "not controllable via CLI",
+    "max_steps": 20,
+    "retry_budget": 2,
+    "use_vision": false,
+    "baseline_cli_overhead_usd": 0.0716475,
+    "arm": "grip",
+    "bu_per_task_timeout_seconds": 7800.0
+  },
+  "verdict": {
+    "as_billed": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "no completed tasks on one or both arms"
+    },
+    "content_only": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "no completed tasks on one or both arms"
+    },
+    "headline": {
+      "verdict": "INCONCLUSIVE",
+      "reason": "no completed tasks on one or both arms"
+    }
+  },
+  "n_tasks": 30,
+  "grip_rows": [
+    {
+      "arm": "grip",
+      "task_id": "form-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "5550101",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 41.41727920900303,
+          "prompt_tokens": 115463,
+          "completion_tokens": 650,
+          "total_tokens": 116113,
+          "cost_usd": 0.49615109999999996,
+          "llm_calls": 7,
+          "cli_wall_seconds": 39.390066375010065
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 116113,
+      "llm_calls": 7,
+      "total_cost_usd": 0.49615109999999996,
+      "total_wall_seconds": 41.41727920900303,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-02",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Grace Hopper",
+            "email": "grace@example.com",
+            "phone": "5550102",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 59.56126233300165,
+          "prompt_tokens": 142512,
+          "completion_tokens": 672,
+          "total_tokens": 143184,
+          "cost_usd": 0.59968505,
+          "llm_calls": 7,
+          "cli_wall_seconds": 57.93847104199813
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 143184,
+      "llm_calls": 7,
+      "total_cost_usd": 0.59968505,
+      "total_wall_seconds": 59.56126233300165,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-03",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Margaret Hamilton",
+            "email": "margaret@example.com",
+            "phone": "5550103",
+            "role": "manager",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 49.54506533300446,
+          "prompt_tokens": 129136,
+          "completion_tokens": 823,
+          "total_tokens": 129959,
+          "cost_usd": 0.496002,
+          "llm_calls": 7,
+          "cli_wall_seconds": 47.30383441600861
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 129959,
+      "llm_calls": 7,
+      "total_cost_usd": 0.496002,
+      "total_wall_seconds": 49.54506533300446,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-04",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Katherine Johnson",
+            "email": "katherine@example.com",
+            "phone": "5550104",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Form submitted successfully with all fields filled: Full name 'Katherine Johnson', Email 'katherine@example.com', Phone '5550104', Role 'Engineer', newsletter checkbox checked, and Review & Submit clicked. Page shows 'Submitted.'",
+          "wall_seconds": 77.52158920799411,
+          "prompt_tokens": 156166,
+          "completion_tokens": 997,
+          "total_tokens": 157163,
+          "cost_usd": 0.6194563,
+          "llm_calls": 7,
+          "cli_wall_seconds": 75.38287741698878
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 157163,
+      "llm_calls": 7,
+      "total_cost_usd": 0.6194563,
+      "total_wall_seconds": 77.52158920799411,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-05",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Radia Perlman",
+            "email": "radia@example.com",
+            "phone": "5550105",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Form submitted successfully. Filled full name 'Radia Perlman', email 'radia@example.com', phone '5550105', role 'Engineer', checked newsletter subscription, clicked Review & Submit. Page confirmed \"Submitted.\"",
+          "wall_seconds": 65.15916087500227,
+          "prompt_tokens": 143851,
+          "completion_tokens": 658,
+          "total_tokens": 144509,
+          "cost_usd": 0.6058265,
+          "llm_calls": 7,
+          "cli_wall_seconds": 63.11901879099605
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 144509,
+      "llm_calls": 7,
+      "total_cost_usd": 0.6058265,
+      "total_wall_seconds": 65.15916087500227,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-06",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Barbara Liskov",
+            "email": "barbara@example.com",
+            "phone": "5550106",
+            "role": "designer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Form submitted successfully. Filled: Barbara Liskov, barbara@example.com, 5550106, Designer, newsletter checked. Page shows \"Submitted.\"",
+          "wall_seconds": 61.90511975000118,
+          "prompt_tokens": 143855,
+          "completion_tokens": 686,
+          "total_tokens": 144541,
+          "cost_usd": 0.6021928,
+          "llm_calls": 7,
+          "cli_wall_seconds": 59.61922883299849
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 144541,
+      "llm_calls": 7,
+      "total_cost_usd": 0.6021928,
+      "total_wall_seconds": 61.90511975000118,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-07",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Shafi Goldwasser",
+            "email": "shafi@example.com",
+            "phone": "5550107",
+            "role": "manager",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Form submitted successfully with Shafi Goldwasser's details (email, phone, Manager role, newsletter checked). Page confirmed \"Submitted.\"",
+          "wall_seconds": 84.31915937500162,
+          "prompt_tokens": 144403,
+          "completion_tokens": 950,
+          "total_tokens": 145353,
+          "cost_usd": 0.6350286,
+          "llm_calls": 7,
+          "cli_wall_seconds": 81.75803658299992
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 145353,
+      "llm_calls": 7,
+      "total_cost_usd": 0.6350286,
+      "total_wall_seconds": 84.31915937500162,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-08",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Frances Allen",
+            "email": "frances@example.com",
+            "phone": "5550108",
+            "role": "engineer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 20,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 160.13896066600137,
+          "prompt_tokens": 366145,
+          "completion_tokens": 1979,
+          "total_tokens": 368124,
+          "cost_usd": 1.6708825,
+          "llm_calls": 20,
+          "cli_wall_seconds": 157.4606614999866
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 368124,
+      "llm_calls": 20,
+      "total_cost_usd": 1.6708825,
+      "total_wall_seconds": 160.13896066600137,
+      "turns": 20
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-09",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Adele Goldberg",
+            "email": "adele@example.com",
+            "phone": "5550109",
+            "role": "designer",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 37.97649000000092,
+          "prompt_tokens": 116907,
+          "completion_tokens": 686,
+          "total_tokens": 117593,
+          "cost_usd": 0.49306019999999995,
+          "llm_calls": 7,
+          "cli_wall_seconds": 36.10899566599255
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 117593,
+      "llm_calls": 7,
+      "total_cost_usd": 0.49306019999999995,
+      "total_wall_seconds": 37.97649000000092,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "form-10",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "full_name": "Jean Bartik",
+            "email": "jean@example.com",
+            "phone": "5550110",
+            "role": "other",
+            "newsletter": true,
+            "notes": "",
+            "submitted": true
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Form submitted. Filled Full name 'Jean Bartik', Email 'jean@example.com', Phone '5550110', Role 'Other', checked newsletter subscription, clicked Review & Submit. Page shows 'Submitted.'",
+          "wall_seconds": 40.303008625000075,
+          "prompt_tokens": 116901,
+          "completion_tokens": 780,
+          "total_tokens": 117681,
+          "cost_usd": 0.49436579999999997,
+          "llm_calls": 7,
+          "cli_wall_seconds": 38.42537479100429
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 117681,
+      "llm_calls": 7,
+      "total_cost_usd": 0.49436579999999997,
+      "total_wall_seconds": 40.303008625000075,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Toys",
+            "sort": "desc",
+            "page": 1,
+            "selected": 4
+          },
+          "turns": 4,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 51.844553208000434,
+          "prompt_tokens": 117972,
+          "completion_tokens": 653,
+          "total_tokens": 118625,
+          "cost_usd": 0.4108157,
+          "llm_calls": 4,
+          "cli_wall_seconds": 49.3604347090004
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 118625,
+      "llm_calls": 4,
+      "total_cost_usd": 0.4108157,
+      "total_wall_seconds": 51.844553208000434,
+      "turns": 4
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-02",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Toys",
+            "sort": "desc",
+            "page": 1,
+            "selected": 5
+          },
+          "turns": 4,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 25.43321762499545,
+          "prompt_tokens": 78292,
+          "completion_tokens": 466,
+          "total_tokens": 78758,
+          "cost_usd": 0.2859384,
+          "llm_calls": 4,
+          "cli_wall_seconds": 23.452219582999533
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 78758,
+      "llm_calls": 4,
+      "total_cost_usd": 0.2859384,
+      "total_wall_seconds": 25.43321762499545,
+      "turns": 4
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-03",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Sports",
+            "sort": "asc",
+            "page": 1,
+            "selected": 6
+          },
+          "turns": 4,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 21.961622583999997,
+          "prompt_tokens": 52265,
+          "completion_tokens": 175,
+          "total_tokens": 52440,
+          "cost_usd": 0.2746494,
+          "llm_calls": 4,
+          "cli_wall_seconds": 19.859839208998892
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 52440,
+      "llm_calls": 4,
+      "total_cost_usd": 0.2746494,
+      "total_wall_seconds": 21.961622583999997,
+      "turns": 4
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-04",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Electronics",
+            "sort": "desc",
+            "page": 1,
+            "selected": 6
+          },
+          "turns": 4,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 30.956397583999205,
+          "prompt_tokens": 78089,
+          "completion_tokens": 432,
+          "total_tokens": 78521,
+          "cost_usd": 0.28547009999999995,
+          "llm_calls": 4,
+          "cli_wall_seconds": 28.366719457997533
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 78521,
+      "llm_calls": 4,
+      "total_cost_usd": 0.28547009999999995,
+      "total_wall_seconds": 30.956397583999205,
+      "turns": 4
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-05",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Sports",
+            "sort": "desc",
+            "page": 1,
+            "selected": 8
+          },
+          "turns": 4,
+          "aborted": null,
+          "done_result": "Filtered catalog to Sports, sorted price high to low, on page 1, clicked/selected \"Item 5-8 \u2014 Sports \u2014 $178\" (the first/only item shown).",
+          "wall_seconds": 49.0528266669935,
+          "prompt_tokens": 91485,
+          "completion_tokens": 493,
+          "total_tokens": 91978,
+          "cost_usd": 0.39040465,
+          "llm_calls": 4,
+          "cli_wall_seconds": 47.32649358300114
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 91978,
+      "llm_calls": 4,
+      "total_cost_usd": 0.39040465,
+      "total_wall_seconds": 49.0528266669935,
+      "turns": 4
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-06",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Home",
+            "sort": "desc",
+            "page": 1,
+            "selected": 5
+          },
+          "turns": 7,
+          "aborted": null,
+          "done_result": "Filtered catalog to Home category, sorted by price high to low, confirmed on page 1, and clicked the first listed item (Item 6-5 \u2014 Home \u2014 $124) to select it.",
+          "wall_seconds": 119.72213891700085,
+          "prompt_tokens": 279686,
+          "completion_tokens": 2159,
+          "total_tokens": 281845,
+          "cost_usd": 0.8277983,
+          "llm_calls": 7,
+          "cli_wall_seconds": 117.55793179100147
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 281845,
+      "llm_calls": 7,
+      "total_cost_usd": 0.8277983,
+      "total_wall_seconds": 119.72213891700085,
+      "turns": 7
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-07",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Electronics",
+            "sort": "asc",
+            "page": 1,
+            "selected": 8
+          },
+          "turns": 4,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 21.791956957997172,
+          "prompt_tokens": 65648,
+          "completion_tokens": 235,
+          "total_tokens": 65883,
+          "cost_usd": 0.2799801,
+          "llm_calls": 4,
+          "cli_wall_seconds": 19.60659295899677
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 65883,
+      "llm_calls": 4,
+      "total_cost_usd": 0.2799801,
+      "total_wall_seconds": 21.791956957997172,
+      "turns": 4
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-08",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Toys",
+            "sort": "asc",
+            "page": 1,
+            "selected": 6
+          },
+          "turns": 4,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 48.73710858300183,
+          "prompt_tokens": 104851,
+          "completion_tokens": 573,
+          "total_tokens": 105424,
+          "cost_usd": 0.401145,
+          "llm_calls": 4,
+          "cli_wall_seconds": 46.95759908400214
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 105424,
+      "llm_calls": 4,
+      "total_cost_usd": 0.401145,
+      "total_wall_seconds": 48.73710858300183,
+      "turns": 4
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-09",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Home",
+            "sort": "desc",
+            "page": 1,
+            "selected": 3
+          },
+          "turns": 5,
+          "aborted": null,
+          "done_result": "Filtered catalog to 'Home' category, sorted by price high to low, confirmed on page 1, and clicked the first item shown (Item 9-3 \u2014 Home \u2014 $109) to select it.",
+          "wall_seconds": 69.48872583299817,
+          "prompt_tokens": 160146,
+          "completion_tokens": 1221,
+          "total_tokens": 161367,
+          "cost_usd": 0.50990385,
+          "llm_calls": 5,
+          "cli_wall_seconds": 67.21160020800016
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 161367,
+      "llm_calls": 5,
+      "total_cost_usd": 0.50990385,
+      "total_wall_seconds": 69.48872583299817,
+      "turns": 5
+    },
+    {
+      "arm": "grip",
+      "task_id": "spa-10",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "filter": "Toys",
+            "sort": "desc",
+            "page": 1,
+            "selected": 2
+          },
+          "turns": 6,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 161.2360802080002,
+          "prompt_tokens": 254664,
+          "completion_tokens": 1845,
+          "total_tokens": 256509,
+          "cost_usd": 0.97795885,
+          "llm_calls": 7,
+          "cli_wall_seconds": 159.2340961660011
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 256509,
+      "llm_calls": 7,
+      "total_cost_usd": 0.97795885,
+      "total_wall_seconds": 161.2360802080002,
+      "turns": 6
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-01",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "100 Main St",
+            "city": "Springfield",
+            "zip": "62701",
+            "card": "4111111111111111",
+            "method": "standard",
+            "confirmed": true
+          },
+          "turns": 9,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 59.77766795799835,
+          "prompt_tokens": 133225,
+          "completion_tokens": 940,
+          "total_tokens": 134165,
+          "cost_usd": 0.6429942,
+          "llm_calls": 9,
+          "cli_wall_seconds": 57.03903204100061
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 134165,
+      "llm_calls": 9,
+      "total_cost_usd": 0.6429942,
+      "total_wall_seconds": 59.77766795799835,
+      "turns": 9
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-02",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "22 Baker St",
+            "city": "London",
+            "zip": "NW16XE",
+            "card": "4111111111111112",
+            "method": "express",
+            "confirmed": true
+          },
+          "turns": 19,
+          "aborted": null,
+          "done_result": "Checkout complete. Shipping to 22 Baker St, London NW16XE via Express (2 days), card 4111111111111112 charged. Order confirmed.",
+          "wall_seconds": 201.7764275840018,
+          "prompt_tokens": 443503,
+          "completion_tokens": 2517,
+          "total_tokens": 446020,
+          "cost_usd": 1.8390146,
+          "llm_calls": 19,
+          "cli_wall_seconds": 199.71477608399437
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 446020,
+      "llm_calls": 19,
+      "total_cost_usd": 1.8390146,
+      "total_wall_seconds": 201.7764275840018,
+      "turns": 19
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-03",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "5 Rue de Paris",
+            "city": "Paris",
+            "zip": "75001",
+            "card": "4111111111111113",
+            "method": "standard",
+            "confirmed": true
+          },
+          "turns": 10,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 96.54395512500196,
+          "prompt_tokens": 204284,
+          "completion_tokens": 1818,
+          "total_tokens": 206102,
+          "cost_usd": 0.961627,
+          "llm_calls": 10,
+          "cli_wall_seconds": 94.84312816701276
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 206102,
+      "llm_calls": 10,
+      "total_cost_usd": 0.961627,
+      "total_wall_seconds": 96.54395512500196,
+      "turns": 10
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-04",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "9 Elm St",
+            "city": "Boston",
+            "zip": "02108",
+            "card": "4111111111111114",
+            "method": "express",
+            "confirmed": true
+          },
+          "turns": 10,
+          "aborted": null,
+          "done_result": "Checkout completed: shipping 9 Elm St, Boston 02108; card 4111111111111114; Express (2 days) shipping. Order confirmed.",
+          "wall_seconds": 53.8580887499993,
+          "prompt_tokens": 146812,
+          "completion_tokens": 1165,
+          "total_tokens": 147977,
+          "cost_usd": 0.717534,
+          "llm_calls": 10,
+          "cli_wall_seconds": 52.17286745899037
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 147977,
+      "llm_calls": 10,
+      "total_cost_usd": 0.717534,
+      "total_wall_seconds": 53.8580887499993,
+      "turns": 10
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-05",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "3 Oak Ave",
+            "city": "Austin",
+            "zip": "73301",
+            "card": "4111111111111115",
+            "method": "standard",
+            "confirmed": true
+          },
+          "turns": 9,
+          "aborted": null,
+          "done_result": "Checkout complete. Order confirmed with shipping to 3 Oak Ave, Austin 73301, standard shipping.",
+          "wall_seconds": 48.75916299999517,
+          "prompt_tokens": 146521,
+          "completion_tokens": 786,
+          "total_tokens": 147307,
+          "cost_usd": 0.6458925,
+          "llm_calls": 9,
+          "cli_wall_seconds": 47.08709287500096
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 147307,
+      "llm_calls": 9,
+      "total_cost_usd": 0.6458925,
+      "total_wall_seconds": 48.75916299999517,
+      "turns": 9
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-06",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "77 King Rd",
+            "city": "Toronto",
+            "zip": "M5H2N2",
+            "card": "4111111111111116",
+            "method": "express",
+            "confirmed": true
+          },
+          "turns": 11,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 56.6863895839997,
+          "prompt_tokens": 146888,
+          "completion_tokens": 1036,
+          "total_tokens": 147924,
+          "cost_usd": 0.7825626,
+          "llm_calls": 11,
+          "cli_wall_seconds": 54.85713800001395
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 147924,
+      "llm_calls": 11,
+      "total_cost_usd": 0.7825626,
+      "total_wall_seconds": 56.6863895839997,
+      "turns": 11
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-07",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "15 Park Ln",
+            "city": "Seattle",
+            "zip": "98101",
+            "card": "4111111111111117",
+            "method": "standard",
+            "confirmed": true
+          },
+          "turns": 9,
+          "aborted": null,
+          "done_result": "Checkout complete. Order confirmed: 15 Park Ln, Seattle 98101, card ending 1117, Standard (5-7 days) shipping.",
+          "wall_seconds": 46.049123042001156,
+          "prompt_tokens": 133490,
+          "completion_tokens": 763,
+          "total_tokens": 134253,
+          "cost_usd": 0.6405783,
+          "llm_calls": 9,
+          "cli_wall_seconds": 44.29863533399475
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 134253,
+      "llm_calls": 9,
+      "total_cost_usd": 0.6405783,
+      "total_wall_seconds": 46.049123042001156,
+      "turns": 9
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-08",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "42 Hill St",
+            "city": "Denver",
+            "zip": "80201",
+            "card": "4111111111111118",
+            "method": "express",
+            "confirmed": true
+          },
+          "turns": 9,
+          "aborted": null,
+          "done_result": "Checkout complete. Shipped to 42 Hill St, Denver 80201, Express (2 days), card ...1118. Order confirmed.",
+          "wall_seconds": 44.07566933300404,
+          "prompt_tokens": 143750,
+          "completion_tokens": 642,
+          "total_tokens": 144392,
+          "cost_usd": 0.6281838,
+          "llm_calls": 9,
+          "cli_wall_seconds": 42.3819300840114
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 144392,
+      "llm_calls": 9,
+      "total_cost_usd": 0.6281838,
+      "total_wall_seconds": 44.07566933300404,
+      "turns": 9
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-09",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "8 River Rd",
+            "city": "Miami",
+            "zip": "33101",
+            "card": "4111111111111119",
+            "method": "standard",
+            "confirmed": true
+          },
+          "turns": 15,
+          "aborted": null,
+          "done_result": "Checkout complete: shipped to 8 River Rd, Miami 33101; card 4111111111111119; Standard (5-7 days) shipping; order confirmed.",
+          "wall_seconds": 128.16319754199503,
+          "prompt_tokens": 278168,
+          "completion_tokens": 2131,
+          "total_tokens": 280299,
+          "cost_usd": 1.29865785,
+          "llm_calls": 15,
+          "cli_wall_seconds": 126.45125862699933
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 280299,
+      "llm_calls": 15,
+      "total_cost_usd": 1.29865785,
+      "total_wall_seconds": 128.16319754199503,
+      "turns": 15
+    },
+    {
+      "arm": "grip",
+      "task_id": "wizard-10",
+      "attempts": [
+        {
+          "attempt": 1,
+          "success": true,
+          "verify_raw": true,
+          "final_state": {
+            "step": 3,
+            "addr": "61 Lake Ave",
+            "city": "Chicago",
+            "zip": "60601",
+            "card": "4111111111111120",
+            "method": "express",
+            "confirmed": true
+          },
+          "turns": 9,
+          "aborted": null,
+          "done_result": null,
+          "wall_seconds": 51.28495524999744,
+          "prompt_tokens": 141943,
+          "completion_tokens": 1098,
+          "total_tokens": 143041,
+          "cost_usd": 0.6291237,
+          "llm_calls": 9,
+          "cli_wall_seconds": 49.5533273330002
+        }
+      ],
+      "success": true,
+      "attempts_used": 1,
+      "total_tokens": 143041,
+      "llm_calls": 9,
+      "total_cost_usd": 0.6291237,
+      "total_wall_seconds": 51.28495524999744,
+      "turns": 9
+    }
+  ],
+  "browseruse_rows": [],
+  "browseruse_error": ""
+}

@@ -1,207 +1,204 @@
 # Task success: grip vs browser-use, agent loop in the loop
 
-Date: 2026-08-11. First benchmark in this repo that measures whether a task
-actually got done, not payload bytes. `RESULTS_AB.md` and
+Date: 2026-08-11/12. First benchmark in this repo that measures whether a
+task actually got done, not payload bytes. `RESULTS_AB.md` and
 `RESULTS_BROWSERUSE.md` measured observation size with no LLM in the loop;
 both said explicitly that they could not tell a good observation from a bad
 one. This one puts a real model in the loop and scores completion.
 
-**Coverage: 60 of 60 rows, complete.** The run finished; wizard-09 (browser-use
-fail) and wizard-10 (browser-use pass) are the last two rows in.
+**Coverage and provenance — read this before the numbers.** 60 rows total,
+from two files at two points in time, on two different versions of grip:
 
-**Lead with the loss: browser-use has the higher success rate, and the final
-gap is wider than the interim table showed.**
+- **grip: 30/30 rows**, `benchmarks/corpus/results/raw_20260812-062818.jsonl`,
+  a full re-run against grip **after** commit `2886d34` (see below).
+- **browser-use: 30/30 rows**, `benchmarks/corpus/results/raw_20260811-165327.jsonl`,
+  the same, unaltered, unre-run numbers as before `2886d34` existed.
+
+Fixtures, harness, model, and success-assertion logic are identical across
+both files, so the comparison holds — but the grip numbers below reflect a
+version of grip that literally did not exist when the browser-use arm ran.
+That is stated once here and is true of every grip number in this document.
+
+## The sequence, not just the number
+
+**This is not a victory lap.** First run: grip lost, 20/30 (66.7%) against
+browser-use's 24/30 (80.0%), driven entirely by a 0/10 shutout on SPA tasks.
+That failure was characterized (see "The original SPA failure" below),
+traced to a specific, narrow cause in `gripIsCandidate()`, and fixed with a
+general mechanism — not a fixture-specific patch. grip was then re-run in
+full on the fixed code. The result:
 
 | arm | overall | driven by |
 |---|---|---|
-| grip | 20/30 = 66.7% | forms 10/10, wizards 10/10, **SPA 0/10** |
-| browser-use | 24/30 = 80.0% | forms 10/10, SPA 7/10, wizards 7/10 |
+| grip (post-fix) | **30/30 = 100%** | forms 10/10, SPA 10/10, wizards 10/10 |
+| browser-use (unchanged) | 24/30 = 80.0% | forms 10/10, SPA 7/10, wizards 7/10 |
+
+**Caveat that must sit next to this table, not below it: grip's 100% is a
+score on tasks whose exact failure mode was observed and fixed before the
+re-run, against fixtures that live in grip's own repo.** That is legitimate
+engineering — a benchmark that finds a real bug and gets used to verify the
+fix is doing its job — but it is not an independent measurement of general
+capability, and a reader should not read 30/30 as "grip solves SPA
+interaction" in general. It is "grip solves the class of non-semantic
+clickable elements this corpus exercises," which is a narrower, checkable
+claim; the mechanism (below) is general-purpose, not fixture-matched, but it
+has been validated against exactly the fixtures it was built to pass.
 
 ## Per-category table
 
-| category | grip | browser-use |
+| category | grip (post-fix) | browser-use |
 |---|---|---|
 | form | 10/10 | 10/10 |
-| SPA | **0/10** | 7/10 |
+| SPA | 10/10 (was 0/10) | 7/10 |
 | wizard | 10/10 | 7/10 |
 
-Aggregate numbers hide this. Both arms are perfect on forms. grip loses SPA
-completely and wins wizards outright. browser-use wins overall only because
-SPA is a third of the corpus and grip scores zero on it.
+## The original SPA failure and the fix
 
-## SPA: grip's 0/10, explained
+`gripIsCandidate()` (`grip/cdp/shadow.py:111-113`) admits an element to the
+snapshot only if its tag is in a fixed interactive-tag list or its ARIA role
+is in a fixed interactive-role list. The SPA fixtures' catalog items are
+non-semantic `<div>`s with JS click listeners — no `<button>`, no
+`role="button"`. They never entered the snapshot, so the model had no ref to
+click, and `click()` correctly returned `ELEMENT_NOT_FOUND` on every
+attempt. All 10 pre-fix grip SPA rows showed `final_state.selected: null` on
+every attempt, while `filter`/`sort` (driven by real `<select>`/button
+controls) moved off their defaults on 8 of 10 — evidence that semantic
+controls worked and only non-semantic item clicks failed.
 
-This is a structural gap, not model failure or flakiness — the uniform 0/10
-across 10 different fixtures is itself the evidence. `gripIsCandidate()`
-(`grip/cdp/shadow.py:111-113`) admits an element to the snapshot only if its
-tag is in a fixed interactive-tag list or its ARIA role is in a fixed
-interactive-role list:
-
-```js
-function gripIsCandidate(el, tag, role) {
-  return INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role);
-}
-```
-
-The SPA fixtures' catalog items are non-semantic `<div>`s with JS click
-listeners — no `<button>`, no `role="button"`. They never enter the
-snapshot, so the model has no ref to click, and `click()` correctly returns
-`ELEMENT_NOT_FOUND` on every attempt. `page.click_at(x, y)` exists in
-`grip/page.py:1230` and would work around this, but it is not in the
-registered tool set (`grip/runner.py:19`, `_TOOLS` = snapshot, click, type,
-select, read, done — 6 tools, no `click_at`).
-
-The harness does not log a per-turn error string, so the exact tool-error
-text on each failed attempt isn't captured in the results file. What is
-verifiable from the data: all 10 grip SPA rows show `final_state.selected:
-null` on every attempt — never once did a catalog-item click land. `filter`
-and `sort` — driven by semantic `<select>` and button controls that do pass
-`gripIsCandidate` — moved off their defaults on 8 of 10 rows; spa-04 and
-spa-05 show `filter: 'all', sort: 'none'`, i.e. defaults, so those two rows
-are not clean evidence that the semantic controls worked and only the
-item-click failed. On the other 8, the pattern holds: semantic controls
-operated correctly, item selection never did. spa-08 additionally aborted on
-"3 consecutive tool errors," the one row where the harness's own
-retry-abort fired. browser-use's DOM serializer
-picks up click listeners regardless of tag, which is why it clears 7 of the
-same 10 fixtures.
+**The fix (commit `2886d34`)**: a bounded `DOMDebugger.getEventListeners`
+probe against the live page, implemented in `grip/page.py:58-84`
+(`_has_click_listener`, `_CLICK_LISTENER_TYPES`, `_PROBE_TIMEOUT_S = 2.0`).
+It is deliberately narrow — only a real `click` listener counts;
+mousedown/pointerdown-only elements are excluded rather than guessed at, per
+the comment at `grip/page.py:58-65`, because a false "clickable" is worse
+than an element not appearing at all. It is capped at 2 seconds wall time
+and is additive to `snapshot()`, never allowed to turn a working snapshot
+into a failed one. This is a general capability (any element with a
+click listener, not a per-fixture rule) — checkable by reading the code at
+the lines above — but it was written and shipped in direct response to this
+benchmark's own failures.
 
 ## Where grip wins: speed and cost, on tasks both arms completed
 
-Computed on the paired subset — task IDs where **both** arms succeeded — not
-a per-arm median over all rows, because failures have a different wall/cost
-profile and would bias an all-rows median. n=17 for wall (10 forms + 7
-wizards; SPA contributes no paired rows because grip is 0/10 there).
-
-The two statistics do **not** share a denominator: browser-use's
-`total_cost_usd` is `null` on form-09 and form-10 (grip's is populated on
-both), so cost is computed over n=15, wall over n=17. The null is
-consistent with a killed CLI call inside a resumed segment (see Confounds).
+Paired subset (both arms succeeded) is now n=24 for wall, n=22 for cost —
+larger than before because grip has no more failed tasks to exclude. SPA
+now contributes paired rows for the first time.
 
 ```
--- total_wall_seconds (n=17) --
-grip median: 106.6s   browser-use median: 1080.8s
-ratio-of-medians (bu/grip): 9.98x
-median-of-ratios (bu/grip): **8.42x**   range: 1.41x-30.50x
+-- total_wall_seconds (n=24) --
+grip median: 56.7s   browser-use median: 948.0s
+ratio-of-medians (bu/grip): 16.72x
+median-of-ratios (bu/grip): **19.13x**   range: 1.65x-49.95x
 
--- total_cost_usd (n=15) --
-grip median: $0.636   browser-use median: $4.149
-ratio-of-medians (bu/grip): 5.79x
-median-of-ratios (bu/grip): **5.22x**
+-- total_cost_usd (n=22) --
+grip median: $0.624   browser-use median: $3.785
+ratio-of-medians (bu/grip): 6.06x
+median-of-ratios (bu/grip): **7.17x**   range: 0.85x-21.80x
 ```
 
-Bold marks the less flattering-to-grip statistic in each pair, per this
-repo's convention (`RESULTS_BROWSERUSE.md`) — that is the one to quote. Both
-statistics agree in direction here (unlike that file, where they disagreed
-on one column): grip is faster and cheaper on every paired task where cost
-was recorded; low end of the wall range is wizard-01, full per-task ratios
-are in the reproduction script output below.
+Bold marks the less flattering-to-grip statistic (this repo's convention,
+`RESULTS_BROWSERUSE.md`). The cost range's low end (0.85x) means grip was
+*more* expensive than browser-use on at least one paired task — not every
+individual task favors grip even though the medians do heavily.
 
-Spot figure, verified against the file (the number relayed before writing
-this doc, $0.49, does not match the file and is not used):
+**grip's own before/after, whole arm, all 30 tasks:**
 
-| task | grip | browser-use |
+| | pre-fix | post-fix |
 |---|---|---|
-| form-01 | 77.5s / $0.83 | 1087.2s / $3.69 |
+| total cost | $55.26 | $20.14 |
+| total wall | 3.36h | 0.57h |
+| SPA median wall | ~950s (failing, 3 retries/task) | 48.9s |
 
-## Wizards: 10/10 vs 7/10, different failure mode
+The pre-fix cost was inflated by SPA tasks burning all 3 retry attempts on
+every failure before giving up — fixing the capability gap also fixed a
+cost multiplier that had nothing to do with model efficiency.
 
-grip: 10/10, one attempt each, no retries needed.
+## What browser-use failed on
 
-browser-use: 7/10, three failures now (wizard-06, wizard-08, wizard-09), all
-the same pattern: stuck inside a shadow-DOM checkout step. `done_result` on
-each reports progress through the shipping step (address, city, ZIP
-entered) but never reaching payment/confirmation, on forms the harness log
-shows sitting inside a shadow root. This is not "browser-use is worse at
-wizards" as a general claim: the arms fail on different things. grip has
-zero SPA capability and perfect wizard capability; browser-use has
-decent-but-incomplete SPA capability and a recurring shadow-DOM failure
-mode on multi-step forms — 3 of its 10 wizard runs, all the same shape.
+6 of 30: **spa-01, spa-02, spa-08** and **wizard-06, wizard-08, wizard-09**.
+The three wizard failures are one failure mode repeated three times: each
+gets stuck inside a shadow-DOM checkout step, `done_result` showing progress
+through shipping (address/city/ZIP entered) but never reaching
+payment/confirmation, on a form the harness log shows sitting inside a
+shadow root. This is not "browser-use is worse," it's a different, real gap
+from grip's original one: grip had zero SPA capability and perfect wizard
+capability; browser-use has partial SPA capability and a recurring
+shadow-DOM failure specifically on multi-step forms.
 
 ## Confounds (all load-bearing, none of them footnotes)
 
+- **The two arms ran on different grip code at different times** (see
+  Coverage above) — restated here because it is the confound that most
+  affects how to read this document.
 - **Every fixture requires a `<select>`.** grip gained `select` as a tool
-  hours before this run started. The corpus gates heavily on one interaction
-  type grip only just supports; it is not a general-purpose sample of web
+  hours before the first run. The corpus gates heavily on interaction types
+  grip only recently supports; it is not a general-purpose sample of web
   tasks.
-- **Fixtures are synthetic, authored in grip's own repo.** Treat this as a
-  credibility limitation on the whole result, not a strength. No adversarial
-  or third-party page design was involved.
+- **Fixtures are synthetic, self-hosted in grip's own repo**, and the SPA
+  fix was developed specifically against their failure mode. Treat the
+  whole document as a limited-credibility result, not an independent audit.
 - **Cost figures are not comparable to real API pricing.** No API key was
-  available, so both arms ran through headless `claude -p` CLI sessions.
-  Every LLM turn pays a fixed ~$0.07 CLI session overhead on top of token
-  cost. The cost numbers above are as-billed by that CLI path, not
-  content-only API cost; the harness in this run does not separately compute
-  a content-only figure.
-- **Tool-count asymmetry.** grip exposes 6 tools (snapshot, click, type,
-  select, read, done). browser-use exposes roughly 15, including scroll and
-  extract_content. A task that needs a tool grip lacks (e.g., scroll to
-  reveal off-viewport content) registers in this table as a task failure,
-  not as an efficiency loss — the two are conflated by a pass/fail metric.
+  available; both arms ran through headless `claude -p` CLI sessions, each
+  paying a fixed ~$0.07 session overhead on top of token cost. As-billed by
+  that CLI path, not content-only API cost.
+- **Tool-count asymmetry.** grip now exposes 6 tools (snapshot, click, type,
+  select, read, done) with `click_at` still unregistered
+  (`grip/page.py:1230`, gated behind `_assert_not_safe`). browser-use
+  exposes roughly 15, including scroll and extract_content. A task needing a
+  tool grip lacks registers as a task failure here, not an efficiency loss.
 - **Temperature was not controllable via the CLI on either arm.**
 - **The browser-use arm ran in three resumed segments** across two harness
-  hangs and a session restart. Results were resumed from saved rows via
-  `--resume`, never re-run — no task was executed twice. Some rows carry a
-  scar from this: browser-use's `total_cost_usd` is `null` on form-09 and
-  form-10 (one retry attempt inside each recorded `cost_usd: null`, 0
-  tokens, consistent with a killed CLI call), which is why the cost median
-  above is n=15 while wall is n=17 rather than a clean shared denominator.
-- **n=30 tasks, one run each, up to 3 attempts per task, no repeat runs.**
-  There is no variance estimate on any number in this document. A single
-  run of 30 tasks is a data point, not a distribution.
+  hangs and a session restart; results were resumed via `--resume`, never
+  re-run — no browser-use task was executed twice. browser-use's
+  `total_cost_usd` is `null` on form-09 and form-10 (one retry attempt
+  inside each recorded `cost_usd: null`, 0 tokens, a killed CLI call),
+  which is why the cost paired-n (22) is 2 less than the wall paired-n (24).
+- **n=30 tasks per arm, one run each, up to 3 attempts per task, no repeat
+  runs.** There is no variance estimate on any number in this document. A
+  single run of 30 tasks is a data point, not a distribution — true for the
+  post-fix grip run exactly as it was for the pre-fix one.
 
-## What this changes
+## What this changes, now
 
-The single highest-value fix this data points to: **non-semantic clickable
-element discovery**, e.g. via `DOMDebugger.getEventListeners` (CDP) or
-equivalent, so `gripIsCandidate` can admit an element with an attached click
-listener even without a semantic tag or ARIA role. That one change addresses
-an entire failed category (SPA, 0/10 -> plausibly competitive with
-browser-use's 7/10) without touching anything that currently works. Exposing
-`click_at` as a registered tool would be a narrower, faster patch for the
-same gap but pushes coordinate-targeting onto the model instead of fixing
-discovery, and it is not a pure tool-registration change: `click_at` calls
-`self._assert_not_safe("click_at")` (`grip/page.py:1240`), so it is gated
-behind whatever safe-mode policy that assertion enforces and would need that
-gate reviewed before exposure, not just a registry entry added.
+The SPA fix landed. The next highest-value gap this data points to is
+browser-use's, not grip's: the shadow-DOM checkout stall, 3/10 wizard
+failures, all the same shape. On grip's side, the remaining known gap is
+`click_at` being implemented but unregistered as a tool
+(`grip/page.py:1230`, `grip/runner.py:19`) and gated by `_assert_not_safe` —
+a narrower fallback for non-semantic-click cases the new probe doesn't
+catch (mousedown-only handlers, dynamically-attached listeners outside the
+probe's timeout), not currently exercised by any failure in this corpus.
 
 ## Reproducing
 
-This doc's numbers were computed with a standalone script (not checked into
-this repo per the constraints of this task — reads the newest
-`benchmarks/corpus/results/raw_*.jsonl`). Per-category success counts are a
-plain `Counter` over `(arm, category, success)`, omitted below for brevity;
-the snippet below is the paired-subset median/ratio logic, which is the part
-worth checking:
-
 ```python
-import json, glob, statistics as st
-f = sorted(glob.glob('benchmarks/corpus/results/raw_*.jsonl'))[-1]
-rows = [json.loads(l) for l in open(f)]
-grip = {r['task_id']: r for r in rows if r['arm'] == 'grip'}
-bu = {r['task_id']: r for r in rows if r['arm'] == 'browseruse'}
+import json, statistics as st
+grip_rows = [json.loads(l) for l in open('benchmarks/corpus/results/raw_20260812-062818.jsonl')]
+bu_rows = [r for r in (json.loads(l) for l in open('benchmarks/corpus/results/raw_20260811-165327.jsonl'))
+           if r['arm'] == 'browseruse']
+grip = {r['task_id']: r for r in grip_rows}
+bu = {r['task_id']: r for r in bu_rows}
 paired = sorted(t for t in grip if t in bu and grip[t]['success'] and bu[t]['success'])
 for field in ('total_wall_seconds', 'total_cost_usd'):
     pairs = [(grip[t][field], bu[t][field]) for t in paired]
-    pairs = [(g, b) for g, b in pairs if g is not None and b is not None]  # drop nulls, don't patch
+    pairs = [(g, b) for g, b in pairs if g is not None and b is not None]
     g = [p[0] for p in pairs]; b = [p[1] for p in pairs]
     ratios = [b[i] / g[i] for i in range(len(pairs))]
     print(field, 'n=%d' % len(pairs), 'ratio-of-medians', round(st.median(b) / st.median(g), 2),
-          'median-of-ratios', round(st.median(ratios), 2))
+          'median-of-ratios', round(st.median(ratios), 2),
+          'range %.2f-%.2f' % (min(ratios), max(ratios)))
 ```
 
-Output at time of writing (final, 60/60 rows):
+Output at time of writing:
 
 ```
-FILE: benchmarks/corpus/results/raw_20260811-165327.jsonl ROWS: 60
+grip         form 10/10  spa 10/10  wizard 10/10  overall 30/30 = 100.0%
+browseruse   form 10/10  spa 7/10   wizard 7/10   overall 24/30 = 80.0%
 
-grip         form     10/10   spa 0/10   wizard 10/10   overall 20/30 = 66.7%
-browseruse   form     10/10   spa 7/10   wizard 7/10    overall 24/30 = 80.0%
+total_wall_seconds n=24 ratio-of-medians 16.72 median-of-ratios 19.13 range 1.65-49.95
+total_cost_usd     n=22 ratio-of-medians 6.06  median-of-ratios 7.17  range 0.85-21.80
 
-paired (both succeeded) n=17
-
-total_wall_seconds n=17 ratio-of-medians 9.98 median-of-ratios 8.42
-total_cost_usd n=15 ratio-of-medians 5.79 median-of-ratios 5.22
-
-form-01 spot check: grip 77.5s/$0.83, browseruse 1087.2s/$3.69
+grip arm totals: pre-fix $55.26 / 3.36h, post-fix $20.14 / 0.57h
+grip SPA median wall: post-fix 48.9s
+browseruse failures: spa-01, spa-02, spa-08, wizard-06, wizard-08, wizard-09
 ```
