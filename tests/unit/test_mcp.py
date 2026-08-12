@@ -62,6 +62,9 @@ async def test_call_tool_serializes_overlapping_calls():
         def payload(self, last_sent_version):
             return "PAGE: ok", last_sent_version + 1
 
+        def consume_dialogs(self):
+            return []
+
     server.reset_state()
     server._page = _SlowPage()
     try:
@@ -381,6 +384,9 @@ class _FakePage:
             self._current_snapshot, self.delta, last_sent_version, self._summarizer
         )
 
+    def consume_dialogs(self):
+        return []
+
     async def click(self, target):
         # The real Page.click snapshots itself when the ref cache is cold, which is
         # the state goto() leaves behind.
@@ -490,6 +496,9 @@ async def test_snapshot_returns_the_delta_on_turn_two():
                 self._current_snapshot, self.delta, last_sent_version, self._summarizer
             )
 
+        def consume_dialogs(self):
+            return []
+
         async def snapshot(self):
             self.delta = SnapshotDelta(version=2, previous_version=1, removed=["e3"])
             return self._current_snapshot
@@ -535,6 +544,9 @@ async def test_a_delta_costlier_than_its_snapshot_is_not_sent():
             return render_payload(
                 self._current_snapshot, self.delta, last_sent_version, self._summarizer
             )
+
+        def consume_dialogs(self):
+            return []
 
         async def snapshot(self):
             return self._current_snapshot

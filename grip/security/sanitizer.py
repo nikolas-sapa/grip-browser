@@ -35,6 +35,20 @@ class RawElement:
     checked: bool | None = None
     selected: bool | None = None
     value: str | None = None
+    # Mirrored onto Element in grip/compression/summarizer.py (Summarizer.build
+    # reads these via getattr with the same defaults, same reasoning as the
+    # interaction-state fields above). Populated by Page._discover_elements
+    # from DISCOVER_ELEMENTS_JS's canvasWidth/canvasHeight/isCombobox/
+    # comboboxExpanded/comboboxOptions/closedShadowUnreadable (grip/cdp/
+    # shadow.py). Named canvas_width/canvas_height, not width/height — those
+    # two fields already exist above (the element's own box), and colliding
+    # would silently break that mapping instead of erroring.
+    canvas_width: int | None = None
+    canvas_height: int | None = None
+    is_combobox: bool = False
+    combobox_expanded: bool | None = None
+    combobox_options: list[str] | None = None
+    closed_shadow_unreadable: bool = False
 
 
 # HiddenElementFilter lived here and was deleted rather than fixed. It read

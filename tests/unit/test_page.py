@@ -44,6 +44,8 @@ async def test_snapshot_returns_page_snapshot():
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "button", "role": "button", "text": "Buy",
@@ -114,6 +116,8 @@ async def test_element_with_page_authored_handle_is_dropped():
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "button", "role": "button", "text": "Buy",
@@ -149,6 +153,8 @@ async def test_element_interaction_state_is_wired_through_to_the_snapshot():
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "input", "role": "checkbox", "text": "Agree",
@@ -205,6 +211,8 @@ async def test_snapshot_increments_version():
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": "[]"}},
         {"result": {"value": ""}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
@@ -1008,13 +1016,15 @@ async def test_blocked_popup_is_counted_logged_and_traced(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_popups_allowed_when_opted_in(monkeypatch):
-    """NavigationPolicy(allow_popups=True) skips arming popup blocking
-    entirely — Target.setAutoAttach is never sent, so Chrome runs
-    window.open() unintercepted, and nothing is ever counted as blocked."""
+    """NavigationPolicy(allow_popups=True) still arms auto-attach (see
+    _ensure_popup_blocking) — now to observe/adopt a popup for
+    wait_for_popup(), not to block it — but never closes it and never counts
+    it as blocked."""
     engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy(allow_popups=True))
 
     async def navigate_side_effect():
+        _fire_attached(listeners, "popup-session", "popup-target", "page", url="https://oauth.test/")
         for cb in listeners.get("Page.loadEventFired", []):
             cb({})
 
@@ -1030,10 +1040,17 @@ async def test_popups_allowed_when_opted_in(monkeypatch):
     await page.goto("https://public.test/", timeout=1.0)
     await asyncio.sleep(0)
 
-    assert not any(m == "Target.setAutoAttach" for m, _ in sent), (
-        "allow_popups=True must not arm the block at all"
+    assert any(m == "Target.setAutoAttach" for m, _ in sent), (
+        "allow_popups=True still needs auto-attach armed to observe a popup"
+    )
+    assert not any(m == "Target.closeTarget" for m, _ in sent), (
+        "an allowed popup must never be closed"
     )
     assert page.popups_blocked == 0
+
+    info = await page.wait_for_popup(timeout=1.0)
+    assert info.target_id == "popup-target"
+    assert info.url == "https://oauth.test/"
 
 
 @pytest.mark.asyncio
@@ -1134,10 +1151,14 @@ async def test_main_frame_document_block_still_raises_out_of_goto(monkeypatch):
 @pytest.mark.asyncio
 async def test_second_snapshot_exposes_a_delta():
     engine = make_cdp_mock()
-    # One Runtime.enable, one Fetch.enable, then three canned responses per
-    # snapshot. Same URL both times — a URL change is the one case build_delta
-    # refuses to diff.
+    # One Runtime.enable, one Fetch.enable, one Page.enable (dialog handling's
+    # Page-domain arming), one Page.addScriptToEvaluateOnNewDocument
+    # (closed-shadow patch) — all first-snapshot-only — then three canned
+    # responses per snapshot. Same URL both times — a URL change is the one
+    # case build_delta refuses to diff.
     engine.send.side_effect = [
+        {},
+        {},
         {},
         {},
         {"result": {"value": "[]"}},
@@ -1196,6 +1217,8 @@ def _injected_engine(title, el_text, el_placeholder, page_text, el_role="textbox
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "input", "role": el_role, "text": el_text,

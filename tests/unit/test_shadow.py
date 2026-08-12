@@ -1,6 +1,8 @@
 from grip.cdp.shadow import (
+    CLOSED_SHADOW_PATCH_JS,
     DISCOVER_ELEMENTS_JS,
     CLICK_ELEMENT_JS,
+    SCROLL_BOTTOM_JS,
     TYPE_ELEMENT_JS,
     PAGE_TEXT_JS,
     _ACCESSIBLE_TEXT_JS,
@@ -262,3 +264,118 @@ def test_sibling_text_walker_is_bounded_not_a_document_scan():
     assert "parentElement" in fn
     assert "querySelectorAll" not in fn
     assert "getElementsByTagName" not in fn
+
+
+# --- Scroll containers / virtual lists (SCROLL_BOTTOM_JS) -------------------
+# Real scrolling behaviour (inner pane actually grows, window-only fallback)
+# is covered in tests/integration/test_dom_capability_gaps.py against a live
+# page — these are the string-level checks for the shape of the JS itself.
+
+
+def test_scroll_bottom_js_walks_scrollable_panes_not_just_the_window():
+    assert "isScrollable" in SCROLL_BOTTOM_JS
+    assert "overflowY" in SCROLL_BOTTOM_JS
+    assert "window.scrollTo" in SCROLL_BOTTOM_JS  # fallback still present
+
+
+def test_scroll_bottom_js_steps_by_client_height_not_a_jump_to_scroll_height():
+    assert "target.scrollTop + target.clientHeight" in SCROLL_BOTTOM_JS
+
+
+# --- Closed shadow roots (CLOSED_SHADOW_PATCH_JS) ----------------------------
+
+
+def test_closed_shadow_patch_is_idempotent():
+    assert "if (window.__gripClosedRoots) return;" in CLOSED_SHADOW_PATCH_JS
+
+
+def test_closed_shadow_patch_only_captures_closed_mode():
+    fn = CLOSED_SHADOW_PATCH_JS[CLOSED_SHADOW_PATCH_JS.index("Element.prototype.attachShadow"):]
+    assert "init.mode === 'closed'" in fn
+    # The native call must still happen and still return the real root —
+    # this patches visibility, not behaviour; an open-mode caller must see
+    # exactly what it would have without the patch installed at all.
+    assert "nativeAttachShadow.call(this, init)" in fn
+    assert "return root;" in fn
+
+
+def test_collector_walks_captured_closed_roots_like_open_ones():
+    walk_fn = _COLLECT_CANDIDATES_JS[_COLLECT_CANDIDATES_JS.index("function walk("):]
+    assert "window.__gripClosedRoots" in walk_fn
+    assert "window.__gripClosedRoots.has(el)" in walk_fn
+    assert "window.__gripClosedRoots.get(el)" in walk_fn
+
+
+def test_closed_shadow_unreadable_marker_only_fires_when_walk_throws():
+    walk_fn = _COLLECT_CANDIDATES_JS[_COLLECT_CANDIDATES_JS.index("function walk("):]
+    assert "closedShadowUnreadable: true" in walk_fn
+    # The marker branch must be inside a catch, not unconditional — see this
+    # file's CLOSED_SHADOW_PATCH_JS comment for why "captured but no marker"
+    # is the common case, not the exception.
+    catch_pos = walk_fn.index("} catch (e) {")
+    marker_pos = walk_fn.index("closedShadowUnreadable: true")
+    assert catch_pos < marker_pos
+
+
+# --- SVG shapes with role/aria-label/<title> (item 3) ------------------------
+
+
+def test_svg_candidate_gate_checks_aria_label_and_title_child():
+    fn = _COLLECT_CANDIDATES_JS[_COLLECT_CANDIDATES_JS.index("function gripIsSvgCandidate"):]
+    assert "instanceof SVGElement" in fn
+    assert "aria-label" in fn
+    assert ":scope > title" in fn
+
+
+def test_grip_is_candidate_falls_through_to_svg_check():
+    fn = _COLLECT_CANDIDATES_JS[_COLLECT_CANDIDATES_JS.index("function gripIsCandidate"):]
+    assert "gripIsSvgCandidate(el)" in fn
+
+
+def test_svg_title_child_feeds_accessible_text():
+    """A <title> child is the SVG spec's own accessible-name mechanism, with
+    no innerText/value/aria-label equivalent gripOwnText's existing fallback
+    chain would ever find."""
+    fn = _ACCESSIBLE_TEXT_JS[_ACCESSIBLE_TEXT_JS.index("function gripOwnText"):]
+    assert "gripSvgTitleText(el)" in fn
+
+
+# --- Combobox-shaped triggers (item 4) ---------------------------------------
+
+
+def test_combobox_info_gate_covers_role_and_aria_attributes():
+    fn = _COLLECT_CANDIDATES_JS[_COLLECT_CANDIDATES_JS.index("function gripComboboxInfo"):]
+    assert "role !== 'combobox'" in fn
+    assert "role !== 'listbox'" in fn
+    assert "aria-haspopup" in fn
+    assert "aria-expanded" in fn
+
+
+def test_combobox_info_reads_options_from_the_aria_owned_popup():
+    fn = _COLLECT_CANDIDATES_JS[_COLLECT_CANDIDATES_JS.index("function gripComboboxInfo"):]
+    assert "aria-controls" in fn
+    assert "aria-owns" in fn
+    assert "[role=\"option\"], option" in fn
+
+
+def test_discover_emits_combobox_and_closed_shadow_fields():
+    for field in ("isCombobox", "comboboxExpanded", "comboboxOptions", "closedShadowUnreadable"):
+        assert f"{field}:" in DISCOVER_ELEMENTS_JS
+
+
+def test_discover_emits_canvas_rect_fields_null_for_other_tags():
+    assert "c.tag === 'canvas' ? Math.round(rect.width) : null" in DISCOVER_ELEMENTS_JS
+    assert "c.tag === 'canvas' ? Math.round(rect.height) : null" in DISCOVER_ELEMENTS_JS
+    # canvasWidth/canvasHeight, not width/height — see the shadow.py comment
+    # on why colliding with RawElement's existing (dead-code) width/height
+    # JSON keys would have been a silent behaviour change there.
+    assert "canvasWidth:" in DISCOVER_ELEMENTS_JS
+    assert "canvasHeight:" in DISCOVER_ELEMENTS_JS
+    assert "\n      width:" not in DISCOVER_ELEMENTS_JS
+    assert "\n      height:" not in DISCOVER_ELEMENTS_JS
+
+
+def test_canvas_admitted_to_interactive_tags():
+    start = _COLLECT_CANDIDATES_JS.index("const INTERACTIVE_TAGS = new Set([")
+    set_body = _COLLECT_CANDIDATES_JS[start:_COLLECT_CANDIDATES_JS.index("]);", start)]
+    assert "'canvas'" in set_body

@@ -170,11 +170,47 @@ async def _eval_elements(page, js: str) -> list[dict]:
 #    below (baseline text must have been '' and every other field must still
 #    match) rather than by dropping `text` from the comparison generally, so a
 #    real drift in an already-labelled element's text still fails the test.
+# 5. DOM-capability-gap hardening (agent-hardening branch): canvas admitted to
+#    INTERACTIVE_TAGS (rect emitted via new `canvasWidth`/`canvasHeight` fields, null for
+#    every other tag), SVG shapes carrying role/aria-label/<title> admitted
+#    via gripIsSvgCandidate, combobox-shaped triggers flagged with new
+#    `isCombobox`/`comboboxExpanded`/`comboboxOptions` fields on rows that
+#    were already candidates, and closed-shadow-root content walked in via
+#    CLOSED_SHADOW_PATCH_JS (with a `closedShadowUnreadable` stub row for the
+#    rare case a captured root couldn't be walked). `canvasWidth`/`canvasHeight`/
+#    `isCombobox`/`comboboxExpanded`/`comboboxOptions`/`closedShadowUnreadable`
+#    are pure field additions (null/false on every unaffected row), dropped
+#    before comparing like `handle` above. canvas and SVG rows are new *rows*
+#    the baseline cannot have produced at all (neither tag nor role admits
+#    them there), so they are filtered out before diffing, the same way
+#    _drop_new_row_kinds already excludes iframe stub rows the baseline never
+#    emits. None of these fire in the local fixtures below (no <svg>/<canvas>
+#    markup, and CLOSED_SHADOW_PATCH_JS is never injected by open_with_html)
+#    — the filtering exists so a real page carrying any of them in the
+#    network-marked test doesn't spuriously fail this pin.
 #
-# The current collector may never contain a non-iframe element the baseline
-# lacks, and every surviving element must match field-for-field, in order.
-KNOWN_NEW_FIELDS = frozenset({"handle", "disabled", "required", "checked", "selected", "value"})
+# The current collector may never contain a non-iframe, non-canvas, non-svg
+# element the baseline lacks, and every surviving element must match
+# field-for-field, in order.
+KNOWN_NEW_FIELDS = frozenset({
+    "handle", "disabled", "required", "checked", "selected", "value",
+    "canvasWidth", "canvasHeight", "isCombobox", "comboboxExpanded", "comboboxOptions",
+    "closedShadowUnreadable",
+})
 DIAGNOSTIC_OLD_FIELDS = frozenset({"offCanvas"})
+# Tags the current collector can admit as a row that the frozen baseline's
+# INTERACTIVE_TAGS/INTERACTIVE_ROLES never could — see note 5 above.
+# gripIsSvgCandidate (grip/cdp/shadow.py) admits any SVGElement subtype
+# carrying role/aria-label/<title>, not just the outer <svg> — this list is
+# the common shapes such an icon/chart/map is actually built from, not an
+# exhaustive SVG tag enumeration; a real page using an SVG element outside
+# this set with only aria-label/<title> (no role) could in principle still
+# diverge the pin, which is an accepted gap in this filter, not in the
+# collector itself.
+_NEW_ONLY_TAGS = frozenset({
+    "iframe", "canvas", "svg", "path", "g", "circle", "ellipse", "rect",
+    "polygon", "polyline", "line", "use", "text",
+})
 
 
 def _comparable(row: dict, drop: frozenset[str]) -> dict:
@@ -228,16 +264,22 @@ def _diff_against_baseline(old: list[dict], new: list[dict]) -> str | None:
     return None
 
 
-def _drop_iframe_rows(rows: list[dict]) -> list[dict]:
-    """Iframe stub rows are new-only (see KNOWN_NEW_FIELDS note 3): the baseline
-    JS never produces them, so they are excluded before diffing rather than
-    expected to match a baseline row that cannot exist."""
-    return [r for r in rows if r.get("tag") != "iframe"]
+def _drop_new_row_kinds(rows: list[dict]) -> list[dict]:
+    """Rows the baseline JS could never produce (see notes 3 and 5 above) are
+    excluded before diffing rather than expected to match a baseline row that
+    cannot exist: iframe/canvas/SVG rows by tag, and closed-shadow-unreadable
+    stub rows by their marker field — a stub's `tag` is whatever the closed
+    root's *host* element happens to be (a plain <div>, most often), which is
+    not itself a new-only tag, so it can't be caught by the tag filter above."""
+    return [
+        r for r in rows
+        if r.get("tag") not in _NEW_ONLY_TAGS and not r.get("closedShadowUnreadable")
+    ]
 
 
 async def _assert_identical(page) -> None:
     old = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
-    new = _drop_iframe_rows(await _eval_elements(page, DISCOVER_ELEMENTS_JS))
+    new = _drop_new_row_kinds(await _eval_elements(page, DISCOVER_ELEMENTS_JS))
     problem = _diff_against_baseline(old, new)
     assert problem is None, (
         f"DISCOVER_ELEMENTS_JS output diverged from pre-optimization baseline.\n"
@@ -255,7 +297,7 @@ async def _assert_identical_or_page_moved(page) -> bool:
     is a real divergence. Returns True if the comparison was conclusive.
     """
     old1 = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
-    new = _drop_iframe_rows(await _eval_elements(page, DISCOVER_ELEMENTS_JS))
+    new = _drop_new_row_kinds(await _eval_elements(page, DISCOVER_ELEMENTS_JS))
     old2 = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
     if old1 != old2:
         return False  # page moved between evals — inconclusive, not a failure

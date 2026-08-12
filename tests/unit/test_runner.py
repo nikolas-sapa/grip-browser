@@ -87,6 +87,9 @@ class FakePage:
         from grip.page import render_payload
         return render_payload(self._current_snapshot, self.delta, last_sent_version, Summarizer())
 
+    def consume_dialogs(self):
+        return []
+
     async def click(self, target):
         # The real Page.click snapshots itself when the ref cache is cold, which is
         # the state goto() leaves behind. That snapshot advances the delta baseline
@@ -370,6 +373,7 @@ def _payload_with(delta, snapshot, last_sent):
     page.payload = lambda last_sent_version: render_payload(
         snapshot, delta, last_sent_version, Summarizer()
     )
+    page.consume_dialogs.return_value = []
     runner = Runner(llm=MagicMock(), page=page, trace=Trace())
     runner._last_sent_version = last_sent
     return runner, runner._page_payload()

@@ -18,6 +18,7 @@ from grip.cdp.engine import CDPEngine
 from grip.cdp.shadow import (
     CLICK_ELEMENT_JS,
     CLICK_REVEAL_JS,
+    CLOSED_SHADOW_PATCH_JS,
     DISCOVER_ELEMENTS_JS,
     PAGE_TEXT_JS,
     PROBE_CLICKABLE_JS,
@@ -389,6 +390,108 @@ _SCROLL_METRICS_JS = """
 """
 
 
+# wait_for()'s own JS, kept local like _SELECT_OPTION_JS/_FIND_FILE_INPUTS_JS
+# above — each check is one bounded Runtime.evaluate, not a full snapshot(),
+# so polling stays cheap. See Page.wait_for() for what each kind means.
+_WAIT_TEXT_JS = """
+function (needle) {
+  var body = document.body;
+  if (!body) return false;
+  return (body.innerText || '').toLowerCase().indexOf(needle.toLowerCase()) !== -1;
+}
+"""
+
+# Restricted to elements a click()/type() target would actually resolve to,
+# not any prose containing the text — the same "is this a target, not a
+# paragraph" distinction _resolve_target's substring match makes.
+_WAIT_ELEMENT_JS = """
+function (needle) {
+  var want = needle.toLowerCase();
+  var nodes = document.querySelectorAll(
+    'a,button,input,select,textarea,[role],[onclick],[tabindex]'
+  );
+  for (var i = 0; i < nodes.length; i++) {
+    var el = nodes[i];
+    var text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+    if (text.toLowerCase().indexOf(want) !== -1) return true;
+  }
+  return false;
+}
+"""
+
+_WAIT_SELECTOR_JS = """
+function (selector) {
+  try { return !!document.querySelector(selector); }
+  catch (e) { return false; }
+}
+"""
+
+# Consent-wall dismissal (Page._maybe_dismiss_consent_banner): matched by
+# EXACT normalized text against a small allowlist, not substring-anywhere —
+# "accept" as a substring also hits "Accept terms and delete my account",
+# and a false-positive click here is worse than leaving the banner up (see
+# the audit note this is built from). Only visible button-like elements are
+# candidates; the first match wins.
+_CONSENT_ACCEPT_PHRASES = (
+    "accept", "accept all", "accept all cookies", "accept cookies",
+    "i agree", "agree", "allow all", "allow all cookies", "got it", "ok",
+)
+
+_CONSENT_DISMISS_JS = """
+function (phrases) {
+  var nodes = document.querySelectorAll('button, a[role="button"], [role="button"]');
+  for (var i = 0; i < nodes.length; i++) {
+    var el = nodes[i];
+    var rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    var text = (el.innerText || el.textContent || '').trim().toLowerCase();
+    if (phrases.indexOf(text) !== -1) {
+      el.click();
+      return { clicked: true, text: text };
+    }
+  }
+  return { clicked: false, text: '' };
+}
+"""
+
+# Page.javascriptDialogOpening policy default (Page._ensure_dialog_handling):
+# alert/confirm/beforeunload are accepted — a page's own confirm()/alert() is
+# not something an automated caller can answer differently, and refusing
+# beforeunload would leave every link click hanging on "leave this page?".
+# prompt() is dismissed rather than accepted with a synthesized answer — a
+# page asking a free-text question has no safe default value, and answering
+# with an empty string reads to the page as a real (if blank) user response
+# rather than "no answer given".
+_DEFAULT_DIALOG_POLICY: dict[str, bool] = {
+    "alert": True, "confirm": True, "beforeunload": True, "prompt": False,
+}
+
+
+@dataclass
+class PopupInfo:
+    """What Page can tell a caller about a window.open()/target="_blank"
+    popup opened under `NavigationPolicy(allow_popups=True)` — see
+    Page.wait_for_popup().
+
+    Deliberately not a full child Page. CDPEngine (grip/cdp/engine.py)
+    dispatches every event by method name only (see its _receive_forever),
+    with no session-scoped routing — a Page layered on this page's shared
+    connection would have its listener-based features (goto()'s load wait,
+    dialog handling, download tracking, same-document nav invalidation) fed
+    events from BOTH targets indiscriminately. A real child Page needs
+    either its own websocket (which needs connection details — host, port,
+    cdp_url — that only Browser holds) or session-scoped event demuxing in
+    CDPEngine; this file owns neither. target_id/url/session_id is the
+    addressable half: enough for code that does hold a Browser to open a
+    genuinely independent Page onto the popup (e.g. `browser.open(info.url)`
+    for a same-origin OAuth redirect), without this object pretending to
+    already be one.
+    """
+    target_id: str
+    url: str
+    session_id: str
+
+
 @dataclass
 class ScrollPosition:
     """Viewport scroll offset plus document/viewport size — what a caller
@@ -418,6 +521,8 @@ class Page:
         block_resources: bool = False,
         policy: NavigationPolicy | None = None,
         settle_timeout: float = _SETTLE_TIMEOUT_S,
+        dialog_policy: dict[str, bool] | None = None,
+        dismiss_consent_banners: bool = True,
     ) -> None:
         self._engine = engine
         self._trace = trace
@@ -479,6 +584,36 @@ class Page:
         self._download_dir: Path | None = None
         self._download_events_armed = False
         self._download_queue: asyncio.Queue[Path | None] | None = None
+        # Page-domain enable, shared by every feature below that needs it
+        # (dialogs, nav invalidation, file chooser interception) and by
+        # goto(), which already sends it directly — see _ensure_page_domain().
+        self._page_domain_enabled = False
+        # Closed-shadow-root patch (see _ensure_closed_shadow_patch): armed
+        # once per page lifetime — Page.addScriptToEvaluateOnNewDocument is
+        # re-applied by CDP on every navigation of this target automatically.
+        self._closed_shadow_patch_armed = False
+        # Dialog handling (see _ensure_dialog_handling): armed once per page
+        # lifetime, same "once, not per-navigation" reasoning as
+        # _fetch_enabled above — Page.enable applies for the page's whole
+        # life, not just the current document.
+        self._dialog_handling_armed = False
+        self._dialog_policy: dict[str, bool] = {
+            **_DEFAULT_DIALOG_POLICY, **(dialog_policy or {}),
+        }
+        # Surfaced via consume_dialogs() — see _on_dialog_opening. A dialog is
+        # otherwise silent: Page.handleJavaScriptDialog answers it, but
+        # nothing tells the caller a question was even asked.
+        self._pending_dialogs: list[dict[str, Any]] = []
+        # Same-document navigation invalidation (see _ensure_nav_invalidation)
+        # and consent-banner dismissal share this arming: an SPA route change
+        # both stales the cached snapshot and re-opens the door for a new
+        # cookie wall, so one event handler resets both.
+        self._nav_invalidation_armed = False
+        self._dismiss_consent_banners = dismiss_consent_banners
+        self._consent_dismissed_this_nav = False
+        # Popup adoption (see _on_target_attached, wait_for_popup): populated
+        # only when NavigationPolicy(allow_popups=True) — see PopupInfo.
+        self._popup_queue: asyncio.Queue[PopupInfo] = asyncio.Queue()
 
     @property
     def popups_blocked(self) -> int:
@@ -507,6 +642,30 @@ class Page:
         # target) — goto() is the common path but not the only entry point,
         # and post-load page JS is exactly what Finding 1 is about.
         await self._ensure_fetch_interception()
+        await self._ensure_dialog_handling()
+        await self._ensure_nav_invalidation()
+        await self._ensure_closed_shadow_patch()
+
+    async def _ensure_closed_shadow_patch(self) -> None:
+        """Registers CLOSED_SHADOW_PATCH_JS (grip/cdp/shadow.py) via
+        Page.addScriptToEvaluateOnNewDocument, so a closed shadow root
+        created during a page's very first render is captured before
+        DISCOVER_ELEMENTS_JS's tree walk ever runs — see that constant's own
+        docstring for why this has to be the CDP "before any script" hook,
+        not a Runtime.evaluate reachable only after load.
+
+        Armed once per Page lifetime, same reasoning as
+        _ensure_fetch_interception above: Page.addScriptToEvaluateOnNewDocument
+        is re-applied by CDP on every navigation of this target automatically,
+        so a second registration would just double-run the (idempotent)
+        patch, not extend its coverage.
+        """
+        if self._closed_shadow_patch_armed:
+            return
+        self._closed_shadow_patch_armed = True
+        await self._engine.send(
+            "Page.addScriptToEvaluateOnNewDocument", {"source": CLOSED_SHADOW_PATCH_JS}
+        )
 
     async def _ensure_fetch_interception(self) -> None:
         """Pause every request the browser is about to send, so a refused one
@@ -617,6 +776,156 @@ class Page:
                 {"requestId": request_id, "errorReason": "AccessDenied"},
             )
 
+    async def _ensure_page_domain(self) -> None:
+        """Page.enable, once per page lifetime. goto() already sends it
+        directly as part of its own gather (see there); this covers every
+        other entry point — dialogs, nav invalidation, file chooser
+        interception — for a Page reached without goto() (remote CDP
+        attach, an adopted target, or any call before the first goto())."""
+        if self._page_domain_enabled:
+            return
+        self._page_domain_enabled = True
+        await self._engine.send("Page.enable")
+
+    async def _ensure_dialog_handling(self) -> None:
+        """Subscribes to Page.javascriptDialogOpening so a confirm()/alert()/
+        beforeunload the page raises is answered automatically instead of
+        freezing the tab until CDPEngine's own send() timeout — nothing
+        answers a dialog otherwise, and Chrome will not process another
+        command on this target while one is open. See _DEFAULT_DIALOG_POLICY
+        for the default answer to each dialog type and _on_dialog_opening for
+        how it's surfaced to the caller afterward."""
+        if self._dialog_handling_armed:
+            return
+        self._dialog_handling_armed = True
+        await self._ensure_page_domain()
+        self._engine.on("Page.javascriptDialogOpening", self._on_dialog_opening)
+
+    def _on_dialog_opening(self, params: dict[str, Any]) -> None:
+        """Runs synchronously (CDPEngine dispatches listeners inline) and
+        hands the actual Page.handleJavaScriptDialog call off to the event
+        loop — same shape as _on_fetch_paused above."""
+        dialog_type = params.get("type", "")
+        message = params.get("message", "")
+        accept = self._dialog_policy.get(dialog_type, True)
+        logger.info(
+            "javascript dialog %r auto-%s: %r",
+            dialog_type, "accepted" if accept else "dismissed", message,
+        )
+        self._pending_dialogs.append({
+            "type": dialog_type, "message": message, "accepted": accept,
+        })
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="dialog",
+            input={"type": dialog_type, "message": message},
+            output={"accepted": accept},
+            tokens_consumed=0,
+            duration_ms=0,
+        ))
+        args: dict[str, Any] = {"accept": accept}
+        if dialog_type == "prompt" and accept:
+            args["promptText"] = ""
+        self._spawn_bg(self._handle_dialog(args))
+
+    async def _handle_dialog(self, args: dict[str, Any]) -> None:
+        # Best-effort like _continue_fetch/_fail_fetch — the target can be
+        # gone (tab closed from under the dialog) by the time this runs.
+        with contextlib.suppress(Exception):
+            await self._engine.send("Page.handleJavaScriptDialog", args)
+
+    def consume_dialogs(self) -> list[dict[str, Any]]:
+        """Every javascript dialog auto-answered since the last call to this,
+        as `{"type", "message", "accepted"}` dicts, oldest first. Draining
+        rather than peeking: a dialog is meant to be surfaced to the caller
+        exactly once — see grip.mcp.server / Runner, which call this after
+        every action and prepend a note to the tool result when it's
+        non-empty, so "why did nothing happen when I clicked Login" has an
+        answer instead of a silently swallowed confirm()."""
+        dialogs, self._pending_dialogs = self._pending_dialogs, []
+        return dialogs
+
+    async def _ensure_nav_invalidation(self) -> None:
+        """Subscribes to Page.frameNavigated (a full commit, main-frame-only)
+        and Page.navigatedWithinDocument (pushState/replaceState/hash change)
+        so a same-document SPA navigation invalidates the cached snapshot the
+        same way goto() already does for a full one (see goto()'s own resets
+        at the top of that method) — without this, a route change left the
+        old snapshot's refs/handles looking valid while describing a DOM that
+        may no longer exist, and a delta built against it would diff two
+        different documents."""
+        if self._nav_invalidation_armed:
+            return
+        self._nav_invalidation_armed = True
+        await self._ensure_page_domain()
+        self._engine.on("Page.frameNavigated", self._on_frame_navigated)
+        self._engine.on(
+            "Page.navigatedWithinDocument", self._on_navigated_within_document
+        )
+
+    def _on_frame_navigated(self, params: dict[str, Any]) -> None:
+        # frameNavigated fires for every frame, including iframes navigating
+        # on their own — a frame with a parentId is not this page's own
+        # top-level document. Also fires for goto()'s own navigations; that's
+        # a harmless redundant reset (the fields are already None by then),
+        # not a bug — see goto()'s own resets at the top of that method.
+        frame = params.get("frame", {})
+        if frame.get("parentId"):
+            return
+        self._invalidate_snapshot_cache()
+
+    def _on_navigated_within_document(self, params: dict[str, Any]) -> None:
+        # navigatedWithinDocument carries frameId directly (no nested frame
+        # dict to read a parentId off), so this is scoped the same way
+        # _on_fetch_paused's is_main_frame check is: compared against this
+        # page's own target id, with an empty target_id (a Page built
+        # without going through Browser.open()) falling back to "no id to
+        # compare, treat as main" rather than never firing at all.
+        frame_id = params.get("frameId", "")
+        if self._target_id and frame_id != self._target_id:
+            return
+        self._invalidate_snapshot_cache()
+
+    def _invalidate_snapshot_cache(self) -> None:
+        self._current_snapshot = None
+        self._previous_snapshot = None
+        self.delta = None
+        # A new document (or a new SPA "page" within the same document) gets
+        # its own chance at a consent-wall dismissal — see
+        # _maybe_dismiss_consent_banner.
+        self._consent_dismissed_this_nav = False
+
+    async def _maybe_dismiss_consent_banner(self) -> None:
+        """Best-effort, once per navigation (see _invalidate_snapshot_cache):
+        click a cookie/consent banner's accept button before the caller's
+        next read of the page, so a wall that would otherwise block every
+        click doesn't have to be discovered by trial and error. Opt out via
+        `Page(..., dismiss_consent_banners=False)`. Never allowed to fail the
+        caller — same reasoning as _discover_probe_elements: this is a
+        heuristic add-on to snapshot(), not something it depends on."""
+        if not self._dismiss_consent_banners or self._consent_dismissed_this_nav:
+            return
+        self._consent_dismissed_this_nav = True
+        try:
+            outcome = await self._eval(
+                f"({_CONSENT_DISMISS_JS})({json.dumps(_CONSENT_ACCEPT_PHRASES)})"
+            )
+        except Exception:
+            return
+        if not isinstance(outcome, dict) or not outcome.get("clicked"):
+            return
+        text = outcome.get("text", "")
+        logger.info("consent banner dismissed: clicked button labeled %r", text)
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="consent_dismissed",
+            input={},
+            output={"text": text},
+            tokens_consumed=0,
+            duration_ms=0,
+        ))
+        await self._settle()
+
     async def _ensure_popup_blocking(self) -> None:
         """window.open() (and an <a target="_blank"> click) creates a brand-new
         CDP target with its own Fetch-domain state; Fetch.enable above never
@@ -642,17 +951,17 @@ class Page:
         instead means the popup never gets far enough to request anything.
 
         Gated the same as Fetch interception: nothing to enforce once the
-        caller has opted into allow_private. Also skipped entirely when the
-        caller has opted into `NavigationPolicy(allow_popups=True)` — see that
-        flag's docstring for what accepting the popup costs — in which case
-        auto-attach is never armed at all and Chrome runs window.open() as it
-        normally would, unintercepted.
+        caller has opted into allow_private. Still armed under
+        `NavigationPolicy(allow_popups=True)` — unlike before, when auto-attach
+        was never armed at all under that flag and a popup went completely
+        unobserved. It is now paused just long enough to record its
+        target_id/url/session_id (see _on_target_attached, PopupInfo) and
+        immediately resumed — a transparent pause-and-go, not a hold — so
+        `wait_for_popup()` has something to return. Fetch-domain enforcement
+        inside the popup is still not armed either way; see that flag's
+        docstring for what accepting it costs.
         """
-        if (
-            self._popup_block_armed
-            or self._policy.allow_private
-            or self._policy.allow_popups
-        ):
+        if self._popup_block_armed or self._policy.allow_private:
             return
         self._popup_block_armed = True
         self._engine.on("Target.attachedToTarget", self._on_target_attached)
@@ -675,31 +984,72 @@ class Page:
         if target_info.get("type") == "page":
             target_id = target_info.get("targetId", "")
             popup_url = target_info.get("url", "")
-            # A blocked popup is otherwise silent: the target is closed before
-            # it runs any JS, and the caller who clicked "Login" just sees
-            # nothing happen. Make it legible — a log line to explain it, plus
-            # a counter and a Trace entry so it's also visible to code, not
-            # just a human reading logs.
-            self._popups_blocked += 1
-            logger.warning(
-                "popup blocked: window.open()/target=_blank to %r was refused "
-                "(NavigationPolicy.allow_popups=False, the default) — pass "
-                "allow_popups=True to permit popups, at the cost of Fetch "
-                "interception inside them",
-                popup_url,
-            )
+            if not self._policy.allow_popups:
+                # A blocked popup is otherwise silent: the target is closed
+                # before it runs any JS, and the caller who clicked "Login"
+                # just sees nothing happen. Make it legible — a log line to
+                # explain it, plus a counter and a Trace entry so it's also
+                # visible to code, not just a human reading logs.
+                self._popups_blocked += 1
+                logger.warning(
+                    "popup blocked: window.open()/target=_blank to %r was "
+                    "refused (NavigationPolicy.allow_popups=False, the "
+                    "default) — pass allow_popups=True to permit popups, at "
+                    "the cost of Fetch interception inside them",
+                    popup_url,
+                )
+                self._trace.add(TraceEntry(
+                    timestamp=time.time(),
+                    action="popup_blocked",
+                    input={"url": popup_url},
+                    output={},
+                    tokens_consumed=0,
+                    duration_ms=0,
+                ))
+                if target_id:
+                    self._spawn_bg(self._close_popup_target(target_id))
+                return
+            # allow_popups=True: record it for wait_for_popup() (see
+            # PopupInfo for what this can and cannot give the caller) and
+            # resume it — same as any other attached target below.
             self._trace.add(TraceEntry(
                 timestamp=time.time(),
-                action="popup_blocked",
-                input={"url": popup_url},
-                output={},
+                action="popup_opened",
+                input={},
+                output={"url": popup_url, "target_id": target_id},
                 tokens_consumed=0,
                 duration_ms=0,
             ))
-            if target_id:
-                self._spawn_bg(self._close_popup_target(target_id))
+            self._popup_queue.put_nowait(
+                PopupInfo(target_id=target_id, url=popup_url, session_id=session_id)
+            )
+            self._spawn_bg(self._resume_attached_target(session_id))
             return
         self._spawn_bg(self._resume_attached_target(session_id))
+
+    async def wait_for_popup(self, timeout: float = 10.0) -> PopupInfo:
+        """Wait for the next popup this page opens under
+        `NavigationPolicy(allow_popups=True)` — see PopupInfo's docstring for
+        exactly what this can and cannot give the caller. Raises a typed
+        NETWORK_TIMEOUT (see wait_for()'s matching one) if none opens in
+        time."""
+        if not self._policy.allow_popups:
+            raise ValueError(
+                "wait_for_popup() needs NavigationPolicy(allow_popups=True) "
+                "— with the default policy every popup is blocked outright "
+                "(see Page.popups_blocked)."
+            )
+        await self._ensure_popup_blocking()
+        try:
+            async with asyncio.timeout(timeout):
+                return await self._popup_queue.get()
+        except TimeoutError as e:
+            raise GripError(BrowserError(
+                type=ErrorType.NETWORK_TIMEOUT,
+                message=f"No popup opened within {timeout}s.",
+                confidence=0.6,
+                recovery=[RecoveryAction.RETRY],
+            )) from e
 
     async def _close_popup_target(self, target_id: str) -> None:
         # Deliberately never Runtime.runIfWaitingForDebugger first — resuming
@@ -796,11 +1146,14 @@ class Page:
                 # snapshot(): a page handed back by goto() has to be usable, and
                 # enabling Runtime after the fact costs a round trip on the hot path.
                 await asyncio.gather(
-                    self._engine.send("Page.enable"),
+                    self._ensure_page_domain(),
                     self._engine.send("Network.enable"),
                     self._engine.send("Runtime.enable"),
                     self._ensure_fetch_interception(),
                     self._ensure_popup_blocking(),
+                    self._ensure_dialog_handling(),
+                    self._ensure_nav_invalidation(),
+                    self._ensure_closed_shadow_patch(),
                 )
                 self._initialized = True
                 if self._block_resources:
@@ -814,6 +1167,7 @@ class Page:
                 # wait below would burn the entire timeout and then be swallowed
                 # as success. Ask the page instead of assuming.
                 if await self._already_at(url):
+                    await self._maybe_dismiss_consent_banner()
                     return
                 await self._engine.send("Page.navigate", {"url": url})
                 await load_event.wait()
@@ -858,6 +1212,12 @@ class Page:
                 confidence=0.7,
                 recovery=[RecoveryAction.RETRY, RecoveryAction.EXPONENTIAL_BACKOFF],
             ))
+        # Best-effort, once per navigation (see _invalidate_snapshot_cache,
+        # armed above by Page.frameNavigated) — a fresh document is exactly
+        # when a cookie/consent wall shows up. Only reached once loading has
+        # actually settled (a raise above skips it, same as any other
+        # post-navigation step would).
+        await self._maybe_dismiss_consent_banner()
 
     async def _already_at(self, url: str) -> bool:
         """True only if this target is *already* showing a finished `url`.
@@ -1416,6 +1776,16 @@ class Page:
         t0 = time.monotonic()
         el = self._find_select(description)
         if el is None:
+            # Not a real <select> — try a non-native combobox (role=combobox/
+            # aria-haspopup, reported by grip/cdp/shadow.py's
+            # gripComboboxInfo as Element.is_combobox) before hard-failing.
+            # A custom dropdown widget has no <select> for _SELECT_OPTION_JS
+            # to even resolve against, so this has to be a different action
+            # entirely: open it, re-snapshot, click the option.
+            combo = self._find_combobox(description)
+            if combo is not None:
+                await self._select_combobox(combo, value, t0)
+                return
             err = self._classifier.classify_semantic_miss(description)
             raise GripError(err)
         js = (
@@ -1533,6 +1903,86 @@ class Page:
             viewport_width=int(data.get("viewportWidth", 0) or 0),
         )
 
+    async def wait_for(
+        self,
+        *,
+        text: str | None = None,
+        ref: str | None = None,
+        selector: str | None = None,
+        timeout: float = 10.0,
+        poll_interval: float = 0.25,
+    ) -> None:
+        """Block until a condition on the live page becomes true, then
+        re-snapshot — the primitive for an SPA route change or an
+        XHR-driven update that Page.loadEventFired (goto()'s own wait) never
+        sees, since neither fires a new load event.
+
+        Exactly one of:
+          text: a case-insensitive substring appears anywhere in the page's
+            visible text (document.body.innerText) — waiting for prose or a
+            status message.
+          ref: a case-insensitive substring appears in an *element's* own
+            text/value/aria-label (a click()/type() target, not any
+            paragraph containing it) — waiting for a specific control to
+            show up.
+          selector: a raw CSS selector matches at least one element.
+
+        Each poll is one bounded Runtime.evaluate, not a full snapshot() —
+        snapshot() only runs once, after the condition is already true, so
+        polling stays cheap even at a short poll_interval.
+
+        Raises a typed NETWORK_TIMEOUT with a retry/re-snapshot hint if the
+        condition never becomes true within `timeout`.
+        """
+        kinds = [
+            (name, value) for name, value in (("text", text), ("ref", ref),
+                                                ("selector", selector))
+            if value is not None
+        ]
+        if len(kinds) != 1:
+            raise ValueError(
+                "wait_for(): pass exactly one of text=, ref=, or selector="
+            )
+        kind, needle = kinds[0]
+        js = {"text": _WAIT_TEXT_JS, "ref": _WAIT_ELEMENT_JS, "selector": _WAIT_SELECTOR_JS}[kind]
+        await self._ensure_initialized()
+        t0 = time.monotonic()
+        deadline = time.monotonic() + timeout
+        while True:
+            ok = await self._eval(f"({js})({json.dumps(needle)})")
+            if ok:
+                break
+            if time.monotonic() >= deadline:
+                self._trace.add(TraceEntry(
+                    timestamp=time.time(),
+                    action="wait_for",
+                    input={"kind": kind, "value": needle, "timeout": timeout},
+                    output={"ok": False},
+                    tokens_consumed=0,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                ))
+                raise GripError(BrowserError(
+                    type=ErrorType.NETWORK_TIMEOUT,
+                    message=(
+                        f"wait_for({kind}={needle!r}) timed out after "
+                        f"{timeout}s — the condition never became true. "
+                        "Re-snapshot to see the page's current state, or "
+                        "retry wait_for() with a longer timeout."
+                    ),
+                    confidence=0.6,
+                    recovery=[RecoveryAction.RETRY, RecoveryAction.RE_SNAPSHOT],
+                ))
+            await asyncio.sleep(poll_interval)
+        await self.snapshot()
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="wait_for",
+            input={"kind": kind, "value": needle, "timeout": timeout},
+            output={"ok": True},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
     async def upload(self, description: str, *paths: str | Path) -> None:
         """Set one or more local files on a `<input type=file>` matched by
         fuzzy description (label text, aria-label, name, or id).
@@ -1540,6 +1990,10 @@ class Page:
         Multiple paths set multiple files on the same input in one call —
         DOM.setFileInputFiles takes a list, so there is no per-file round trip.
         A single-file input just keeps whatever the browser allows of it.
+
+        Falls back to `_upload_via_file_chooser()` when no `<input type=file>`
+        is addressable this way — a drop-zone/"Browse" control that only
+        creates or opens its file input once clicked.
         """
         self._assert_not_safe("upload")
         if not paths:
@@ -1573,7 +2027,8 @@ class Page:
                 match = c
                 break
         if match is None:
-            raise GripError(self._classifier.classify_semantic_miss(description))
+            await self._upload_via_file_chooser(description, resolved, t0)
+            return
 
         # DOM.setFileInputFiles needs an objectId, not the JSON description
         # candidates were matched against above — a second, targeted
@@ -1602,6 +2057,96 @@ class Page:
             action="upload",
             input={"description": description, "files": resolved},
             output={"handle": match["handle"]},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
+    async def _upload_via_file_chooser(
+        self, description: str, resolved: list[str], t0: float
+    ) -> None:
+        """Fallback for upload() when no `<input type=file>` is already
+        addressable by label/aria/name/id — a drop-zone/"Browse" control that
+        creates or opens its file input only once clicked.
+        Page.setInterceptFileChooserDialog pauses the native chooser Chrome
+        would otherwise try to show (impossible headless) and hands back the
+        clicked input's backendNodeId directly, so this needs no separate
+        resolve-to-objectId step the way the direct path above does.
+
+        Dispatches a real, trusted pointer click (click_at(), the same
+        primitive click_at()/click(human=True) use) rather than click()'s own
+        default el.click() — verified against real Chrome that
+        Page.fileChooserOpened only fires for a trusted click, headless or
+        not; an untrusted JS .click() (even on the file input itself) never
+        triggers it.
+        """
+        if not self._current_snapshot:
+            await self.snapshot()
+        el = self._find_element(description)
+        if el is None:
+            raise GripError(self._classifier.classify_semantic_miss(description))
+        probe = await self._eval(
+            f"({RESOLVE_POINT_JS})"
+            f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+        )
+        outcome = probe or {}
+        if not outcome.get("ok"):
+            self._raise_for_action(outcome, description)
+            return
+
+        await self._ensure_page_domain()
+        await self._engine.send("DOM.enable")
+        chooser: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+
+        def on_chooser(params: dict[str, Any]) -> None:
+            if not chooser.done():
+                chooser.set_result(params)
+
+        self._engine.on("Page.fileChooserOpened", on_chooser)
+        try:
+            await self._engine.send(
+                "Page.setInterceptFileChooserDialog", {"enabled": True}
+            )
+            await self.click_at(int(outcome["x"]), int(outcome["y"]), human=False)
+            try:
+                async with asyncio.timeout(5.0):
+                    params = await chooser
+            except TimeoutError as e:
+                raise GripError(BrowserError(
+                    type=ErrorType.ELEMENT_STALE,
+                    message=(
+                        f"Clicking {description!r} did not open a file "
+                        "chooser within 5s. It may not be a file upload "
+                        "control."
+                    ),
+                    confidence=0.7,
+                    recovery=[RecoveryAction.RE_SNAPSHOT],
+                )) from e
+            backend_node_id = params.get("backendNodeId")
+            if not backend_node_id:
+                raise GripError(BrowserError(
+                    type=ErrorType.ELEMENT_STALE,
+                    message=(
+                        f"File chooser opened by {description!r} carried no "
+                        "backendNodeId to set files on."
+                    ),
+                    confidence=0.8,
+                    recovery=[RecoveryAction.RETRY],
+                ))
+            await self._engine.send(
+                "DOM.setFileInputFiles",
+                {"files": resolved, "backendNodeId": backend_node_id},
+            )
+        finally:
+            self._engine.off("Page.fileChooserOpened", on_chooser)
+            with contextlib.suppress(Exception):
+                await self._engine.send(
+                    "Page.setInterceptFileChooserDialog", {"enabled": False}
+                )
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="upload",
+            input={"description": description, "files": resolved, "via": "file_chooser"},
+            output={},
             tokens_consumed=0,
             duration_ms=int((time.monotonic() - t0) * 1000),
         ))
@@ -1857,6 +2402,60 @@ class Page:
             tokens_consumed=0,
             duration_ms=int((time.monotonic() - t0) * 1000),
         ))
+
+    async def hover(self, description: str, *, human: bool = False) -> None:
+        """Move the pointer over an element without clicking it — the
+        primitive hover-only menus/tooltips need, since click()'s default JS
+        path (el.click()) fires no pointer events at all and hover-revealed
+        content never has a chance to appear.
+
+        Reuses the same probe click(human=True) uses to turn `description`
+        into real viewport coordinates: RESOLVE_POINT_JS re-resolves the
+        handle first, so a stale element raises instead of hovering whatever
+        now occupies that spot. `human=True` travels there along the same
+        curved, eased path click_at() uses; the default is a single instant
+        move, since most hover targets don't need to survive a bot-motion
+        check and every intermediate step is a real wall-clock sleep
+        (move_delay()) an ordinary "open this menu" call shouldn't pay.
+
+        Does not re-snapshot afterward, matching click()/type()/select() —
+        the caller's next snapshot()/payload() picks up whatever the hover
+        revealed.
+        """
+        self._assert_not_safe("hover")
+        if not self._current_snapshot:
+            await self.snapshot()
+        t0 = time.monotonic()
+        el = self._find_element(description)
+        if el is None:
+            err = self._classifier.classify_semantic_miss(description)
+            raise GripError(err)
+        probe = await self._eval(
+            f"({RESOLVE_POINT_JS})"
+            f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+        )
+        outcome = probe or {}
+        if outcome.get("ok"):
+            x, y = int(outcome["x"]), int(outcome["y"])
+            if human:
+                await self._move_pointer((self._pointer_x, self._pointer_y), (x, y))
+            else:
+                await self._mouse("mouseMoved", x, y)
+            self._pointer_x, self._pointer_y = x, y
+            # A hover-revealed menu/tooltip is itself a DOM change — see
+            # click()'s matching _settle() call for why this waits rather
+            # than letting the caller's next snapshot() race it.
+            await self._settle()
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="hover",
+            input={"description": description, "handle": el.handle, "human": human},
+            output={"success": bool(outcome.get("ok")),
+                    "reason": outcome.get("reason", "")},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+        self._raise_for_action(outcome, description)
 
     async def drag(
         self,
@@ -2164,6 +2763,56 @@ class Page:
         candidates = [el for el in self._current_snapshot.elements if el.tag == "select"]
         return self._resolve_target(description, candidates)
 
+    def _find_combobox(self, description: str) -> Element | None:
+        if not self._current_snapshot:
+            return None
+        candidates = [el for el in self._current_snapshot.elements if el.is_combobox]
+        return self._resolve_target(description, candidates)
+
+    def _find_combobox_option(self, value: str) -> Element | None:
+        if not self._current_snapshot:
+            return None
+        # role="option" is the ARIA combobox pattern's own answer to "which
+        # of these newly-rendered elements is a choice" — preferred over a
+        # bare text scan so a page's surrounding prose can't accidentally
+        # outrank the actual option. Not every custom widget uses it though,
+        # so an empty role="option" set falls back to every element, the
+        # same ladder click()'s own _find_element uses.
+        candidates = [el for el in self._current_snapshot.elements if el.role == "option"]
+        if not candidates:
+            candidates = self._current_snapshot.elements
+        return self._resolve_target(value, candidates)
+
+    async def _select_combobox(self, el: Element, value: str, t0: float) -> None:
+        """select()'s fallback for a non-native combobox (see _find_combobox):
+        open it if it isn't already expanded, re-snapshot to discover
+        whatever options that click rendered (a custom widget typically
+        creates its option list on demand, so the pre-click snapshot never
+        has it), then click the one matching `value`.
+        """
+        if not el.combobox_expanded:
+            await self.click(el.ref)
+        await self.snapshot()
+        option = self._find_combobox_option(value)
+        if option is None:
+            raise GripError(self._classifier.classify_invalid_option(
+                el.text or el.ref, value,
+                [o.text for o in self._current_snapshot.elements if o.role == "option"]
+                if self._current_snapshot else [],
+            ))
+        await self.click(option.ref)
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="select",
+            input={
+                "description": el.text or el.ref, "value": value,
+                "handle": el.handle, "via": "combobox",
+            },
+            output={"success": True, "reason": ""},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+
     async def _discover_elements(self) -> list[RawElement]:
         result = await self._engine.send(
             "Runtime.evaluate",
@@ -2198,6 +2847,14 @@ class Page:
                 checked=d.get("checked"),
                 selected=d.get("selected"),
                 value=d.get("value"),
+                # See RawElement's own docstring — mirrored onto Element in
+                # grip/compression/summarizer.py.
+                canvas_width=d.get("canvasWidth"),
+                canvas_height=d.get("canvasHeight"),
+                is_combobox=d.get("isCombobox", False),
+                combobox_expanded=d.get("comboboxExpanded"),
+                combobox_options=d.get("comboboxOptions"),
+                closed_shadow_unreadable=d.get("closedShadowUnreadable", False),
             )
             for d in raw_data
             # See _VALID_HANDLE_RE — an element whose handle isn't one gripStamp

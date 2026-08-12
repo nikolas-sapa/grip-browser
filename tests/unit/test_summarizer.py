@@ -240,3 +240,90 @@ def test_page_snapshot_scroll_fields_are_flat_not_nested():
     assert snap.scroll_left == 0
     assert snap.scroll_height == 0
     assert snap.client_height == 0
+
+
+# --- DOM-capability-gap fields (agent-hardening branch) ----------------------
+# RawElement does not carry these yet (see build()'s getattr-with-default
+# comment) — these tests exercise the degrade-to-default path directly, the
+# same way test_summarizer_build_does_not_tokenize etc. do above, and the
+# render path once the field is set on the built Element.
+
+
+def test_canvas_rect_defaults_to_none_for_a_field_less_raw_element():
+    """Also guards the collision this field name was chosen to avoid:
+    RawElement's own (dead-code) `width`/`height` int fields — see
+    Element.canvas_width's docstring — must not leak into these."""
+    s = Summarizer()
+    raw = [make_raw(tag="canvas", role="canvas", text="")]
+    assert raw[0].width == 80 and raw[0].height == 30  # the unrelated legacy fields
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    assert snapshot.elements[0].canvas_width is None
+    assert snapshot.elements[0].canvas_height is None
+
+
+def test_format_renders_canvas_dimensions():
+    s = Summarizer()
+    raw = [make_raw(tag="canvas", role="canvas", text="")]
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    snapshot.elements[0].canvas_width = 300
+    snapshot.elements[0].canvas_height = 150
+    fmt = s.format(snapshot)
+    line = next(ln for ln in fmt.splitlines() if "[can:0]" in ln)
+    assert "[300x150]" in line
+
+
+def test_format_omits_dimensions_for_non_canvas_elements():
+    s = Summarizer()
+    raw = [make_raw(tag="button", text="Go")]
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    fmt = s.format(snapshot)
+    line = next(ln for ln in fmt.splitlines() if "[btn:0]" in ln)
+    assert line == "  [btn:0] 'Go'"
+
+
+def test_format_renders_combobox_flag_and_expanded_state():
+    s = Summarizer()
+    raw = [make_raw(tag="button", text="Choose")]
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    snapshot.elements[0].is_combobox = True
+    snapshot.elements[0].combobox_expanded = True
+    fmt = s.format(snapshot)
+    assert "(combobox, expanded)" in fmt
+
+
+def test_format_renders_combobox_without_expanded_note_when_closed():
+    s = Summarizer()
+    raw = [make_raw(tag="button", text="Choose")]
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    snapshot.elements[0].is_combobox = True
+    snapshot.elements[0].combobox_expanded = False
+    fmt = s.format(snapshot)
+    assert "(combobox)" in fmt
+    assert "expanded" not in fmt
+
+
+def test_format_renders_combobox_options_preview_capped_at_five():
+    s = Summarizer()
+    raw = [make_raw(tag="button", text="Choose")]
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    snapshot.elements[0].is_combobox = True
+    snapshot.elements[0].combobox_options = ["A", "B", "C", "D", "E", "F", "G"]
+    fmt = s.format(snapshot)
+    assert "options=[A, B, C, D, E, +2 more]" in fmt
+
+
+def test_format_omits_combobox_note_when_not_a_combobox():
+    s = Summarizer()
+    raw = [make_raw(tag="button", text="Submit")]
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    fmt = s.format(snapshot)
+    assert "combobox" not in fmt
+
+
+def test_format_renders_closed_shadow_unreadable_marker():
+    s = Summarizer()
+    raw = [make_raw(tag="div", role="div", text="")]
+    snapshot = s.build(1, "https://x.com", "X", raw, "")
+    snapshot.elements[0].closed_shadow_unreadable = True
+    fmt = s.format(snapshot)
+    assert "hidden content, unreadable" in fmt

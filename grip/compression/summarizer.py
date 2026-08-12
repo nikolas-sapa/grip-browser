@@ -51,6 +51,32 @@ class Element:
     checked: bool | None = None
     selected: bool | None = None
     value: str | None = None
+    # Canvas only (grip/cdp/shadow.py's DISCOVER_ELEMENTS_JS `width`/`height`
+    # fields) — None for every other tag, same convention `href` already
+    # uses. A canvas has no DOM structure to click into, so its own size is
+    # what lets a caller aim a deliberate offset click inside it instead of
+    # always landing dead centre on cx/cy. Named canvas_width/canvas_height,
+    # not width/height: RawElement (grip/security/sanitizer.py) already has
+    # dead `width`/`height` fields left over from a deleted filter (always 1
+    # in practice — see that file's HiddenElementFilter comment), and reusing
+    # those names here would have silently picked up that stale value
+    # instead of DISCOVER's real canvas rect (caught by this file's own test
+    # suite: RawElement's default int fields are non-None, so a getattr
+    # default of None would never apply).
+    canvas_width: int | None = None
+    canvas_height: int | None = None
+    # Combobox-shaped trigger detection (role=combobox/listbox, or any
+    # already-candidate element carrying aria-haspopup/aria-expanded) — see
+    # gripComboboxInfo in grip/cdp/shadow.py. is_combobox is a pure flag;
+    # the other two are only meaningful when it's true.
+    is_combobox: bool = False
+    combobox_expanded: bool | None = None
+    combobox_options: list[str] | None = None
+    # True only for the rare case a closed shadow root (grip/cdp/shadow.py's
+    # CLOSED_SHADOW_PATCH_JS) was captured but its content could not be
+    # walked — see gripCollect's walk() there for why this differs from "no
+    # closed root", which leaves no signal at all.
+    closed_shadow_unreadable: bool = False
 
 
 @dataclass
@@ -117,6 +143,21 @@ class Summarizer:
                 checked=getattr(el, "checked", None),
                 selected=getattr(el, "selected", None),
                 value=getattr(el, "value", None),
+                # Same getattr-with-default degradation as the block above:
+                # RawElement (grip/security/sanitizer.py) does not carry these
+                # fields yet either — DISCOVER_ELEMENTS_JS already emits
+                # width/height/isCombobox/comboboxExpanded/comboboxOptions/
+                # closedShadowUnreadable, but page.py's RawElement(...)
+                # construction has to be extended to read and forward them
+                # (see grip/cdp/shadow.py's CLOSED_SHADOW_PATCH_JS comment and
+                # gripComboboxInfo for the exact JSON keys) before this stops
+                # silently defaulting.
+                canvas_width=getattr(el, "canvas_width", None),
+                canvas_height=getattr(el, "canvas_height", None),
+                is_combobox=getattr(el, "is_combobox", False),
+                combobox_expanded=getattr(el, "combobox_expanded", None),
+                combobox_options=getattr(el, "combobox_options", None),
+                closed_shadow_unreadable=getattr(el, "closed_shadow_unreadable", False),
             )
             for i, el in enumerate(raw_elements)
         ]
@@ -194,11 +235,31 @@ class Summarizer:
                 ("required", el.required),
                 ("checked", el.checked),
                 ("selected", el.selected),
+                ("combobox" + (", expanded" if el.combobox_expanded else ""), el.is_combobox),
+                ("hidden content, unreadable", el.closed_shadow_unreadable),
             )
             if active
         ]
         if flags:
             suffix += " (" + ", ".join(flags) + ")"
+        # Canvas size, not cx/cy: cx/cy are never printed here (they exist for
+        # click_at()/human-click targeting, not for the LLM-facing text), and
+        # a canvas is the one tag whose usable area is otherwise invisible in
+        # this line — nothing else about it (its own text/role) tells a
+        # caller how far an offset click can go before it's outside the box.
+        if el.tag == "canvas" and el.canvas_width is not None and el.canvas_height is not None:
+            suffix += f" [{el.canvas_width}x{el.canvas_height}]"
+        # Capped to the first 5: this line format is token-budget-constrained
+        # the same way flags above are, and the full list is already
+        # reachable through select()'s own no_such_option error for a real
+        # <select>-shaped case — this is the non-<select> combobox's
+        # equivalent preview, not its source of truth.
+        if el.is_combobox and el.combobox_options:
+            preview = ", ".join(el.combobox_options[:5])
+            more = len(el.combobox_options) - 5
+            if more > 0:
+                preview += f", +{more} more"
+            suffix += f" options=[{preview}]"
         return suffix
 
     def _build_format_str(

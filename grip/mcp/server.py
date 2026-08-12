@@ -34,6 +34,7 @@ from grip.page import Page
 TOOL_NAMES = (
     "open", "goto", "snapshot", "click", "type", "select", "read", "screenshot", "run",
     "list_tabs", "switch_tab", "close_tab", "press", "upload", "links", "popups_blocked",
+    "wait_for", "hover", "scroll",
 )
 
 _browser: Browser | None = None
@@ -85,6 +86,23 @@ def _require_page() -> Page:
     return _page
 
 
+def _with_dialog_note(page: Page, text: str) -> str:
+    """Prepend a note for every javascript dialog auto-answered since the
+    last call to this — see Page.consume_dialogs(). A dialog is otherwise
+    silent: click()/type() dispatched fine and the tool result reads like
+    nothing happened, when actually a confirm()/alert() was answered on the
+    client's behalf."""
+    dialogs = page.consume_dialogs()
+    if not dialogs:
+        return text
+    lines = [
+        f"[dialog] {d['type']} auto-{'accepted' if d['accepted'] else 'dismissed'}: "
+        f"{d['message']!r}"
+        for d in dialogs
+    ]
+    return "\n".join(lines) + "\n\n" + text
+
+
 async def call_tool(name: str, arguments: dict[str, Any]) -> str:
     """Dispatch one tool call and return its text.
 
@@ -116,7 +134,7 @@ async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> str:
         _last_sent_version = 0
         await _page.snapshot()
         text, _last_sent_version = _page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(_page, text)
     if name == "run":
         browser = await _ensure_browser()
         if browser._llm is None:
@@ -174,7 +192,7 @@ async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> str:
         _last_sent_version = 0
         await _page.snapshot()
         text, _last_sent_version = _page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(_page, text)
     if name == "close_tab":
         browser = await _ensure_browser()
         target_id = arguments.get("target_id") or None
@@ -204,36 +222,63 @@ async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> str:
         await page.press(arguments["key"])
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(page, text)
     if name == "upload":
         await page.upload(arguments["target"], *arguments["paths"])
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(page, text)
     if name == "goto":
         await page.goto(arguments["url"])
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(page, text)
     if name == "snapshot":
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(page, text)
     if name == "click":
         await page.click(arguments["target"])
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(page, text)
     if name == "type":
         await page.type(arguments["target"], arguments["text"])
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(page, text)
     if name == "select":
         await page.select(arguments["target"], arguments["value"])
         await page.snapshot()
         text, _last_sent_version = page.payload(_last_sent_version)
-        return text
+        return _with_dialog_note(page, text)
+    if name == "hover":
+        await page.hover(arguments["target"])
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return _with_dialog_note(page, text)
+    if name == "wait_for":
+        await page.wait_for(
+            text=arguments.get("text"),
+            ref=arguments.get("ref"),
+            selector=arguments.get("selector"),
+            timeout=arguments.get("timeout", 10.0),
+        )
+        # wait_for() already re-snapshots internally once its condition is
+        # true — a second one here would just repeat the same round trips.
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return _with_dialog_note(page, text)
+    if name == "scroll":
+        pos = await page.scroll(
+            arguments.get("direction", "down"),
+            arguments.get("pages", 1.0),
+            ref=arguments.get("ref"),
+        )
+        return (
+            f"x={pos.x} y={pos.y} page_height={pos.page_height} "
+            f"page_width={pos.page_width} viewport_height={pos.viewport_height} "
+            f"viewport_width={pos.viewport_width}"
+        )
     if name == "read":
         doc = await page.read()
         return str(doc.text)
@@ -337,6 +382,55 @@ def main() -> None:
     )
     async def _select(target: str, value: str) -> str:
         return await call_tool("select", {"target": target, "value": value})
+
+    @server.tool(
+        name="hover",
+        description=(
+            f"Move the pointer over an element without clicking it, to reveal "
+            f"a hover-only menu/tooltip. {_TARGET_NOTE}"
+        ),
+    )
+    async def _hover(target: str) -> str:
+        return await call_tool("hover", {"target": target})
+
+    @server.tool(
+        name="wait_for",
+        description=(
+            "Block until a condition on the live page becomes true, then "
+            "re-snapshot — for an SPA route change or an XHR-driven update "
+            "that a plain snapshot right after click/type is too early to "
+            "see. Pass exactly one of: text (a substring of the page's "
+            "visible prose), ref (a substring of a specific element's own "
+            "text/value/aria-label — the same match click/type use), or "
+            "selector (a raw CSS selector). Raises a timeout error if the "
+            "condition never becomes true."
+        ),
+    )
+    async def _wait_for(
+        text: str = "", ref: str = "", selector: str = "", timeout: float = 10.0,
+    ) -> str:
+        return await call_tool("wait_for", {
+            "text": text or None, "ref": ref or None, "selector": selector or None,
+            "timeout": timeout,
+        })
+
+    @server.tool(
+        name="scroll",
+        description=(
+            "Scroll the viewport, or bring a specific element into view. "
+            "direction is 'up'/'down'/'left'/'right' (default 'down'), pages "
+            "is how many viewports to scroll (default 1.0). Pass ref (an "
+            "exact ref or fuzzy description, same as click/type) to scroll "
+            "that element into view instead — direction/pages are ignored "
+            "when ref is given."
+        ),
+    )
+    async def _scroll(
+        direction: str = "down", pages: float = 1.0, ref: str = "",
+    ) -> str:
+        return await call_tool("scroll", {
+            "direction": direction, "pages": pages, "ref": ref or None,
+        })
 
     @server.tool(name="read", description="Read the page as citable prose blocks.")
     async def _read() -> str:

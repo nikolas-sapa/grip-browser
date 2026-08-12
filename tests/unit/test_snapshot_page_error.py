@@ -28,6 +28,10 @@ async def test_snapshot_detects_bot_block():
         {},
         # Fetch.enable
         {},
+        # Page.enable (dialog handling's Page-domain arming)
+        {},
+        # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
+        {},
         # DISCOVER_ELEMENTS_JS
         {"result": {"value": "[]"}},
         # PAGE_TEXT_JS
@@ -46,6 +50,8 @@ async def test_snapshot_page_error_none_on_normal_page():
     page._engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": "[]"}},
         {"result": {"value": "Hello world"}},
         {"targetInfo": {"title": "Example Domain", "url": "https://example.com"}},
