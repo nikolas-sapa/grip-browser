@@ -41,6 +41,235 @@ async def test_unknown_tool_raises_rather_than_answering_with_a_string():
 
 
 @pytest.mark.asyncio
+async def test_call_tool_serializes_overlapping_calls():
+    """Two overlapping tool calls must not interleave: each snapshot() body
+    (the "critical section" here) has to run to completion before the next one
+    starts, or an action lands on the wrong tab / a delta is computed against a
+    baseline the client never received."""
+    import asyncio
+
+    from grip.mcp import server
+
+    log = []
+
+    class _SlowPage:
+        async def snapshot(self):
+            log.append("enter")
+            await asyncio.sleep(0)
+            log.append("exit")
+            return None
+
+        def payload(self, last_sent_version):
+            return "PAGE: ok", last_sent_version + 1
+
+    server.reset_state()
+    server._page = _SlowPage()
+    try:
+        await asyncio.gather(
+            server.call_tool("snapshot", {}),
+            server.call_tool("snapshot", {}),
+        )
+    finally:
+        server.reset_state()
+    assert log == ["enter", "exit", "enter", "exit"], (
+        "overlapping call_tool calls interleaved instead of running serially"
+    )
+
+
+class _RaisingClickPage:
+    """A page whose click always fails with a GripError — enough to exercise
+    call_tool's recovery-hint enrichment without a real CDP round trip."""
+
+    def __init__(self, recovery):
+        self._recovery = recovery
+
+    async def click(self, target):
+        from grip.errors import BrowserError, ErrorType, GripError
+        raise GripError(BrowserError(
+            type=ErrorType.ELEMENT_STALE,
+            message="Element for 'Buy' no longer matches the snapshot.",
+            confidence=1.0,
+            recovery=self._recovery,
+        ))
+
+
+@pytest.mark.asyncio
+async def test_grip_error_recovery_hint_is_appended_to_the_error_text():
+    """server.py used to let GripError's plain str() reach the client, which
+    drops the recovery taxonomy runner.py already knows how to format
+    (runner.py:196-200) — an MCP client got the same error with none of the
+    guidance for what to do about it."""
+    from grip.errors import GripError, RecoveryAction
+    from grip.mcp import server
+
+    server.reset_state()
+    server._page = _RaisingClickPage([RecoveryAction.RE_SNAPSHOT, RecoveryAction.RETRY])
+    try:
+        with pytest.raises(GripError, match="suggested recovery: RE_SNAPSHOT, RETRY"):
+            await server.call_tool("click", {"target": "Buy"})
+    finally:
+        server.reset_state()
+
+
+@pytest.mark.asyncio
+async def test_grip_error_with_no_recovery_actions_says_none():
+    from grip.errors import GripError
+    from grip.mcp import server
+
+    server.reset_state()
+    server._page = _RaisingClickPage([])
+    try:
+        with pytest.raises(GripError, match=r"suggested recovery: none"):
+            await server.call_tool("click", {"target": "Buy"})
+    finally:
+        server.reset_state()
+
+
+@pytest.mark.asyncio
+async def test_run_tool_reports_a_clear_message_when_done_was_never_called():
+    """str(None) used to reach the client as the literal text "None" —
+    indistinguishable from a real result the sub-agent actually produced."""
+    import grip.runner as runner_module
+    from grip.mcp import server
+
+    class _FakeRunResult:
+        data = None
+
+    class _FakeRunner:
+        def __init__(self, llm, page, trace):
+            self._last_sent_version = 3
+
+        async def run(self, goal):
+            return _FakeRunResult()
+
+    class _FakeBrowserWithLLM:
+        _llm = object()
+        trace = None
+
+        async def open(self, url, **kwargs):
+            return object()
+
+    server.reset_state()
+    server._browser = _FakeBrowserWithLLM()
+    original_runner = runner_module.Runner
+    runner_module.Runner = _FakeRunner
+    try:
+        out = await server.call_tool("run", {"goal": "buy a widget", "url": "https://x.test"})
+    finally:
+        runner_module.Runner = original_runner
+        server.reset_state()
+    assert out != "None"
+    assert "done()" in out
+
+
+@pytest.mark.asyncio
+async def test_open_and_snapshot_do_not_need_an_llm_adapter():
+    """adapter_from_env() imports whichever provider SDK matches the API key
+    set in the environment and raises ImportError if that provider's extra
+    isn't installed (e.g. grip/adapters/gemini.py:115) — a common shape, since
+    a host setting GEMINI_API_KEY has no reason to also know about grip's
+    extras. open/snapshot/click never touch a model and must not die on a
+    missing SDK just because _ensure_browser used to resolve one eagerly."""
+    import grip.mcp.server as server_module
+    from grip.mcp import server
+
+    def _boom() -> None:
+        raise ImportError("pip install grip-browser[gemini]")
+
+    class _FakeBrowser:
+        def __init__(self, llm=None, **kwargs):
+            assert llm is None, (
+                "an LLM adapter must not be resolved just to construct the browser"
+            )
+            self._llm = llm
+            self.trace = None
+
+        async def open(self, url, **kwargs):
+            return _FakePage(["A"])
+
+    server.reset_state()
+    original_adapter_from_env = server_module.adapter_from_env
+    original_browser = server_module.Browser
+    server_module.adapter_from_env = _boom
+    server_module.Browser = _FakeBrowser
+    try:
+        out = await server.call_tool("open", {"url": "https://x.test"})
+    finally:
+        server_module.adapter_from_env = original_adapter_from_env
+        server_module.Browser = original_browser
+        server.reset_state()
+    assert out.startswith("PAGE:")
+
+
+@pytest.mark.asyncio
+async def test_run_tool_reports_a_clear_message_when_the_adapter_extra_is_missing():
+    """A missing provider extra used to reach the client as a bare ImportError
+    traceback out of adapter_from_env(); 'run' is the one tool that legitimately
+    needs a model, so it should say what to install instead."""
+    import grip.mcp.server as server_module
+    from grip.mcp import server
+
+    class _NoLLMBrowser:
+        _llm = None
+        trace = None
+
+        async def open(self, url, **kwargs):
+            return object()
+
+    def _boom() -> None:
+        raise ImportError("pip install grip-browser[gemini]")
+
+    server.reset_state()
+    server._browser = _NoLLMBrowser()
+    original_adapter_from_env = server_module.adapter_from_env
+    server_module.adapter_from_env = _boom
+    try:
+        with pytest.raises(RuntimeError, match=r"pip install grip-browser\[gemini\]"):
+            await server.call_tool("run", {"goal": "buy a widget", "url": "https://x.test"})
+    finally:
+        server_module.adapter_from_env = original_adapter_from_env
+        server.reset_state()
+
+
+@pytest.mark.asyncio
+async def test_screenshot_is_returned_as_an_image_content_block_not_text():
+    """A raw base64 JPEG as tool TEXT is tens of thousands of junk tokens in
+    the transcript; it belongs in an image content block instead."""
+    pytest.importorskip("mcp")
+    import base64
+
+    from mcp.server import MCPServer
+
+    from grip.mcp import server
+
+    class _FakeShot:
+        b64 = base64.b64encode(b"not-a-real-jpeg-but-bytes").decode()
+
+    class _FakeScreenshotPage:
+        async def screenshot(self):
+            return _FakeShot()
+
+    captured = {}
+    original = MCPServer.run
+    MCPServer.run = lambda self, transport="stdio", **kw: captured.setdefault("s", self)
+    try:
+        server.main()
+    finally:
+        MCPServer.run = original
+
+    server.reset_state()
+    server._page = _FakeScreenshotPage()
+    try:
+        result = await captured["s"].call_tool("screenshot", {})
+    finally:
+        server.reset_state()
+    assert len(result.content) == 1
+    block = result.content[0]
+    assert block.type == "image"
+    assert block.data == _FakeShot.b64
+
+
+@pytest.mark.asyncio
 async def test_main_registers_every_tool_with_its_schema():
     """The tool schemas are derived from the wrapper signatures, so a renamed
     argument would silently ship a tool no client can call."""
@@ -67,6 +296,10 @@ async def test_main_registers_every_tool_with_its_schema():
     assert schemas["snapshot"] == []
     assert schemas["screenshot"] == []
     assert schemas["run"] == ["goal", "url"]
+    assert schemas["press"] == ["key"]
+    assert schemas["upload"] == ["paths", "target"]
+    assert schemas["links"] == []
+    assert schemas["popups_blocked"] == []
 
     # A failing tool raises rather than answering with an "ERROR: ..." string.
     # MCPServer.call_tool (used here) propagates it as ToolError; the real wire

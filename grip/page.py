@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
@@ -65,6 +66,7 @@ _ELIDED = "[elided: detected instruction-like text]"
 # not appearing at all.
 _CLICK_LISTENER_TYPES = frozenset({"click"})
 
+
 # Wall-clock ceiling on the whole probe pass (JS eval + object resolution +
 # every DOMDebugger.getEventListeners call). This is a heuristic add-on to
 # snapshot(), never allowed to turn a working snapshot into a failed one — see
@@ -72,6 +74,83 @@ _CLICK_LISTENER_TYPES = frozenset({"click"})
 _PROBE_TIMEOUT_S = 2.0
 
 _PROBE_OBJECT_GROUP = "grip-probe"
+
+# See _ensure_fetch_interception below.
+_INTERCEPTED_RESOURCE_TYPES = ("Document", "XHR", "Fetch")
+
+# gripStamp() (grip/cdp/shadow.py) only ever writes 'h' + an incrementing
+# counter, but it reuses whatever data-grip-h attribute is already on an
+# element rather than overwriting it — so a page that pre-sets its own
+# data-grip-h="..." before discovery runs hands that value straight back as a
+# "handle". Every place in this file that turns a handle into a
+# querySelector('[data-grip-h="..."]') string does so by JS-side
+# concatenation (see _RESOLVE_FILE_INPUT_JS, _resolve_probe_object_ids), so an
+# untrusted handle is a selector-breakout vector, not just a lookup that fails
+# closed. Handles are checked against this pattern at the Python/JS boundary
+# and anything else is dropped before it ever reaches a query.
+_VALID_HANDLE_RE = re.compile(r"^h\d+$")
+
+
+def _is_trusted_handle(handle: str) -> bool:
+    return bool(_VALID_HANDLE_RE.match(handle))
+
+
+# click()/type()/select() dispatch the DOM action and return immediately — but
+# a click that navigates or fires an XHR-driven re-render hasn't finished
+# reacting yet by the time the JS call resolves, and the runner's immediate
+# follow-up snapshot() then shows the PRE-change page. The model reads that as
+# "nothing happened" and repeats the action. This is a bounded, poll-based
+# wait: it returns as soon as two consecutive checks see the same page
+# signature (nothing left to settle), so a page that reacts fast pays close
+# to nothing, and a page that never quiets down pays no more than the cap.
+_SETTLE_TIMEOUT_S = 0.5
+_SETTLE_POLL_S = 0.05
+_SETTLE_QUIET_POLLS = 2
+
+_SETTLE_SIGNATURE_JS = (
+    "JSON.stringify({href: location.href, rs: document.readyState,"
+    " n: document.getElementsByTagName('*').length})"
+)
+
+# press(): named keys get a real code/windowsVirtualKeyCode pair so a keydown
+# listener gated on `event.code` (not just `event.key`) still fires. Values
+# are (code, windowsVirtualKeyCode) — windowsVirtualKeyCode is what CDP's
+# Input.dispatchKeyEvent uses to pick the native key, independent of the
+# `key`/`text` strings.
+_NAMED_KEYS: dict[str, tuple[str, int]] = {
+    "Enter": ("Enter", 13),
+    "Tab": ("Tab", 9),
+    "Escape": ("Escape", 27),
+    "Backspace": ("Backspace", 8),
+    "Delete": ("Delete", 46),
+    "ArrowUp": ("ArrowUp", 38),
+    "ArrowDown": ("ArrowDown", 40),
+    "ArrowLeft": ("ArrowLeft", 37),
+    "ArrowRight": ("ArrowRight", 39),
+    "Home": ("Home", 36),
+    "End": ("End", 35),
+    "PageUp": ("PageUp", 33),
+    "PageDown": ("PageDown", 34),
+    " ": ("Space", 32),
+    "Space": ("Space", 32),
+}
+
+# Input.dispatchKeyEvent's modifiers bitmask: Alt=1, Ctrl=2, Meta/Cmd=4, Shift=8.
+_MODIFIER_BITS = {
+    "alt": 1, "option": 1,
+    "ctrl": 2, "control": 2,
+    "meta": 4, "cmd": 4, "command": 4,
+    "shift": 8,
+}
+
+
+def _modifiers_bitmask(modifiers: list[str] | None) -> int:
+    if not modifiers:
+        return 0
+    bits = 0
+    for m in modifiers:
+        bits |= _MODIFIER_BITS.get(m.lower(), 0)
+    return bits
 
 
 def _has_click_listener(listeners: list[dict[str, Any]]) -> bool:
@@ -129,7 +208,7 @@ _FIND_FILE_INPUTS_JS = """
 # description of the element.
 _RESOLVE_FILE_INPUT_JS = """
 function (handle) {
-  return document.querySelector('[data-grip-h="' + handle + '"]');
+  return document.querySelector('[data-grip-h="' + CSS.escape(handle) + '"]');
 }
 """
 
@@ -256,6 +335,78 @@ class Screenshot:
         Path(path).write_bytes(self.data)
 
 
+# scroll()'s own action JS, kept local like _SELECT_OPTION_JS/_FIND_FILE_INPUTS_JS
+# above rather than added to grip/cdp/shadow.py (out of scope for this change).
+_SCROLL_BY_JS = """
+function (direction, pages) {
+  var vw = window.innerWidth, vh = window.innerHeight;
+  var dx = 0, dy = 0;
+  if (direction === 'down') dy = vh * pages;
+  else if (direction === 'up') dy = -vh * pages;
+  else if (direction === 'right') dx = vw * pages;
+  else if (direction === 'left') dx = -vw * pages;
+  window.scrollBy(dx, dy);
+  var doc = document.documentElement;
+  return {
+    ok: true,
+    x: window.scrollX, y: window.scrollY,
+    pageHeight: doc.scrollHeight, pageWidth: doc.scrollWidth,
+    viewportHeight: vh, viewportWidth: vw
+  };
+}
+"""
+
+# Reuses _RESOLVE_JS for the same identity-checked handle lookup click()/
+# type()/_SELECT_OPTION_JS use, so a stale or swapped ref raises the same way
+# theirs does rather than scrolling to whatever now occupies the handle.
+_SCROLL_TO_REF_JS = """
+function(handle, expectedTag, expectedText) {
+""" + _RESOLVE_JS + """
+  const r = gripResolve(handle, expectedTag, expectedText);
+  if (!r.el) return { ok: false, reason: r.reason };
+  r.el.scrollIntoView({ block: 'center', inline: 'nearest' });
+  var doc = document.documentElement;
+  return {
+    ok: true,
+    x: window.scrollX, y: window.scrollY,
+    pageHeight: doc.scrollHeight, pageWidth: doc.scrollWidth,
+    viewportHeight: window.innerHeight, viewportWidth: window.innerWidth
+  };
+}
+"""
+
+# Read-only scroll metrics folded into every snapshot() — see
+# Page._get_scroll_metrics and the snapshot.scroll_* attributes it sets.
+_SCROLL_METRICS_JS = """
+(function () {
+  var doc = document.documentElement;
+  return JSON.stringify({
+    x: window.scrollX, y: window.scrollY,
+    pageHeight: doc.scrollHeight, pageWidth: doc.scrollWidth,
+    viewportHeight: window.innerHeight, viewportWidth: window.innerWidth
+  });
+})();
+"""
+
+
+@dataclass
+class ScrollPosition:
+    """Viewport scroll offset plus document/viewport size — what a caller
+    needs to know "am I near the bottom" / "is there more below the fold"
+    without a screenshot. Returned by Page.scroll() and mirrored onto every
+    PageSnapshot as scroll_top/scroll_left/scroll_height/client_height (see
+    Page.snapshot() and PageSnapshot in grip/compression/summarizer.py).
+    page_width/viewport_width have no PageSnapshot counterpart yet — only
+    vertical scroll is reported there, per the summarizer's own "horizontal
+    scroll is rare" call (Summarizer._format_viewport_line)."""
+    x: int
+    y: int
+    page_height: int
+    page_width: int
+    viewport_height: int
+    viewport_width: int
+
+
 class Page:
     def __init__(
         self,
@@ -266,6 +417,7 @@ class Page:
         closer: Callable[[str], Awaitable[None]] | None = None,
         block_resources: bool = False,
         policy: NavigationPolicy | None = None,
+        settle_timeout: float = _SETTLE_TIMEOUT_S,
     ) -> None:
         self._engine = engine
         self._trace = trace
@@ -291,6 +443,8 @@ class Page:
         self._status_code: int = 0
         self._content_probed_url: str = ""
         self._block_resources = block_resources
+        # Cap for _settle()'s post-action wait — see _SETTLE_TIMEOUT_S.
+        self._settle_timeout = settle_timeout
         # Where the synthetic pointer currently sits, so a human path starts from
         # the last position instead of teleporting to the target every time.
         self._pointer_x = 0
@@ -383,7 +537,22 @@ class Page:
         self._engine.on("Fetch.requestPaused", self._on_fetch_paused)
         await self._engine.send(
             "Fetch.enable",
-            {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+            # Scoped to the resource types the policy actually needs to see.
+            # "*" (any type) paused every subresource a page loads — image,
+            # font, CSS, analytics beacon — each costing a Fetch.requestPaused
+            # round trip plus a background continueRequest task for a request
+            # NavigationPolicy was never going to refuse anyway (only a
+            # document/XHR/fetch URL can carry the caller to a private/
+            # metadata host). Document covers the top-level navigation AND
+            # every redirect leg AND sub-frame navigations (each pauses again
+            # with resourceType "Document" — see _on_fetch_paused's is_main_frame
+            # check); XHR/Fetch cover page JS calling out after load. Anything
+            # else (Image, Stylesheet, Font, Media, ...) is not intercepted at
+            # all and passes straight through.
+            {"patterns": [
+                {"urlPattern": "*", "resourceType": rt, "requestStage": "Request"}
+                for rt in _INTERCEPTED_RESOURCE_TYPES
+            ]},
         )
 
     def _spawn_bg(self, coro: Coroutine[Any, Any, None]) -> None:
@@ -558,6 +727,15 @@ class Page:
         # sent. Preventive: by the time this fires, Fetch.failRequest has
         # already kept the request from ever reaching the target host.
         refused_url: str | None = None
+        # Set from Network.loadingFailed for the main-frame document request —
+        # a DNS failure, connection refused, or a Fetch-domain block reaching
+        # the network layer (net::ERR_*). Previously nothing observed this
+        # event at all: a page whose document never loaded still hit
+        # `await load_event.wait()`, timed out, and the bare `except
+        # TimeoutError: pass` below swallowed it — goto() returned as if it
+        # had succeeded, with _status_code left at 0 and no signal a caller
+        # could act on.
+        network_error: str | None = None
 
         def on_load(_params: dict[str, Any]) -> None:
             load_event.set()
@@ -568,6 +746,23 @@ class Page:
             # Redirect chains fire several Document responses; the last one wins.
             if params.get("type") == "Document":
                 self._status_code = params.get("response", {}).get("status", 0)
+
+        def on_loading_failed(params: dict[str, Any]) -> None:
+            # type == "Document" excludes ordinary sub-resource failures (an
+            # image 404, a blocked tracking pixel) — those are not this
+            # navigation failing. Network.loadingFailed carries no frameId to
+            # further exclude a failed sub-frame the way _on_fetch_paused's
+            # is_main_frame check does for Fetch.requestPaused; a failed
+            # iframe document load is the one case this can misattribute to
+            # the top-level navigation.
+            nonlocal network_error
+            if (
+                network_error is None
+                and params.get("type") == "Document"
+                and not params.get("canceled")
+            ):
+                network_error = params.get("errorText") or "unknown network error"
+                load_event.set()
 
         def on_document_refused(request_url: str) -> None:
             nonlocal refused_url
@@ -590,9 +785,11 @@ class Page:
         # before the navigate call returns.
         self._engine.on("Page.loadEventFired", on_load)
         self._engine.on("Network.responseReceived", on_response)
+        self._engine.on("Network.loadingFailed", on_loading_failed)
         # Only this goto() cares about a refused top-level document; the
         # Fetch handler itself lives for the page's whole lifetime.
         self._doc_refusal_hook = on_document_refused
+        timed_out = False
         try:
             async with asyncio.timeout(timeout):
                 # Runtime goes up with the other two rather than lazily in
@@ -621,16 +818,46 @@ class Page:
                 await self._engine.send("Page.navigate", {"url": url})
                 await load_event.wait()
         except TimeoutError:
-            # A slow page is still a usable page: hand it back and let snapshot()
-            # report whatever loaded. A dead connection is not — but that surfaces
-            # as a ConnectionError from send(), which we deliberately do not catch.
-            pass
+            # Not swallowed outright any more (see below) — but a slow page
+            # that DID get a response is still a usable page, so this alone
+            # isn't the failure signal. A dead connection is not caught here
+            # either — CDPEngine.send() raises GripError(ErrorType.
+            # BROWSER_CRASHED) for a lost socket or Inspector.targetCrashed
+            # (not the plain ConnectionError this comment used to describe),
+            # and that is deliberately left to propagate: it is already a
+            # typed, caller-visible error and turning it into anything else
+            # here would only throw away the more specific signal.
+            timed_out = True
         finally:
             self._engine.off("Page.loadEventFired", on_load)
             self._engine.off("Network.responseReceived", on_response)
+            self._engine.off("Network.loadingFailed", on_loading_failed)
             self._doc_refusal_hook = None
         if refused_url is not None:
             enforce_navigation(self._policy, refused_url)
+        if network_error is not None:
+            raise GripError(BrowserError(
+                type=ErrorType.NAVIGATION_FAILED,
+                message=f"Navigation to {url!r} failed: {network_error}",
+                confidence=0.9,
+                recovery=[RecoveryAction.RETRY, RecoveryAction.EXPONENTIAL_BACKOFF],
+            ))
+        if timed_out and self._status_code == 0:
+            # Nothing ever came back for the top-level document within
+            # `timeout` — not a slow "load" event on an otherwise-fetched
+            # page (that case has status_code set and is left alone), but no
+            # response at all. Previously this returned as if goto() had
+            # succeeded, with _status_code left at 0 and no signal a caller
+            # could act on.
+            raise GripError(BrowserError(
+                type=ErrorType.NETWORK_TIMEOUT,
+                message=(
+                    f"Navigation to {url!r} timed out after {timeout}s with no "
+                    "response for the top-level document."
+                ),
+                confidence=0.7,
+                recovery=[RecoveryAction.RETRY, RecoveryAction.EXPONENTIAL_BACKOFF],
+            ))
 
     async def _already_at(self, url: str) -> bool:
         """True only if this target is *already* showing a finished `url`.
@@ -692,10 +919,20 @@ class Page:
             # all but the slowest of the three. Measured on local fixtures
             # (benchmarks/bench_grip.py): ~15-30% faster than sequential, with
             # no behaviour change since none of the three mutate page state.
-            raw_elements, page_text, (title, url), probe_elements = await asyncio.gather(
+            (
+                raw_elements, page_text, (title, url), probe_elements, scroll,
+            ) = await asyncio.gather(
                 self._discover_elements(), self._get_page_text(), self._get_page_info(),
-                self._discover_probe_elements(),
+                self._discover_probe_elements(), self._get_scroll_metrics(),
             )
+        except GripError:
+            # Already typed — e.g. ErrorType.BROWSER_CRASHED from a lost CDP
+            # connection or Inspector.targetCrashed (CDPEngine.send()).
+            # Re-classifying it below by string-matching str(e) would lose
+            # that and misreport a crashed browser as ELEMENT_NOT_FOUND with
+            # a RE_SNAPSHOT recovery hint — looping the caller straight back
+            # into the dead connection.
+            raise
         except Exception as e:
             err = self._classifier.classify_cdp_error(str(e))
             raise GripError(err) from e
@@ -783,6 +1020,15 @@ class Page:
         for el in snapshot.elements:
             el.ref = self._refs.assign(el.handle)
         self._refs.evict({el.handle for el in snapshot.elements})
+        # PageSnapshot.scroll_top/scroll_left/scroll_height/client_height are
+        # real dataclass fields (grip/compression/summarizer.py) — the
+        # renderer keys off scroll_height <= 0 to omit the VIEWPORT line for
+        # snapshots that predate this (a directly-built PageSnapshot in a
+        # test, or a caller stuck on an older Summarizer.build()).
+        snapshot.scroll_top = scroll.y
+        snapshot.scroll_left = scroll.x
+        snapshot.scroll_height = scroll.page_height
+        snapshot.client_height = scroll.viewport_height
         snapshot.tokens_estimated = self._summarizer.count_tokens(
             self._summarizer.format(snapshot)
         )
@@ -858,6 +1104,11 @@ class Page:
                 "Runtime.evaluate",
                 {"expression": READ_CONTENT_JS, "returnByValue": True},
             )
+        except GripError:
+            # See snapshot()'s matching except GripError: raise — don't
+            # re-classify an already-typed error (e.g. BROWSER_CRASHED) by
+            # string-matching its message.
+            raise
         except Exception as e:
             raise GripError(self._classifier.classify_cdp_error(str(e))) from e
 
@@ -968,6 +1219,59 @@ class Page:
         data = json.loads(raw) if isinstance(raw, str) else raw
         return len(data.get("blocks", []))
 
+    async def _page_signature(self) -> str | None:
+        """Cheap, best-effort fingerprint used only by _settle() to notice
+        change. None on any failure — including the CDP errors a navigation's
+        context teardown throws mid-flight, which is exactly the moment
+        _settle() is watching for and must not blow up on."""
+        with contextlib.suppress(Exception):
+            sig = await self._eval(_SETTLE_SIGNATURE_JS)
+            return sig if isinstance(sig, str) else None
+        return None
+
+    async def _retry_after_stale(self, outcome: dict[str, Any]) -> bool:
+        """One re-snapshot-and-retry for a same-document re-render between
+        snapshot() and dispatch (an SPA re-rendering the row a click/type/
+        select target lived in), so a transient miss doesn't cost the LLM a
+        whole extra turn just to re-snapshot and try again itself.
+
+        Only "not_found"/"identity_mismatch" are retried — a wrong element
+        kind or a missing <select> option is not made right by re-resolving
+        the same description, and retrying it would just repeat the same
+        failure after paying for another snapshot.
+
+        Does not weaken the stale-ref rejection in _find_element/_find_input/
+        _find_select: snapshot() resets the ref registry on a URL change (see
+        RefRegistry.reset()), so this always re-resolves against the same
+        document the caller was already acting on, never across a navigation.
+        """
+        if outcome.get("reason") not in ("not_found", "identity_mismatch"):
+            return False
+        await self.snapshot()
+        return True
+
+    async def _settle(self, timeout: float | None = None) -> None:
+        """Bounded wait after a click/type/select dispatch for the page to
+        react — a navigation or an XHR-driven DOM update that hasn't finished
+        by the time the dispatch call returns. Short-circuits the moment the
+        page signature stops changing for two consecutive polls, so a page
+        that reacted instantly (or not at all) pays close to nothing; only a
+        page still mutating at the deadline pays the full cap.
+        """
+        deadline = time.monotonic() + (self._settle_timeout if timeout is None else timeout)
+        prev_sig = await self._page_signature()
+        quiet_polls = 0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_SETTLE_POLL_S)
+            sig = await self._page_signature()
+            if sig == prev_sig:
+                quiet_polls += 1
+                if quiet_polls >= _SETTLE_QUIET_POLLS:
+                    return
+            else:
+                quiet_polls = 0
+                prev_sig = sig
+
     async def click(self, description: str, *, human: bool = False) -> None:
         self._assert_not_safe("click")
         if not self._current_snapshot:
@@ -1008,6 +1312,24 @@ class Page:
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
         outcome = result.get("result", {}).get("value") or {}
+        if not outcome.get("ok") and await self._retry_after_stale(outcome):
+            el = self._find_element(description)
+            if el is None:
+                raise GripError(self._classifier.classify_semantic_miss(description))
+            js = (
+                f"({CLICK_ELEMENT_JS})"
+                f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+            )
+            result = await self._engine.send(
+                "Runtime.evaluate", {"expression": js, "returnByValue": True}
+            )
+            outcome = result.get("result", {}).get("value") or {}
+        if outcome.get("ok"):
+            # A navigation or XHR-driven update triggered by this click may
+            # still be in flight — settle before the caller's next snapshot()
+            # sees a stale, pre-change page. Included in this action's own
+            # duration_ms, since it is real wall-clock time the click cost.
+            await self._settle()
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._trace.add(TraceEntry(
             timestamp=time.time(),
@@ -1038,6 +1360,23 @@ class Page:
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
         outcome = result.get("result", {}).get("value") or {}
+        if not outcome.get("ok") and await self._retry_after_stale(outcome):
+            el = self._find_input(description)
+            if el is None:
+                raise GripError(self._classifier.classify_semantic_miss(description))
+            js = (
+                f"({TYPE_ELEMENT_JS})"
+                f"({json.dumps(el.handle)}, {json.dumps(text)}, "
+                f"{json.dumps(el.tag)}, {json.dumps(el.text)})"
+            )
+            result = await self._engine.send(
+                "Runtime.evaluate", {"expression": js, "returnByValue": True}
+            )
+            outcome = result.get("result", {}).get("value") or {}
+        if outcome.get("ok"):
+            # See click() — a submit-on-Enter or a live-search XHR can react
+            # to a type() just as easily as to a click().
+            await self._settle()
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._trace.add(TraceEntry(
             timestamp=time.time(),
@@ -1087,6 +1426,22 @@ class Page:
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
         outcome = result.get("result", {}).get("value") or {}
+        if not outcome.get("ok") and await self._retry_after_stale(outcome):
+            el = self._find_select(description)
+            if el is None:
+                raise GripError(self._classifier.classify_semantic_miss(description))
+            js = (
+                f"({_SELECT_OPTION_JS})"
+                f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(value)})"
+            )
+            result = await self._engine.send(
+                "Runtime.evaluate", {"expression": js, "returnByValue": True}
+            )
+            outcome = result.get("result", {}).get("value") or {}
+        if outcome.get("ok"):
+            # See click() — a controlled <select> often re-renders the page
+            # (dependent fields, a filtered list) on 'change'.
+            await self._settle()
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._trace.add(TraceEntry(
             timestamp=time.time(),
@@ -1098,6 +1453,85 @@ class Page:
             duration_ms=duration_ms,
         ))
         self._raise_for_select(outcome, description, value)
+
+    async def scroll(
+        self, direction: str = "down", pages: float = 1.0, *, ref: str | None = None,
+    ) -> ScrollPosition:
+        """Scroll the viewport, or bring a specific element into view.
+
+        `direction`/`pages` scroll relative to the current position, in units
+        of one viewport (`pages=1.0` is a full page down/up/left/right).
+        Pass `ref` — an exact ref or the same fuzzy description click()/
+        type() accept — to scroll that element into view instead; `direction`
+        and `pages` are ignored when `ref` is given. This is the primitive
+        for reaching lazy-loaded content a snapshot can't otherwise see.
+        """
+        self._assert_not_safe("scroll")
+        if not self._current_snapshot:
+            await self.snapshot()
+        t0 = time.monotonic()
+        if ref is not None:
+            el = self._find_element(ref)
+            if el is None:
+                raise GripError(self._classifier.classify_semantic_miss(ref))
+            js = (
+                f"({_SCROLL_TO_REF_JS})"
+                f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
+            )
+        else:
+            if direction not in ("up", "down", "left", "right"):
+                raise ValueError(f"scroll(): unknown direction {direction!r}")
+            js = f"({_SCROLL_BY_JS})({json.dumps(direction)}, {pages})"
+        outcome = await self._eval(js) or {}
+        if not outcome.get("ok"):
+            raise GripError(BrowserError(
+                type=ErrorType.ELEMENT_STALE,
+                message=(
+                    f"Element for {ref!r} no longer matches the snapshot it was "
+                    f"found in ({outcome.get('reason') or 'unknown'}). "
+                    "Re-snapshot and retry."
+                ),
+                confidence=1.0,
+                recovery=[RecoveryAction.RE_SNAPSHOT],
+            ))
+        pos = ScrollPosition(
+            x=int(outcome["x"]), y=int(outcome["y"]),
+            page_height=int(outcome["pageHeight"]), page_width=int(outcome["pageWidth"]),
+            viewport_height=int(outcome["viewportHeight"]),
+            viewport_width=int(outcome["viewportWidth"]),
+        )
+        self._trace.add(TraceEntry(
+            timestamp=time.time(),
+            action="scroll",
+            input={"direction": direction, "pages": pages, "ref": ref},
+            output={"x": pos.x, "y": pos.y, "page_height": pos.page_height},
+            tokens_consumed=0,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+        return pos
+
+    async def _get_scroll_metrics(self) -> ScrollPosition:
+        """Read-only companion to scroll() folded into every snapshot() gather
+        (see there). Best-effort like _discover_probe_elements: any failure —
+        including a mock/test double with nothing left to give it — degrades
+        to an all-zero position rather than failing the snapshot over a
+        heuristic add-on.
+        """
+        try:
+            raw = await self._eval(_SCROLL_METRICS_JS)
+            data = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        return ScrollPosition(
+            x=int(data.get("x", 0) or 0),
+            y=int(data.get("y", 0) or 0),
+            page_height=int(data.get("pageHeight", 0) or 0),
+            page_width=int(data.get("pageWidth", 0) or 0),
+            viewport_height=int(data.get("viewportHeight", 0) or 0),
+            viewport_width=int(data.get("viewportWidth", 0) or 0),
+        )
 
     async def upload(self, description: str, *paths: str | Path) -> None:
         """Set one or more local files on a `<input type=file>` matched by
@@ -1124,6 +1558,11 @@ class Page:
         t0 = time.monotonic()
         raw = await self._eval(_FIND_FILE_INPUTS_JS)
         candidates = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        # _FIND_FILE_INPUTS_JS's stamp() reuses a data-grip-h attribute a page
+        # already had rather than overwriting it — see _VALID_HANDLE_RE — so a
+        # candidate whose handle isn't one gripStamp/this file would ever
+        # issue is dropped before its handle reaches _RESOLVE_FILE_INPUT_JS.
+        candidates = [c for c in candidates if _is_trusted_handle(c.get("handle", ""))]
         desc_lower = description.lower()
         match = None
         for c in candidates:
@@ -1178,6 +1617,19 @@ class Page:
         is the only source that does not have to guess where the file landed.
         Empirically, this works fine issued over a page-target connection —
         no browser-level session is needed.
+
+        WARNING — Browser.setDownloadBehavior is browser-wide, not scoped to
+        this Page/tab, despite being called from here: one Page enabling
+        downloads redirects every tab's downloads to `directory`, and a
+        second Page calling this with a different directory moves the
+        browser-wide target again for every tab, this one included. There is
+        no per-tab download directory in CDP. Callers managing multiple pages
+        that download concurrently need to be aware they share one
+        destination, last-caller-wins. _on_download_progress() below also
+        only trusts a completed download's filePath if it resolves under
+        this Page's own configured directory — the browser can report a
+        completion for a download a different Page/tab actually started, and
+        a caller here should not receive a path outside what it configured.
         """
         self._assert_not_safe("enable_downloads")
         path = Path(directory)
@@ -1198,12 +1650,33 @@ class Page:
             self._download_events_armed = True
             self._download_queue = asyncio.Queue()
             self._engine.on("Browser.downloadProgress", self._on_download_progress)
+        # Same "before, not after" reasoning as the listener above:
+        # _on_download_progress checks completions against _download_dir (see
+        # _is_under_download_dir), so it has to be set before
+        # Browser.setDownloadBehavior can possibly complete — not after —
+        # or a download finishing while that send is still in flight would
+        # find _download_dir still None and get dropped as untrusted.
+        self._download_dir = path
         await self._engine.send(
             "Browser.setDownloadBehavior",
             {"behavior": "allow", "downloadPath": str(path), "eventsEnabled": True},
         )
-        self._download_dir = path
         return path
+
+    def _is_under_download_dir(self, file_path: str) -> bool:
+        """True only if `file_path` resolves under this Page's configured
+        download directory. Browser.setDownloadBehavior is browser-wide (see
+        enable_downloads()'s docstring), so the filePath Chrome reports here
+        can belong to a download a different Page/tab started under its own
+        directory — trusted verbatim, that path would otherwise be handed
+        straight back to this Page's caller as if it were the file this Page
+        asked for."""
+        if self._download_dir is None:
+            return False
+        try:
+            return Path(file_path).resolve().is_relative_to(self._download_dir)
+        except (OSError, ValueError):
+            return False
 
     def _on_download_progress(self, params: dict[str, Any]) -> None:
         if self._download_queue is None:
@@ -1211,8 +1684,17 @@ class Page:
         state = params.get("state")
         if state == "completed":
             file_path = params.get("filePath")
-            if file_path:
+            if file_path and self._is_under_download_dir(file_path):
                 self._download_queue.put_nowait(Path(file_path))
+            elif file_path:
+                logger.warning(
+                    "wait_for_download(): ignoring a completed download at %r — "
+                    "outside this Page's configured download directory %r. "
+                    "Browser.setDownloadBehavior is browser-wide (see "
+                    "enable_downloads()), so this is likely a different "
+                    "Page/tab's download, not this one's.",
+                    file_path, str(self._download_dir),
+                )
         elif state == "canceled":
             # Queued as None rather than dropped: a canceled download should
             # not read to a waiting caller as indistinguishable from one that
@@ -1298,15 +1780,50 @@ class Page:
             )
         )
 
-    async def press(self, key: str) -> None:
+    async def press(self, key: str, modifiers: list[str] | None = None) -> None:
+        """Dispatch a key press: `key` is a single character ("a", "$") or a
+        named key ("Enter", "Tab", "ArrowDown", ...). `modifiers` is any of
+        "alt"/"ctrl"/"shift"/"meta" (case-insensitive).
+
+        Sending only `key` (the old behaviour) produced no `code`/
+        `windowsVirtualKeyCode`/`text` — real pages gate keydown handlers on
+        `event.code`, and a character key with no `text` typed nothing at
+        all, so a keyboard-only widget (an autocomplete, a shortcut, a
+        canvas-based editor with no real <input>) was unreachable through
+        press(). Named keys get a real code/VK pair (see _NAMED_KEYS); a
+        single printable character gets a keyDown/char/keyUp triplet so both
+        a keydown-gated listener and the field's own value update fire, the
+        same as a real keystroke. An unrecognized multi-character name (e.g.
+        "F5") still falls back to key-only rather than raising — some
+        model-supplied names should still reach the page even without a
+        code/VK mapping this file doesn't have.
+        """
         self._assert_not_safe("press")
+        bits = _modifiers_bitmask(modifiers)
+        if key in _NAMED_KEYS:
+            code, vk = _NAMED_KEYS[key]
+            base: dict[str, Any] = {
+                "key": key, "code": code,
+                "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+                "modifiers": bits,
+            }
+            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyDown"})
+            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
+            return
+        if len(key) == 1:
+            vk = ord(key.upper()) if key.isalnum() else 0
+            base = {"key": key, "windowsVirtualKeyCode": vk, "modifiers": bits}
+            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyDown"})
+            await self._engine.send(
+                "Input.dispatchKeyEvent", {**base, "type": "char", "text": key}
+            )
+            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
+            return
         await self._engine.send(
-            "Input.dispatchKeyEvent",
-            {"type": "keyDown", "key": key},
+            "Input.dispatchKeyEvent", {"type": "keyDown", "key": key, "modifiers": bits}
         )
         await self._engine.send(
-            "Input.dispatchKeyEvent",
-            {"type": "keyUp", "key": key},
+            "Input.dispatchKeyEvent", {"type": "keyUp", "key": key, "modifiers": bits}
         )
 
     async def click_at(
@@ -1572,60 +2089,80 @@ class Page:
         ))
         return Screenshot(data=img_bytes, tokens_estimated=tokens)
 
+    def _raise_if_stale_ref(self, description: str) -> None:
+        # Only reached once every exact/fuzzy match has already failed. A
+        # description that looks like a ref this registry once issued but
+        # names nothing live is a *different* failure than "no such element":
+        # the caller is holding a ref from a document (or a since-evicted
+        # element) that no longer exists, and re-snapshotting is the only fix
+        # — retrying the same ref text again cannot succeed.
+        if self._refs.is_stale(description):
+            raise GripError(self._classifier.classify_stale_ref(description))
+
+    # Shared ladder for click()/type()/select() target resolution, mirroring
+    # _SELECT_OPTION_JS's own precedence (exact visible text, then a unique
+    # substring, never resolving a non-unique match silently):
+    #   1. exact text match (case-insensitive) — wins outright, even over a
+    #      substring match elsewhere, so click("Save") always hits the button
+    #      literally labeled "Save" and never "Save draft".
+    #   2. exact ref match (e.g. "e5") — unambiguous by construction, since
+    #      RefRegistry never assigns the same ref to two live elements.
+    #   3. a *unique* substring across text/placeholder/role — a description
+    #      matching more than one candidate is reported as AMBIGUOUS_TARGET
+    #      rather than resolved to whichever came first in document order.
+    # `candidates` is already filtered to the right kind of element (inputs
+    # for _find_input, <select> for _find_select) — an exact ref that names
+    # a live element of the WRONG kind is not found here, same as before.
+    def _resolve_target(self, description: str, candidates: list[Element]) -> Element | None:
+        desc_lower = description.lower()
+        exact_text = [el for el in candidates if el.text.lower() == desc_lower]
+        if len(exact_text) == 1:
+            return exact_text[0]
+        if len(exact_text) > 1:
+            raise GripError(self._classifier.classify_ambiguous_target(
+                description, [(el.ref, el.text or el.role) for el in exact_text]
+            ))
+        for el in candidates:
+            if el.ref == description:
+                return el
+        substr = [
+            el for el in candidates
+            if desc_lower in el.text.lower()
+            or desc_lower in (el.placeholder or "").lower()
+            or desc_lower in el.role.lower()
+        ]
+        if len(substr) > 1:
+            raise GripError(self._classifier.classify_ambiguous_target(
+                description, [(el.ref, el.text or el.role) for el in substr]
+            ))
+        if substr:
+            return substr[0]
+        self._raise_if_stale_ref(description)
+        return None
+
     def _find_element(self, description: str) -> Element | None:
         if not self._current_snapshot:
             return None
-        # Exact ref match (e.g., "e5")
-        for el in self._current_snapshot.elements:
-            if el.ref == description:
-                return el
-        # Fuzzy text/role match
-        desc_lower = description.lower()
-        for el in self._current_snapshot.elements:
-            if desc_lower in el.text.lower() or desc_lower in el.role.lower():
-                return el
-        return None
+        return self._resolve_target(description, self._current_snapshot.elements)
 
     def _find_input(self, description: str) -> Element | None:
         if not self._current_snapshot:
             return None
-        # Exact ref match
-        for el in self._current_snapshot.elements:
-            if el.ref == description and (
-                el.tag in ("input", "textarea") or el.role == "textbox"
-            ):
-                return el
-        # Fuzzy match
-        desc_lower = description.lower()
-        for el in self._current_snapshot.elements:
-            if (el.tag in ("input", "textarea") or el.role == "textbox") and (
-                desc_lower in el.text.lower()
-                or desc_lower in (el.placeholder or "").lower()
-                or desc_lower in el.role.lower()
-            ):
-                return el
-        return None
+        candidates = [
+            el for el in self._current_snapshot.elements
+            if el.tag in ("input", "textarea") or el.role == "textbox"
+        ]
+        return self._resolve_target(description, candidates)
 
     def _find_select(self, description: str) -> Element | None:
         if not self._current_snapshot:
             return None
-        # Exact ref match
-        for el in self._current_snapshot.elements:
-            if el.ref == description and el.tag == "select":
-                return el
-        # Fuzzy match, filtered to <select> the same way _find_input filters to
-        # inputs/textareas — an unfiltered fuzzy match (bare _find_element) can
-        # land on a button/link sharing the same label ("Sort") before it ever
-        # reaches the actual dropdown.
-        desc_lower = description.lower()
-        for el in self._current_snapshot.elements:
-            if el.tag == "select" and (
-                desc_lower in el.text.lower()
-                or desc_lower in (el.placeholder or "").lower()
-                or desc_lower in el.role.lower()
-            ):
-                return el
-        return None
+        # Filtered to <select> the same way _find_input filters to
+        # inputs/textareas — an unfiltered match (bare _find_element) can
+        # land on a button/link sharing the same label ("Sort") before it
+        # ever reaches the actual dropdown.
+        candidates = [el for el in self._current_snapshot.elements if el.tag == "select"]
+        return self._resolve_target(description, candidates)
 
     async def _discover_elements(self) -> list[RawElement]:
         result = await self._engine.send(
@@ -1654,8 +2191,18 @@ class Page:
                 height=d.get("height", 1),
                 href=d.get("href"),
                 handle=d.get("handle", ""),
+                # gripElementState (grip/cdp/shadow.py) — see RawElement's
+                # docstring for why value needs no redaction here.
+                disabled=d.get("disabled", False),
+                required=d.get("required", False),
+                checked=d.get("checked"),
+                selected=d.get("selected"),
+                value=d.get("value"),
             )
             for d in raw_data
+            # See _VALID_HANDLE_RE — an element whose handle isn't one gripStamp
+            # would issue is dropped rather than made addressable.
+            if _is_trusted_handle(d.get("handle", ""))
         ]
 
     async def _resolve_probe_object_ids(self, handles: list[str]) -> dict[str, str]:
@@ -1666,7 +2213,8 @@ class Page:
         checks, which are unavoidably one CDP call each."""
         expr = (
             "(function(hs){ return hs.map(function(h){"
-            " return document.querySelector('[data-grip-h=\"' + h + '\"]'); }); })"
+            " return document.querySelector('[data-grip-h=\"' + CSS.escape(h) + '\"]');"
+            " }); })"
             f"({json.dumps(handles)})"
         )
         result = await self._engine.send(
@@ -1728,7 +2276,14 @@ class Page:
             raw = json.loads(raw)
         if not raw:
             return []
-        handles = [d.get("handle", "") for d in raw if d.get("handle")]
+        # See _VALID_HANDLE_RE: PROBE_CLICKABLE_JS stamps handles the same way
+        # DISCOVER does, so the same page-authored-attribute-reuse risk
+        # applies here — an untrusted handle is dropped before it reaches
+        # _resolve_probe_object_ids's querySelector.
+        handles = [
+            d.get("handle", "") for d in raw
+            if d.get("handle") and _is_trusted_handle(d.get("handle", ""))
+        ]
         if not handles:
             return []
         try:
@@ -1748,10 +2303,20 @@ class Page:
                 h for h, ok in zip(handles_checked, checks, strict=True) if ok is True
             }
         finally:
+            # Shielded: this whole method runs inside _discover_probe_elements's
+            # asyncio.timeout(_PROBE_TIMEOUT_S). On a probe timeout, the
+            # CancelledError that timeout injects lands exactly here (the
+            # `finally` of the try this code is already inside) and would
+            # otherwise cancel this send() before it reaches the browser —
+            # skipping the release and leaking up to
+            # GRIP_MAX_LISTENER_PROBE_NODES DOM objects in the renderer per
+            # snapshot that timed out. shield() lets this one call finish (or
+            # fail on its own) instead of dying with the coroutine that's
+            # already being torn down around it.
             with contextlib.suppress(Exception):
-                await self._engine.send(
+                await asyncio.shield(self._engine.send(
                     "Runtime.releaseObjectGroup", {"objectGroup": _PROBE_OBJECT_GROUP}
-                )
+                ))
         out = []
         for d in raw:
             handle = d.get("handle", "")
@@ -1773,6 +2338,18 @@ class Page:
                 height=1,
                 href=None,
                 handle=handle,
+                # PROBE_CLICKABLE_JS (grip/cdp/shadow.py) never collects
+                # gripElementState — these probe-only elements have no role,
+                # no tabindex, no native semantics to begin with, so there is
+                # no interaction state to report. Mapped explicitly (rather
+                # than left to RawElement's own defaults) so this is a
+                # documented "unknown", not a spot that looks like it was
+                # forgotten.
+                disabled=d.get("disabled", False),
+                required=d.get("required", False),
+                checked=d.get("checked"),
+                selected=d.get("selected"),
+                value=d.get("value"),
             ))
         return out
 

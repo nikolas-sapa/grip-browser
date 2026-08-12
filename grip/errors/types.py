@@ -18,6 +18,12 @@ class ErrorType(Enum):
     CANVAS_ELEMENT = "canvas_element"
     SAFE_MODE_VIOLATION = "safe_mode_violation"
     NAVIGATION_REFUSED = "navigation_refused"
+    BROWSER_CRASHED = "browser_crashed"
+    # Task-level ambiguity/staleness errors — Page._find_element (>1 fuzzy
+    # match) and Page._find_element/_find_input/_find_select (a ref that
+    # belonged to a document this page has since navigated away from).
+    AMBIGUOUS_TARGET = "ambiguous_target"
+    STALE_REF = "stale_ref"
 
 
 class RecoveryAction(Enum):

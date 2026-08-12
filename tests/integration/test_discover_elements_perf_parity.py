@@ -121,12 +121,13 @@ OLD_DISCOVER_ELEMENTS_JS = """
 
 async def open_with_html(browser: Browser, html: str):
     page = await browser.open("about:blank")
+    expr = (
+        f"document.open('text/html','replace');"
+        f"document.write({json.dumps(html)});document.close();"
+    )
     await page._engine.send(
         "Runtime.evaluate",
-        {
-            "expression": f"document.open('text/html','replace');document.write({json.dumps(html)});document.close();",
-            "returnByValue": True,
-        },
+        {"expression": expr, "returnByValue": True},
     )
     await asyncio.sleep(0.15)
     return page
@@ -142,8 +143,9 @@ async def _eval_elements(page, js: str) -> list[dict]:
     return value or []
 
 
-# Two things have deliberately changed since the baseline was frozen, and exactly
-# two. Both are subtracted here so the test keeps failing on anything else.
+# Four things have deliberately changed since the baseline was frozen, and
+# exactly four. All are subtracted/filtered here so the test keeps failing on
+# anything else.
 #
 # 1. `handle` — the data-grip-h stamp added so click/type act on the element the
 #    caller was actually shown rather than on whatever now occupies that index.
@@ -154,10 +156,24 @@ async def _eval_elements(page, js: str) -> list[dict]:
 #    element loss is the exact drift this test exists to catch, so it is not
 #    allowed categorically: each missing element must individually satisfy the
 #    off-canvas predicate, re-evaluated in the page by the baseline JS itself.
+# 3. Per-element interaction state (`disabled`/`required`/`checked`/`selected`/
+#    `value`) — pure field additions, dropped before comparing, same as `handle`.
+#    Plus iframe stub rows (`tag === 'iframe'`): the baseline never emits these
+#    (iframe is not in INTERACTIVE_TAGS/ROLES), so they are filtered out of the
+#    current collector's output before the two are diffed, rather than expected
+#    to line up against a baseline row that was never going to exist.
+# 4. Label inference (grip/cdp/shadow.py's gripInferredLabel) — a form control
+#    with no aria-labelledby/aria-label/native <label> used to get `text: ''`;
+#    the current collector now falls back through placeholder/title/sibling
+#    text/humanized name-id, so `text` goes from empty to non-empty for those
+#    rows specifically. Handled narrowly in _rows_match_allowing_inferred_label
+#    below (baseline text must have been '' and every other field must still
+#    match) rather than by dropping `text` from the comparison generally, so a
+#    real drift in an already-labelled element's text still fails the test.
 #
-# The current collector may never contain an element the baseline lacks, and
-# every surviving element must match field-for-field, in order.
-KNOWN_NEW_FIELDS = frozenset({"handle"})
+# The current collector may never contain a non-iframe element the baseline
+# lacks, and every surviving element must match field-for-field, in order.
+KNOWN_NEW_FIELDS = frozenset({"handle", "disabled", "required", "checked", "selected", "value"})
 DIAGNOSTIC_OLD_FIELDS = frozenset({"offCanvas"})
 
 
@@ -167,8 +183,21 @@ def _comparable(row: dict, drop: frozenset[str]) -> dict:
     return {k: v for k, v in row.items() if k not in drop and k != "index"}
 
 
+def _rows_match_allowing_inferred_label(o: dict, n: dict) -> bool:
+    """True if `o` (baseline) and `n` (current) agree outright, or agree on
+    every field except `text` where the divergence is exactly the deliberate
+    label-inference change: baseline had no text at all, current has some.
+    Anything else — baseline already had text and it changed, or some other
+    field also diverged — is a real mismatch, not this allowance."""
+    if o == n:
+        return True
+    if o.get("text") == "" and n.get("text"):
+        return {**o, "text": n["text"]} == n
+    return False
+
+
 def _diff_against_baseline(old: list[dict], new: list[dict]) -> str | None:
-    """Returns a failure description, or None if the two agree modulo the two
+    """Returns a failure description, or None if the two agree modulo the
     deliberate changes above. Walks both in order: the current collector's rows
     must appear in the baseline's order, and any baseline row skipped over has
     to be one the off-canvas rule legitimately suppresses."""
@@ -180,7 +209,7 @@ def _diff_against_baseline(old: list[dict], new: list[dict]) -> str | None:
     while i < len(old) and j < len(new):
         o = _comparable(old[i], DIAGNOSTIC_OLD_FIELDS)
         n = _comparable(new[j], KNOWN_NEW_FIELDS)
-        if o == n:
+        if _rows_match_allowing_inferred_label(o, n):
             i += 1
             j += 1
         elif old[i]["offCanvas"]:
@@ -199,9 +228,16 @@ def _diff_against_baseline(old: list[dict], new: list[dict]) -> str | None:
     return None
 
 
+def _drop_iframe_rows(rows: list[dict]) -> list[dict]:
+    """Iframe stub rows are new-only (see KNOWN_NEW_FIELDS note 3): the baseline
+    JS never produces them, so they are excluded before diffing rather than
+    expected to match a baseline row that cannot exist."""
+    return [r for r in rows if r.get("tag") != "iframe"]
+
+
 async def _assert_identical(page) -> None:
     old = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
-    new = await _eval_elements(page, DISCOVER_ELEMENTS_JS)
+    new = _drop_iframe_rows(await _eval_elements(page, DISCOVER_ELEMENTS_JS))
     problem = _diff_against_baseline(old, new)
     assert problem is None, (
         f"DISCOVER_ELEMENTS_JS output diverged from pre-optimization baseline.\n"
@@ -219,7 +255,7 @@ async def _assert_identical_or_page_moved(page) -> bool:
     is a real divergence. Returns True if the comparison was conclusive.
     """
     old1 = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
-    new = await _eval_elements(page, DISCOVER_ELEMENTS_JS)
+    new = _drop_iframe_rows(await _eval_elements(page, DISCOVER_ELEMENTS_JS))
     old2 = await _eval_elements(page, OLD_DISCOVER_ELEMENTS_JS)
     if old1 != old2:
         return False  # page moved between evals — inconclusive, not a failure
@@ -246,7 +282,8 @@ SHADOW_HTML = """
       <div id="nested-host"></div>
     `;
     const nested = shadow.getElementById('nested-host').attachShadow({mode: 'open'});
-    nested.innerHTML = '<input placeholder="nested shadow input" style="display:block;width:100px;height:20px" />';
+    nested.innerHTML =
+      '<input placeholder="nested shadow input" style="display:block;width:100px;height:20px" />';
   </script>
 </body></html>
 """

@@ -36,6 +36,33 @@ _MACROS: dict[str, str] = {
     "@reddit_wsb":          "https://www.reddit.com/r/wallstreetbets/search/?q={query}&restrict_sr=1&sort=new",
 }
 
+# A sane, deterministic desktop size. Without this, viewport is whatever Chrome
+# happens to default to -- which varies by platform and version -- so anything
+# that reads window/viewport dimensions gets a different answer per environment.
+_DEFAULT_VIEWPORT: dict[str, Any] = {
+    "width": 1280,
+    "height": 800,
+    "device_scale_factor": 1,
+    "mobile": False,
+    "touch": False,
+}
+
+# A real device UA rather than desktop-Chrome-claiming-to-be-mobile: sites that
+# branch on UA (not just viewport width) for their mobile layout need this to
+# actually see one.
+_MOBILE_UA = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36"
+)
+
+# notifications/geolocation prompts have no one to answer them in an unattended
+# run, so both default to denied rather than left at Chrome's "prompt" -- a
+# prompt just stalls the page instead of failing loud or granting silently.
+_DEFAULT_PERMISSIONS: dict[str, bool] = {
+    "notifications": False,
+    "geolocation": False,
+}
+
 
 def _expand_macro(url: str, **kwargs: str) -> str:
     if not url.startswith("@"):
@@ -89,6 +116,9 @@ class Browser:
         user_data_dir: str | None = None,
         cdp_url: str | None = None,
         launch_timeout: float | None = None,
+        viewport: dict[str, Any] | None = None,
+        permissions: dict[str, bool] | None = None,
+        geolocation: dict[str, float] | None = None,
     ) -> None:
         self._llm = llm
         self._headless = headless
@@ -102,6 +132,18 @@ class Browser:
         self._user_data_dir = user_data_dir
         self._cdp_url = cdp_url
         self._launch_timeout = launch_timeout
+        # Merged over the defaults rather than replacing them, so a caller who
+        # only wants a mobile size doesn't also have to spell out scale/touch.
+        self._viewport: dict[str, Any] = {**_DEFAULT_VIEWPORT, **(viewport or {})}
+        self._permissions: dict[str, bool] = {**_DEFAULT_PERMISSIONS, **(permissions or {})}
+        # A geolocation override is pointless while the geolocation permission is
+        # still denied by default -- navigator.geolocation stays blocked regardless
+        # of what the override says. Passing geolocation= implies wanting it to
+        # actually work, so it grants the permission too, unless the caller set
+        # permissions["geolocation"] explicitly (which still wins either way).
+        if geolocation is not None and "geolocation" not in (permissions or {}):
+            self._permissions["geolocation"] = True
+        self._geolocation = geolocation
         self._launcher: ChromeLauncher | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
@@ -130,6 +172,7 @@ class Browser:
                 # engine entirely. No profile, no process, nothing to terminate.
                 engine = CDPEngine()
                 await engine.connect(self._cdp_url)
+                await self._apply_permissions(engine)
                 self._engine = engine
                 return
             launcher = ChromeLauncher(
@@ -154,11 +197,30 @@ class Browser:
                 )
                 engine = CDPEngine()
                 await engine.connect(ws_url)
+                await self._apply_permissions(engine)
             except BaseException:
                 launcher.terminate()
                 raise
             self._launcher = launcher
             self._engine = engine
+
+    async def _apply_permissions(self, engine: CDPEngine) -> None:
+        """Grant/deny the configured permissions browser-wide, so a
+        notifications/geolocation prompt never sits there waiting for a human
+        who isn't coming. Best-effort: a remote CDP endpoint (attach mode via
+        cdp_url) may not implement Browser.setPermission at all, and that must
+        not block attaching to it."""
+        for name, allowed in self._permissions.items():
+            try:
+                await engine.send(
+                    "Browser.setPermission",
+                    {
+                        "permission": {"name": name},
+                        "setting": "granted" if allowed else "denied",
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to set permission %r", name, exc_info=True)
 
     async def open(self, url: str, **kwargs: str) -> Page:
         """Open a URL in its own tab and return a Page bound to it.
@@ -189,6 +251,18 @@ class Browser:
 
         page_engine = CDPEngine()
         await page_engine.connect(self._page_ws_url(target_id))
+        # Before goto(), not after: emulation set post-navigation is too late for a
+        # page that branches its layout/UA off these on the very first paint.
+        await self._apply_viewport(page_engine)
+        if self._geolocation:
+            await page_engine.send(
+                "Emulation.setGeolocationOverride",
+                {
+                    "latitude": self._geolocation["latitude"],
+                    "longitude": self._geolocation["longitude"],
+                    "accuracy": self._geolocation.get("accuracy", 1),
+                },
+            )
         page = Page(
             engine=page_engine,
             trace=self.trace,
@@ -212,6 +286,24 @@ class Browser:
                 await asyncio.shield(asyncio.ensure_future(page.close()))
             raise
         return page
+
+    async def _apply_viewport(self, engine: CDPEngine) -> None:
+        """Deterministic size/DPR on every tab, plus touch and a matching UA when
+        emulating mobile — a mobile viewport with a desktop UA still gets served
+        the desktop layout by any site that branches on UA rather than width."""
+        vp = self._viewport
+        await engine.send(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": vp["width"],
+                "height": vp["height"],
+                "deviceScaleFactor": vp["device_scale_factor"],
+                "mobile": vp["mobile"],
+            },
+        )
+        await engine.send("Emulation.setTouchEmulationEnabled", {"enabled": vp["touch"]})
+        if vp["mobile"]:
+            await engine.send("Network.setUserAgentOverride", {"userAgent": _MOBILE_UA})
 
     def _page_ws_url(self, target_id: str) -> str:
         """Websocket for one tab.

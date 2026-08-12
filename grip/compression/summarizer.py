@@ -43,6 +43,14 @@ class Element:
     ref: str = ""
     handle: str = ""
     href: str | None = None
+    # Interaction state DISCOVER now captures alongside identity/position — an
+    # agent deciding whether to click/type needs to know a control is already
+    # disabled or filled before it acts, not after the action silently no-ops.
+    disabled: bool = False
+    required: bool = False
+    checked: bool | None = None
+    selected: bool | None = None
+    value: str | None = None
 
 
 @dataclass
@@ -59,6 +67,15 @@ class PageSnapshot:
     # a stripped page from a clean one — which is the difference between "this page
     # is quiet" and "this page tried something and we cut it out".
     prompt_injection: bool = False
+    # Populated by page.py (Page.scroll()) after build(); flat, not a nested
+    # class, per the contract agreed with the scroll() implementation. Default
+    # 0/0 for callers/tests that predate scroll() and never set these — the
+    # renderer treats scroll_height <= 0 as "not populated" and omits the
+    # VIEWPORT line rather than print a meaningless y=0/0.
+    scroll_top: int = 0
+    scroll_left: int = 0
+    scroll_height: int = 0
+    client_height: int = 0
 
     @property
     def links(self) -> list[tuple[str, str]]:
@@ -89,6 +106,17 @@ class Summarizer:
                 cy=el.cy,
                 handle=el.handle,
                 href=el.href,
+                # getattr, not el.disabled: RawElement (grip/security/sanitizer.py)
+                # does not carry these fields yet — DISCOVER_ELEMENTS_JS
+                # (grip/cdp/shadow.py) already emits disabled/required/checked/
+                # selected/value, but page.py's RawElement(...) construction has
+                # to be extended to read and forward them before this stops
+                # silently defaulting. Field names here are the proposed contract.
+                disabled=getattr(el, "disabled", False),
+                required=getattr(el, "required", False),
+                checked=getattr(el, "checked", None),
+                selected=getattr(el, "selected", None),
+                value=getattr(el, "value", None),
             )
             for i, el in enumerate(raw_elements)
         ]
@@ -105,25 +133,103 @@ class Summarizer:
         )
 
     def format(self, snapshot: PageSnapshot) -> str:
-        return self._build_format_str(
-            snapshot.url, snapshot.title, snapshot.elements, snapshot.text_content
+        # Leading, not buried in CONTENT: an agent that only reads the top of a
+        # long snapshot must still see that the page errored or was tampered
+        # with before it reasons about anything below.
+        leading: list[str] = []
+        if snapshot.page_error is not None:
+            leading.append(self._format_status_line(snapshot.page_error))
+        if snapshot.prompt_injection:
+            leading.append(
+                "WARNING: this page attempted a prompt injection; the "
+                "offending text was elided before this snapshot was built."
+            )
+        body = self._build_format_str(
+            snapshot.url,
+            snapshot.title,
+            snapshot.elements,
+            snapshot.text_content,
+            snapshot.scroll_top,
+            snapshot.scroll_left,
+            snapshot.scroll_height,
         )
+        return "\n".join([*leading, body]) if leading else body
 
     def count_tokens(self, text: str) -> int:
         return _count_tokens(text)
 
+    @staticmethod
+    def _format_status_line(error: BrowserError) -> str:
+        recovery = ", ".join(action.value for action in error.recovery)
+        suffix = f" (recovery: {recovery})" if recovery else ""
+        return f"STATUS: {error.type.value}{suffix}"
+
+    @staticmethod
+    def _format_viewport_line(scroll_top: int, scroll_left: int, scroll_height: int) -> str:
+        # scroll_height <= 0 means this snapshot predates Page.scroll()
+        # populating these fields (an older caller, or a directly-built
+        # PageSnapshot in a test) — there is nothing real to report, so the
+        # line is omitted rather than printing a meaningless "y=0/0".
+        if scroll_height <= 0:
+            return ""
+        line = f"VIEWPORT: y={scroll_top}/{scroll_height}"
+        # Horizontal scroll is rare enough that reporting it unconditionally
+        # would cost a token on every snapshot for no benefit on the common
+        # vertically-scrolling page — only shown when it is actually nonzero.
+        if scroll_left:
+            line += f" x={scroll_left}"
+        return line
+
+    @staticmethod
+    def _element_state_suffix(el: Element) -> str:
+        # Only positive/active state is rendered — "unchecked"/"enabled" on
+        # every ordinary control would double INTERACTIVE's line count for no
+        # information the absence of "(checked)"/"(disabled)" doesn't already
+        # carry, and this line format is explicitly token-budget-constrained.
+        suffix = f' ="{el.value}"' if el.value else ""
+        flags = [
+            name
+            for name, active in (
+                ("disabled", el.disabled),
+                ("required", el.required),
+                ("checked", el.checked),
+                ("selected", el.selected),
+            )
+            if active
+        ]
+        if flags:
+            suffix += " (" + ", ".join(flags) + ")"
+        return suffix
+
     def _build_format_str(
-        self, url: str, title: str, elements: list[Element], text: str
+        self,
+        url: str,
+        title: str,
+        elements: list[Element],
+        text: str,
+        scroll_top: int,
+        scroll_left: int,
+        scroll_height: int,
     ) -> str:
         lines = [f"PAGE: {title}", f"URL: {url}"]
+        viewport = self._format_viewport_line(scroll_top, scroll_left, scroll_height)
+        if viewport:
+            lines.append(viewport)
         if elements:
             lines.append("INTERACTIVE:")
             for el in elements:
                 abbrev = _TAG_ABBREV.get(el.tag, el.tag[:3])
                 desc = el.text or el.placeholder or el.role
                 ref = el.ref or str(el.index)
-                lines.append(f"  [{abbrev}:{ref}] {desc!r}")
+                lines.append(
+                    f"  [{abbrev}:{ref}] {desc!r}{self._element_state_suffix(el)}"
+                )
         if text:
             lines.append("CONTENT:")
             lines.append(f"  {text[:2000]}")
+            if len(text) > 2000:
+                lines.append(
+                    f"  ... [{len(text) - 2000} more characters truncated — call "
+                    "read() for the full content]"
+                )
         return "\n".join(lines)

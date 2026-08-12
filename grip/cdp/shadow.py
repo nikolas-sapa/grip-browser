@@ -17,8 +17,19 @@ _ACCESSIBLE_TEXT_JS = """
   // A checkbox/radio/file/submit/button's `.value` is markup boilerplate ("on",
   // a filename, a caption already covered by innerText), not user content —
   // folding it into a label would only add noise and bytes to every snapshot.
+  // 'password' here is a security boundary, not a style choice: gripOwnText
+  // below falls back to el.value whenever a type is not in this set, and
+  // el.value on a password field is exactly what the user typed. Without
+  // this, a typed password lands in every snapshot's element text, gets sent
+  // to the LLM, and is written to trace output (trace's `type` redaction
+  // does not cover this path — it only ever sees the *action* input, not
+  // the DOM value discovery re-reads). This is also the set gripCollect's
+  // element-state capture (below) reuses to decide which inputs' current
+  // value is safe to surface at all — one list, so a type added for one
+  // purpose is automatically excluded from the other.
   const _GRIP_NO_VALUE_TYPES = new Set([
-    'checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'image', 'hidden'
+    'checkbox', 'radio', 'file', 'submit', 'button', 'reset', 'image', 'hidden',
+    'password'
   ]);
 
   function gripLabelledByText(el) {
@@ -64,11 +75,66 @@ _ACCESSIBLE_TEXT_JS = """
     return label + ': ' + own;
   }
 
+  // preceding-sibling/parent direct text, e.g. httpbin's `Email: <input>`
+  // where the "label" is a bare text node, not a <label> element at all — no
+  // ARIA attribute, no `for`, nothing el.labels or aria-labelledby can see.
+  // Bounded to immediate siblings and the parent's own direct text nodes, not
+  // a document walk, so this stays cheap per candidate.
+  function gripSiblingText(el) {
+    let n = el.previousSibling;
+    while (n) {
+      if (n.nodeType === 3 && n.textContent.trim()) return n.textContent.trim().slice(0, 60);
+      if (n.nodeType === 1 && (n.innerText || '').trim()) return n.innerText.trim().slice(0, 60);
+      n = n.previousSibling;
+    }
+    const parent = el.parentElement;
+    if (parent) {
+      for (const child of parent.childNodes) {
+        if (child.nodeType === 3 && child.textContent.trim()) {
+          return child.textContent.trim().slice(0, 60);
+        }
+      }
+    }
+    return '';
+  }
+
+  function gripHumanize(s) {
+    return (s || '').replace(/[-_]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
+  }
+
+  // Last-resort fallback chain for an <input>/<textarea> with no
+  // aria-labelledby, aria-label or native <label> — without this, such a
+  // control's snapshot text is empty and the semantic matcher (page.py's
+  // _find_input) can never address it by description, forcing an agent onto
+  // raw refs for what is often the most common real-world case: a label that
+  // is plain text next to the input rather than a properly associated
+  // <label> (httpbin's forms, e.g.).
+  //
+  // Deliberately NOT applied to <select>: gripAccessibleText already falls
+  // back to its own text (the full option dump) when no real label exists,
+  // which is a far more reliable signal than nearby prose — a <select> sitting
+  // between unrelated paragraphs/links in a dense page (a filter bar, e.g.)
+  // would otherwise adopt whatever text happens to precede it in the DOM.
+  const _GRIP_INFER_LABEL_TAGS = new Set(['input', 'textarea']);
+
+  function gripInferredLabel(el) {
+    const placeholder = (el.getAttribute('placeholder') || '').trim();
+    if (placeholder) return placeholder;
+    const title = (el.getAttribute('title') || '').trim();
+    if (title) return title;
+    const sibling = gripSiblingText(el);
+    if (sibling) return sibling;
+    return gripHumanize(el.getAttribute('name') || el.id || '');
+  }
+
   function gripAccessibleText(el) {
     const own = gripOwnText(el);
-    const label = gripLabelledByText(el) ||
+    let label = gripLabelledByText(el) ||
       (el.getAttribute('aria-label') || '').trim() ||
       gripNativeLabelText(el);
+    if (!label && _GRIP_INFER_LABEL_TAGS.has(el.tagName.toLowerCase())) {
+      label = gripInferredLabel(el);
+    }
     if (!label) return own;
     // A <select>'s own text is its full option dump (every <option> label
     // concatenated) — useful when nothing else identifies the control, but
@@ -169,6 +235,12 @@ _COLLECT_CANDIDATES_JS = _ACCESSIBLE_TEXT_JS + """
             node = walker.nextNode();
             continue;
           }
+          // Cross-frame traversal is out of scope here — the walker cannot see
+          // inside the iframe's own document — so a stub row is emitted instead
+          // of silently dropping whatever content lives there.
+          out.push({ el: el, tag: tag, role: 'iframe', inShadow: inShadow, isIframe: true });
+          node = walker.nextNode();
+          continue;
         }
         const role = gripRole(el);
         if (gripIsCandidate(el, tag, role) && !gripIsHidden(el)) {
@@ -182,6 +254,60 @@ _COLLECT_CANDIDATES_JS = _ACCESSIBLE_TEXT_JS + """
     return out;
   }
 
+  // Per-element interaction state for DISCOVER's payload — cheap attribute/
+  // property reads only, no layout. `value` is capped well below the 120-char
+  // text cap: a snapshot line exists to say "this field has something in it",
+  // not to carry its full contents, and a password field's value is withheld
+  // outright rather than handed to whatever reads the snapshot. Reuses
+  // _GRIP_NO_VALUE_TYPES (defined above, in _ACCESSIBLE_TEXT_JS) rather than a
+  // second list: a type excluded from the label formula for the same "not
+  // user content" reason must not silently reappear here through a copy that
+  // drifted out of sync with it.
+  function gripElementState(el) {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const disabled = el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+    const required = el.required === true || el.getAttribute('aria-required') === 'true';
+
+    let checked = null;
+    if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+      checked = !!el.checked;
+    } else if (['checkbox', 'switch'].includes(el.getAttribute('role') || '')) {
+      checked = el.getAttribute('aria-checked') === 'true';
+    }
+
+    let selected = null;
+    if (tag === 'option') {
+      selected = !!el.selected;
+    } else if (el.hasAttribute('aria-selected')) {
+      selected = el.getAttribute('aria-selected') === 'true';
+    }
+
+    let value = null;
+    if ((tag === 'input' || tag === 'textarea') && !_GRIP_NO_VALUE_TYPES.has(type)) {
+      value = (el.value || '').slice(0, 80) || null;
+    } else if (tag === 'select') {
+      const opt = el.options && el.options[el.selectedIndex];
+      value = opt ? (opt.text || opt.value || '').slice(0, 80) || null : null;
+    }
+
+    return { disabled: disabled, required: required, checked: checked,
+             selected: selected, value: value };
+  }
+
+  // Compact stand-in for an iframe row: enough to tell the agent content is
+  // hidden there and where, without attempting to read across the boundary.
+  function gripIframeSummary(el) {
+    const parts = [];
+    const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+    if (src) parts.push('src=' + src);
+    const title = el.getAttribute('title') || '';
+    if (title) parts.push('title=' + title);
+    const name = el.getAttribute('name') || '';
+    if (name) parts.push('name=' + name);
+    return parts.join(' ');
+  }
+
   // A positional index is only valid against the tree that produced it. Stamping
   // the node itself means click/type can find the element the caller was actually
   // shown, even after the page has inserted or removed siblings above it.
@@ -192,13 +318,22 @@ _COLLECT_CANDIDATES_JS = _ACCESSIBLE_TEXT_JS + """
   // different live element and querySelector would return the stale one — the
   // duplicate-label decoy this whole change exists to close.
   function gripStamp(el) {
-    let h = el.getAttribute('data-grip-h');
-    if (!h) {
-      window.__gripHandleSeq = (window.__gripHandleSeq || 0) + 1;
-      h = 'h' + window.__gripHandleSeq;
-      el.setAttribute('data-grip-h', h);
-    }
-    return h;
+    const seen = (window.__gripStamped = window.__gripStamped || new WeakSet());
+    const h = el.getAttribute('data-grip-h');
+    // Only ever trust a data-grip-h value this session itself set. A page can
+    // pre-author the attribute to any string — including one crafted to break
+    // the '[data-grip-h="..."]' selector RESOLVE builds from it (handled by
+    // CSS.escape there), or, more dangerously, a numeric-looking value ("h3")
+    // that collides with a handle already minted for a different live
+    // element. Format-checking alone cannot rule that second case out, so
+    // membership in this session's own WeakSet is the only thing trusted;
+    // anything else is treated as unstamped and reassigned from the counter.
+    if (h && seen.has(el)) return h;
+    window.__gripHandleSeq = (window.__gripHandleSeq || 0) + 1;
+    const fresh = 'h' + window.__gripHandleSeq;
+    el.setAttribute('data-grip-h', fresh);
+    seen.add(el);
+    return fresh;
   }
 """
 
@@ -355,12 +490,13 @@ DISCOVER_ELEMENTS_JS = """
   return JSON.stringify(gripCollect().map(function (c, i) {
     const el = c.el;
     const rect = el.getBoundingClientRect();
+    const state = gripElementState(el);
     return {
       index: i,
       handle: gripStamp(el),
       tag: c.tag,
       role: c.role || c.tag,
-      text: gripAccessibleText(el).slice(0, 120),
+      text: c.isIframe ? gripIframeSummary(el) : gripAccessibleText(el).slice(0, 120),
       placeholder: el.getAttribute('placeholder') || null,
       // el.href resolves relative URLs against the document for us. Only
       // fetchable schemes: mailto:/javascript:/tel:/#fragment are not pages.
@@ -373,7 +509,12 @@ DISCOVER_ELEMENTS_JS = """
       })(),
       inShadowDom: c.inShadow,
       cx: Math.round(rect.left + rect.width / 2),
-      cy: Math.round(rect.top + rect.height / 2)
+      cy: Math.round(rect.top + rect.height / 2),
+      disabled: state.disabled,
+      required: state.required,
+      checked: state.checked,
+      selected: state.selected,
+      value: state.value
     };
   }));
 })();
@@ -396,12 +537,20 @@ DISCOVER_ELEMENTS_JS = """
 _RESOLVE_JS = _ACCESSIBLE_TEXT_JS + """
   // querySelector stops at shadow boundaries, but discovery walks into open
   // roots, so anything it stamped there would otherwise resolve to not_found.
-  function gripQuery(root, sel) {
+  //
+  // CSS.escape(handle) rather than string concat: gripStamp only ever mints
+  // handles matching /^h\\d+$/, but a page can still pre-author its own
+  // data-grip-h attribute containing e.g. `"]` before we ever stamp anything
+  // — unescaped, that breaks out of the attribute selector and throws inside
+  // querySelector, which resolve()/click()/type() would otherwise surface as
+  // an unhandled CDP exception rather than a clean not_found.
+  function gripQuery(root, handle) {
+    const sel = '[data-grip-h="' + CSS.escape(handle) + '"]';
     const hit = root.querySelector(sel);
     if (hit) return hit;
     for (const el of root.querySelectorAll('*')) {
       if (el.shadowRoot) {
-        const deep = gripQuery(el.shadowRoot, sel);
+        const deep = gripQuery(el.shadowRoot, handle);
         if (deep) return deep;
       }
     }
@@ -409,7 +558,7 @@ _RESOLVE_JS = _ACCESSIBLE_TEXT_JS + """
   }
 
   function gripResolve(handle, expectedTag, expectedText) {
-    const el = gripQuery(document, '[data-grip-h="' + handle + '"]');
+    const el = gripQuery(document, handle);
     if (!el) return { el: null, reason: 'not_found' };
     const tag = el.tagName.toLowerCase();
     if (expectedTag && tag !== expectedTag) return { el: null, reason: 'identity_mismatch' };
@@ -426,7 +575,47 @@ function(handle, expectedTag, expectedText) {
 """ + _RESOLVE_JS + """
   const r = gripResolve(handle, expectedTag, expectedText);
   if (!r.el) return { ok: false, reason: r.reason };
-  r.el.click();
+  const el = r.el;
+
+  if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') {
+    return { ok: false, reason: 'disabled' };
+  }
+
+  // elementFromPoint only sees what is actually painted, so an off-screen rect
+  // can never pass the hit test below — bring it on-screen and re-read the
+  // rect first, rather than reporting "off-screen" as "obscured".
+  let rect = el.getBoundingClientRect();
+  const offscreen = rect.width === 0 || rect.height === 0 ||
+    rect.bottom <= 0 || rect.right <= 0 ||
+    rect.top >= window.innerHeight || rect.left >= window.innerWidth;
+  if (offscreen) {
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    rect = el.getBoundingClientRect();
+  }
+
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  // A shadow-DOM element's own root does the hit test, not `document` —
+  // document.elementFromPoint stops at the shadow host and would report every
+  // shadow control as obscured by its own host.
+  const hitRoot = el.getRootNode();
+  const hitFn = (hitRoot && typeof hitRoot.elementFromPoint === 'function')
+    ? hitRoot.elementFromPoint.bind(hitRoot)
+    : document.elementFromPoint.bind(document);
+  const hit = hitFn(cx, cy);
+  // null means the point could not be hit-tested (still off-canvas, zero
+  // size) — that is "couldn't check", not "obscured". An ancestor hit (a
+  // wrapping <label>/<a>) or a descendant hit (an icon inside the button)
+  // still clicks through the real element and must not report obscured.
+  if (hit && !(el.contains(hit) || hit.contains(el))) {
+    const cls = hit.getAttribute('class');
+    return {
+      ok: false, reason: 'obscured',
+      occluder: hit.tagName.toLowerCase() + (cls ? '.' + cls.trim().split(/\\s+/).join('.') : '')
+    };
+  }
+
+  el.click();
   return { ok: true, reason: '' };
 }
 """
@@ -445,11 +634,45 @@ function(handle, text, expectedTag, expectedText) {
     return { ok: false, reason: 'not_typable' };
   }
   el.focus();
-  el.value = '';
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  el.value = text;
-  el.dispatchEvent(new Event('input', { bubbles: true }));
+
+  if (el.isContentEditable) {
+    el.textContent = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.textContent = text;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  } else {
+    // React/Vue install their own `value` setter on the instance so their
+    // change-detection can see writes `el.value = x` makes — but that means
+    // it never sees ours, since we are not going through their setter. Calling
+    // the native prototype's setter directly bypasses the instance override
+    // the same way a real keystroke would, so the framework's own onChange
+    // still fires.
+    const proto = tag === 'textarea'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    function setValue(v) {
+      if (nativeSetter) { nativeSetter.call(el, v); } else { el.value = v; }
+    }
+    setValue('');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    // keydown/keyup bracket the value change so typeahead/autocomplete widgets
+    // that listen for real keystrokes (not just 'input') still fire.
+    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
+    setValue(text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+  }
   el.dispatchEvent(new Event('change', { bubbles: true }));
+
+  const actual = el.isContentEditable ? (el.textContent || '') : el.value;
+  if (actual !== text) {
+    // A controlled input legitimately rewriting what it was given (masking,
+    // case transform, maxlength) looks identical to typing simply not taking
+    // — the observed value is returned so the caller can tell the two apart
+    // instead of getting a bare false.
+    return { ok: false, reason: 'value_mismatch:' + String(actual).slice(0, 80) };
+  }
   return { ok: true, reason: '' };
 }
 """

@@ -16,17 +16,24 @@ importable on a base install so `grip` never depends on the extra.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import contextlib
+import dataclasses
+import os
+import tempfile
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from grip.adapters import adapter_from_env
 from grip.browser import Browser
+from grip.errors import GripError
 from grip.page import Page
 
 TOOL_NAMES = (
     "open", "goto", "snapshot", "click", "type", "select", "read", "screenshot", "run",
-    "list_tabs", "switch_tab", "close_tab",
+    "list_tabs", "switch_tab", "close_tab", "press", "upload", "links", "popups_blocked",
 )
 
 _browser: Browser | None = None
@@ -34,6 +41,17 @@ _page: Page | None = None
 # The page version the client actually holds, which is not the page's own
 # baseline — see Page.payload().
 _last_sent_version = 0
+# Serializes call_tool end to end. Two overlapping calls — a slow 'run' racing
+# a 'click', or 'switch_tab' racing a click on the tab it's leaving — would
+# otherwise interleave writes to the _page/_last_sent_version globals above:
+# an action lands on the wrong tab, or a client is handed a delta computed
+# against a baseline it never actually received. This makes tool calls
+# strictly sequential per server, which is the model the module docstring
+# above already describes (one Browser, one active Page, one conversation).
+# Not reset by reset_state(): asyncio.Lock has not bound to a specific event
+# loop until first awaited (Python 3.10+), so one module-level instance is
+# safe to reuse across the process, including pytest's per-test event loops.
+_lock = asyncio.Lock()
 
 
 def reset_state() -> None:
@@ -48,12 +66,16 @@ def reset_state() -> None:
 async def _ensure_browser() -> Browser:
     global _browser
     if _browser is None:
-        # Best-effort: only the 'run' tool needs an adapter, so a missing key
-        # isn't a startup failure here — it only limits what 'run' can do.
-        # Uses grip.adapters.adapter_from_env(), same as grip.cli, but without
-        # its SystemExit-on-missing behaviour, which is wrong for a
-        # long-lived server.
-        _browser = Browser(llm=adapter_from_env())
+        # No adapter here, not even best-effort: adapter_from_env() imports the
+        # matching provider SDK (grip.adapters.gemini etc.) as soon as its key
+        # is set in the environment, and raises ImportError if that provider's
+        # extra isn't installed. A host that sets e.g. GEMINI_API_KEY without
+        # `pip install grip-browser[gemini]` — a common shape, since API keys
+        # and extras are configured independently — used to take down every
+        # tool at browser construction, including open/snapshot/click, none of
+        # which touch a model. Resolution is deferred to the one tool that
+        # actually needs it; see the 'run' branch in _dispatch_tool.
+        _browser = Browser()
     return _browser
 
 
@@ -64,6 +86,28 @@ def _require_page() -> Page:
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> str:
+    """Dispatch one tool call and return its text.
+
+    A GripError carries a recovery taxonomy (see grip.errors.types) that the
+    caller needs to act on — runner.py already formats it into the tool result
+    it feeds back to a sub-agent (runner.py:196-200). This is that same
+    formatting for an MCP client, not a departure from "raise, don't format an
+    ERROR string" above: the exception still propagates (still becomes
+    is_error=True at the real dispatch path), it just carries the hint in its
+    message instead of silently dropping it the way `str(GripError)` does.
+    """
+    async with _lock:
+        try:
+            return await _dispatch_tool(name, arguments)
+        except GripError as e:
+            recovery = ", ".join(a.name for a in e.error.recovery) or "none"
+            enriched = dataclasses.replace(
+                e.error, message=f"{e.error.message} (suggested recovery: {recovery})"
+            )
+            raise GripError(enriched) from e
+
+
+async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> str:
     global _page, _last_sent_version
     if name == "open":
         browser = await _ensure_browser()
@@ -76,10 +120,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> str:
     if name == "run":
         browser = await _ensure_browser()
         if browser._llm is None:
-            raise RuntimeError(
-                "the 'run' tool needs an LLM API key: set ANTHROPIC_API_KEY or "
-                "OPENAI_API_KEY"
-            )
+            # Resolved here, not at browser construction — see _ensure_browser.
+            # adapter_from_env() itself imports the provider SDK matching
+            # whichever key is set, which raises ImportError when that
+            # provider's extra isn't installed; surface that as an actionable
+            # message rather than a bare traceback reaching the MCP client.
+            try:
+                browser._llm = adapter_from_env()
+            except ImportError as e:
+                raise RuntimeError(f"the 'run' tool needs an LLM adapter: {e}") from e
+            if browser._llm is None:
+                raise RuntimeError(
+                    "the 'run' tool needs an LLM API key: set ANTHROPIC_API_KEY, "
+                    "OPENAI_API_KEY, or GEMINI_API_KEY"
+                )
         from grip.runner import Runner
 
         _page = await browser.open(arguments["url"])
@@ -90,6 +144,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> str:
         # click/type calls should build on it, so the client's baseline is
         # whatever the runner itself last sent, not zero.
         _last_sent_version = runner._last_sent_version
+        if result.data is None:
+            # str(None) is the literal string "None" — indistinguishable from a
+            # real result. The sub-agent hit max_steps, an LLM timeout, or gave
+            # up without ever calling 'done'; say so instead.
+            return (
+                "run ended without calling done() — no result was produced "
+                "(step limit, an LLM timeout, or the agent gave up). The page "
+                "is left wherever it last navigated; 'snapshot' to see where."
+            )
         return str(result.data)
     if name == "list_tabs":
         browser = await _ensure_browser()
@@ -128,6 +191,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> str:
             _last_sent_version = 0
         return f"closed {closing._target_id}"
     page = _require_page()
+    if name == "links":
+        # Snapshots fresh rather than reading page._current_snapshot: the page
+        # version this advances doesn't have to match what the client last
+        # saw — payload()'s baseline guard (render_payload) just falls back to
+        # a full snapshot on the next 'snapshot' call if it doesn't.
+        snap = await page.snapshot()
+        return "\n".join(f"{text}\t{url}" for text, url in snap.links) or "(no links)"
+    if name == "popups_blocked":
+        return str(page.popups_blocked)
+    if name == "press":
+        await page.press(arguments["key"])
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return text
+    if name == "upload":
+        await page.upload(arguments["target"], *arguments["paths"])
+        await page.snapshot()
+        text, _last_sent_version = page.payload(_last_sent_version)
+        return text
     if name == "goto":
         await page.goto(arguments["url"])
         await page.snapshot()
@@ -202,7 +284,24 @@ def main() -> None:
     #
     # The signatures are the tool schemas — MCPServer derives inputSchema from
     # the annotations, so each wrapper is one line over the shared dispatch.
-    @server.tool(name="open", description="Open a URL and return its snapshot.")
+    _SNAPSHOT_SHAPES = (
+        "Returns a full page state (`PAGE: <title>` / `URL:` / `INTERACTIVE:` "
+        "elements as `[tag:ref] 'label'`, e.g. `[btn:e5] 'Submit'`, CONTENT "
+        "truncated to 2000 chars — use 'read' for the full prose) the first "
+        "time, or `DELTA v<from>-><to>` (added/changed elements as `[tag:ref]`, "
+        "removed as bare `[ref]`, plus CONTENT word-diff ops, or "
+        "`DELTA vN->vM: no change`) once a baseline exists — falling back to a "
+        "full snapshot whenever the delta wouldn't actually be smaller."
+    )
+    _TARGET_NOTE = (
+        "target is an exact ref from the last snapshot (e.g. 'e5') or a "
+        "case-insensitive substring of the element's text/role/placeholder."
+    )
+
+    @server.tool(
+        name="open",
+        description=f"Open a URL and return its snapshot. {_SNAPSHOT_SHAPES}",
+    )
     async def _open(url: str) -> str:
         return await call_tool("open", {"url": url})
 
@@ -210,15 +309,21 @@ def main() -> None:
     async def _goto(url: str) -> str:
         return await call_tool("goto", {"url": url})
 
-    @server.tool(name="snapshot", description="Re-snapshot; returns only what changed.")
+    @server.tool(name="snapshot", description=f"Re-snapshot the page. {_SNAPSHOT_SHAPES}")
     async def _snapshot() -> str:
         return await call_tool("snapshot", {})
 
-    @server.tool(name="click", description="Click an element by description or ref.")
+    @server.tool(name="click", description=f"Click an element. {_TARGET_NOTE}")
     async def _click(target: str) -> str:
         return await call_tool("click", {"target": target})
 
-    @server.tool(name="type", description="Type text into an input.")
+    @server.tool(
+        name="type",
+        description=(
+            f"Type text into an input/textarea. {_TARGET_NOTE} Matches only "
+            "input/textarea/textbox elements (also against their placeholder)."
+        ),
+    )
     async def _type(target: str, text: str) -> str:
         return await call_tool("type", {"target": target, "text": text})
 
@@ -226,7 +331,8 @@ def main() -> None:
         name="select",
         description=(
             "Choose an option in a <select> dropdown, by visible option text "
-            "(preferred) or its value attribute."
+            f"(preferred) or its value attribute. {_TARGET_NOTE} Matches only "
+            "<select> elements."
         ),
     )
     async def _select(target: str, value: str) -> str:
@@ -236,12 +342,61 @@ def main() -> None:
     async def _read() -> str:
         return await call_tool("read", {})
 
+    @server.tool(name="press", description="Press a key (e.g. 'Enter', 'Tab') on the page.")
+    async def _press(key: str) -> str:
+        return await call_tool("press", {"key": key})
+
+    @server.tool(
+        name="upload",
+        description=(
+            "Set one or more local file paths on a <input type=file>. "
+            f"{_TARGET_NOTE}"
+        ),
+    )
+    async def _upload(target: str, paths: list[str]) -> str:
+        return await call_tool("upload", {"target": target, "paths": paths})
+
+    @server.tool(
+        name="links",
+        description=(
+            "Re-snapshot and list every fetchable link's text and absolute "
+            "URL, tab-separated one per line — hrefs are left out of "
+            "snapshot/DELTA text to keep the token budget down."
+        ),
+    )
+    async def _links() -> str:
+        return await call_tool("links", {})
+
+    @server.tool(
+        name="popups_blocked",
+        description=(
+            "Count of window.open()/target=\"_blank\" attempts refused by popup "
+            "blocking so far. Nonzero after a click that should have opened a "
+            "new tab explains why nothing happened."
+        ),
+    )
+    async def _popups_blocked() -> str:
+        return await call_tool("popups_blocked", {})
+
     @server.tool(
         name="screenshot",
-        description="Capture a JPEG screenshot of the current page, base64-encoded.",
+        description=(
+            "Capture a JPEG screenshot of the current page as an image "
+            "content block (a file path if the client can't accept one)."
+        ),
+        structured_output=False,
     )
-    async def _screenshot() -> str:
-        return await call_tool("screenshot", {})
+    async def _screenshot() -> Any:
+        b64 = await call_tool("screenshot", {})
+        data = base64.b64decode(b64)
+        try:
+            from mcp.server.mcpserver.utilities.types import Image
+        except ImportError:  # pragma: no cover — depends on the mcp version installed
+            fd, path = tempfile.mkstemp(prefix="grip-screenshot-", suffix=".jpg")
+            os.close(fd)
+            Path(path).write_bytes(data)  # noqa: ASYNC240 — local write, not I/O we need off-thread
+            return path
+        return Image(data=data, format="jpeg")
 
     @server.tool(
         name="list_tabs",

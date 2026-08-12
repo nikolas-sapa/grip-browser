@@ -1,5 +1,5 @@
-import sys
-from unittest.mock import patch, MagicMock
+from pathlib import Path
+from unittest.mock import patch
 from grip.cdp.launcher import find_chrome, ChromeLauncher
 
 
@@ -44,9 +44,8 @@ def test_find_chrome_falls_back_to_cached_chrome_for_testing(monkeypatch, tmp_pa
 
     monkeypatch.delenv("CHROME_EXECUTABLE", raising=False)
     monkeypatch.setattr(launcher_mod, "_CHROME_CANDIDATES", [])
-    monkeypatch.setattr(
-        launcher_mod, "_CACHED_CHROME_GLOBS", [str(tmp_path / "chromium-*" / "chrome-mac-arm64" / "chrome")]
-    )
+    cached_glob = str(tmp_path / "chromium-*" / "chrome-mac-arm64" / "chrome")
+    monkeypatch.setattr(launcher_mod, "_CACHED_CHROME_GLOBS", [cached_glob])
     # find_chrome() looks in PATH before it reaches the cached-Chrome fallback, so
     # without this the test only exercises the fallback on machines that have no
     # browser installed — it passed on macOS and failed on CI's Ubuntu runner,
@@ -63,9 +62,8 @@ def test_find_cached_chrome_prefers_newest_build(monkeypatch, tmp_path):
         exe.parent.mkdir(parents=True)
         exe.touch()
 
-    monkeypatch.setattr(
-        launcher_mod, "_CACHED_CHROME_GLOBS", [str(tmp_path / "chromium-*" / "chrome-mac-arm64" / "chrome")]
-    )
+    cached_glob = str(tmp_path / "chromium-*" / "chrome-mac-arm64" / "chrome")
+    monkeypatch.setattr(launcher_mod, "_CACHED_CHROME_GLOBS", [cached_glob])
     assert launcher_mod._find_cached_chrome().endswith("chromium-1228/chrome-mac-arm64/chrome")
 
 
@@ -100,18 +98,16 @@ def test_caller_supplied_profile_is_not_deleted(monkeypatch, tmp_path):
 
 
 def test_temp_profile_is_still_cleaned(monkeypatch, tmp_path):
-    import os
-
     exe = tmp_path / "chrome"
     exe.touch()
     monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
     launcher = ChromeLauncher()
     assert launcher._owns_user_data_dir
     launcher._user_data_dir = str(tmp_path / "temp_profile")
-    os.mkdir(launcher._user_data_dir)
+    Path(launcher._user_data_dir).mkdir()
     path = launcher._user_data_dir
     launcher.terminate()
-    assert not os.path.exists(path)
+    assert not Path(path).exists()
 
 
 def test_stale_chrome_executable_is_not_trusted(monkeypatch):
@@ -208,3 +204,179 @@ def test_process_state_reports_the_real_exit_code_not_a_poll_race(monkeypatch, t
     finally:
         launcher._process.kill()
         launcher._process.wait()
+
+
+def test_terminate_still_cleans_stderr_and_profile_when_kill_times_out(monkeypatch, tmp_path):
+    """terminate()'s kill() -> wait(timeout=5) used to be able to raise
+    TimeoutExpired straight out of terminate(), which skipped the stderr unlink
+    and the rmtree below it -- orphaning the profile dir on every timed-out
+    kill. Neither wait() call here ever succeeds, so this only passes if the
+    unlink/rmtree run from a finally, not after a wait() that never returns."""
+    import subprocess
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    launcher = ChromeLauncher()
+
+    class NeverReaps:
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="chrome", timeout=timeout)
+
+    launcher._process = NeverReaps()
+
+    stderr_file = tmp_path / "chrome_stderr.log"
+    stderr_file.write_text("boom")
+    launcher._stderr_path = str(stderr_file)
+
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    launcher._user_data_dir = str(profile_dir)
+    assert launcher._owns_user_data_dir
+
+    launcher.terminate()  # must not raise despite wait() never returning
+
+    assert launcher._process is None
+    assert launcher._stderr_path is None
+    assert not stderr_file.exists(), "stderr file leaked when kill() timed out"
+    assert not profile_dir.exists(), "profile dir leaked when kill() timed out"
+
+
+def test_abandoned_launcher_is_reaped_by_gc_even_without_terminate(monkeypatch, tmp_path):
+    """A Browser that's dropped instead of closed must not leak Chrome and its
+    temp profile forever -- the weakref.finalize registered in __init__ has to
+    fire once nothing references the launcher anymore."""
+    import gc
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    launcher = ChromeLauncher()
+
+    calls = []
+
+    class FakeProcess:
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            calls.append("kill")
+
+        def wait(self, timeout=None):
+            return 0
+
+    launcher._process = FakeProcess()
+    profile_dir = tmp_path / "temp_profile"
+    profile_dir.mkdir()
+    launcher._user_data_dir = str(profile_dir)
+    assert launcher._owns_user_data_dir
+
+    del launcher
+    gc.collect()
+
+    assert calls == ["terminate"], "abandoned launcher's process was never reaped"
+    assert not profile_dir.exists(), "abandoned launcher's temp profile was never reaped"
+
+
+def test_finalizer_holds_no_strong_reference_to_the_launcher(monkeypatch, tmp_path):
+    """The finalize callback and its args must not keep the launcher itself
+    alive -- otherwise an "abandoned" Browser is never actually collected and
+    the whole point of the finalizer is defeated."""
+    import gc
+    import weakref
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    launcher = ChromeLauncher()
+    ref = weakref.ref(launcher)
+
+    del launcher
+    gc.collect()
+
+    assert ref() is None, "the finalizer is keeping the launcher alive"
+
+
+def test_terminate_cleans_up_even_when_kill_also_times_out(monkeypatch, tmp_path):
+    """A Chrome that ignores both terminate() and the follow-up kill() within
+    their 5s windows used to leave TimeoutExpired uncaught on the second wait(),
+    which skipped the stderr unlink and the rmtree below it — the exact bug
+    launcher.py:252-268 had. Both must still run."""
+    import subprocess
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    launcher = ChromeLauncher()
+
+    calls = []
+
+    class FakeProcess:
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            calls.append("kill")
+
+        def wait(self, timeout=None):
+            calls.append(f"wait({timeout})")
+            raise subprocess.TimeoutExpired(cmd="chrome", timeout=timeout)
+
+    launcher._process = FakeProcess()
+    stderr_path = tmp_path / "stderr.log"
+    stderr_path.write_text("chrome stderr")
+    launcher._stderr_path = str(stderr_path)
+    user_data_dir = tmp_path / "profile"
+    user_data_dir.mkdir()
+    launcher._user_data_dir = str(user_data_dir)
+
+    launcher.terminate()
+
+    assert calls == ["terminate", "wait(5)", "kill", "wait(5)"], (
+        "expected a terminate/wait, then a kill/wait after the first timeout"
+    )
+    assert not stderr_path.exists(), "a double-timeout kill left the stderr file behind"
+    assert not user_data_dir.exists(), "a double-timeout kill left the temp profile behind"
+    assert launcher._process is None
+
+
+def test_abandoned_launcher_is_reaped_by_finalizer(monkeypatch, tmp_path):
+    """A Browser dropped without close()/terminate() (a forgotten await, an
+    exception that skips __aexit__) must not leak the Chrome process or its
+    temp profile forever — weakref.finalize is the safety net."""
+    import gc
+
+    exe = tmp_path / "chrome"
+    exe.touch()
+    monkeypatch.setenv("CHROME_EXECUTABLE", str(exe))
+    launcher = ChromeLauncher()
+
+    reaped = {}
+
+    class FakeProcess:
+        def terminate(self):
+            reaped["terminated"] = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            reaped["killed"] = True
+
+    user_data_dir = tmp_path / "abandoned_profile"
+    user_data_dir.mkdir()
+    launcher._process = FakeProcess()
+    launcher._user_data_dir = str(user_data_dir)
+
+    # No terminate() call — simulate the caller simply dropping the launcher.
+    del launcher
+    gc.collect()
+
+    assert reaped.get("terminated") is True, "abandoned launcher's process was never reaped"
+    assert not user_data_dir.exists(), "an abandoned launcher leaked its temp profile"
