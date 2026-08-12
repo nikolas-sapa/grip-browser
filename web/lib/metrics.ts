@@ -34,7 +34,41 @@ export const PACKAGE = {
   pypi: "https://pypi.org/project/grip-browser/",
   github: "https://github.com/nikolas-sapa/grip-browser",
   results: "https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_AB.md",
+  taskBenchmark:
+    "https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_LLM_LOOP.md",
+  mcpDoc: "https://github.com/nikolas-sapa/grip-browser/blob/main/docs/mcp.md",
 } as const;
+
+/**
+ * Task-completion benchmark, a real model in the loop scoring whether a task
+ * actually finished. Source: benchmarks/RESULTS_LLM_LOOP.md, 2026-08-11/12,
+ * 30-task synthetic corpus (form/SPA/wizard), grip vs browser-use, both
+ * driven through headless `claude -p`.
+ *
+ * The grip and browser-use numbers were NOT run on the same code at the same
+ * time: browser-use's 30 rows predate grip's SPA fix (commit 2886d34); grip's
+ * 30 rows are a full re-run after it. That is the load-bearing caveat and it
+ * ships with every use of this object, not as an afterthought.
+ */
+export const TASK_BENCHMARK = {
+  doc: "benchmarks/RESULTS_LLM_LOOP.md",
+  firstRun: { grip: "20/30", pct: "66.7%" },
+  postFix: { grip: "30/30", pct: "100%" },
+  browseruse: { score: "24/30", pct: "80.0%" },
+  categories: [
+    { label: "form", grip: "10/10", browseruse: "10/10" },
+    { label: "SPA", grip: "10/10", browseruse: "7/10" },
+    { label: "wizard", grip: "10/10", browseruse: "7/10" },
+  ],
+  speed: { medianOfRatios: "19.13x", low: "1.65x", high: "49.95x", n: 24 },
+  cost: { medianOfRatios: "7.17x", low: "0.85x", high: "21.80x", n: 22 },
+} as const;
+
+export const TASK_BENCHMARK_FIX =
+  "The first full run: grip lost, 20/30 against browser-use's 24/30, on a 0/10 SPA shutout. gripIsCandidate() (grip/cdp/shadow.py) only admits elements with an interactive tag or ARIA role to the snapshot, so the SPA fixtures' non-semantic <div> click targets never got a ref to click. The fix (commit 2886d34, grip/page.py) adds a bounded DOMDebugger.getEventListeners probe, capped at 2 seconds, that only trusts a real click listener. grip was then re-run in full on the fixed code — the numbers above are that re-run.";
+
+export const TASK_BENCHMARK_CAVEAT =
+  "This is a limited-credibility result, not an independent audit. The fixtures are synthetic and self-hosted in grip's own repo, and the fix that produced grip's score was developed after seeing these exact failures — it is a general mechanism (any element with a click listener), not a fixture-specific patch, but it has only been validated against the fixtures it was built to pass. Both arms ran through headless `claude -p` CLI sessions, each paying a fixed session overhead on top of token cost, so the cost figures are not comparable to real API pricing.";
 
 export type Ratio = {
   /** Median of the per-scenario ratios. */

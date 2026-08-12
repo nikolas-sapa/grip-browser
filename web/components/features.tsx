@@ -2,8 +2,12 @@ import {
   Cable,
   Crosshair,
   Layers,
+  ListChecks,
+  Save,
   ScrollText,
   ShieldAlert,
+  ShieldX,
+  Upload,
   Waypoints,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -55,6 +59,30 @@ const FEATURES: Feature[] = [
     body: "Every open() gets its own tab and its own CDP connection, so pages run in parallel. Every action is recorded with its timing and token cost and can be written out as a JSONL audit log.",
     span: "lg:col-span-12",
   },
+  {
+    icon: Upload,
+    title: "File upload and download",
+    body: "upload() resolves a file input the same way click() resolves a button, and enable_downloads() redirects a page's downloads to a directory grip watches instead of dropping them in the OS default.",
+    span: "lg:col-span-6",
+  },
+  {
+    icon: ListChecks,
+    title: "Real <select> support",
+    body: "select() matches an option by visible text first, then its value attribute, then a unique substring, and dispatches input/change — the same ladder click() and type() use for everything else.",
+    span: "lg:col-span-6",
+  },
+  {
+    icon: ShieldX,
+    title: "Fail-closed by default",
+    body: "NavigationPolicy blocks http(s) to private, loopback and link-local addresses, and the cloud metadata endpoints specifically, before a page ever loads. Private, file:// and popup access are opt-in per Browser, not on by default.",
+    span: "lg:col-span-7",
+  },
+  {
+    icon: Save,
+    title: "Session persistence across runs",
+    body: "save_session()/load_session() carry cookies and localStorage together, so a login survives closing the browser and starting a new one.",
+    span: "lg:col-span-5",
+  },
 ];
 
 export function Features() {
@@ -62,7 +90,7 @@ export function Features() {
     <section className="px-6 py-24 sm:py-32">
       <div className="mx-auto max-w-6xl">
         <Reveal>
-          <Eyebrow index="05">Capabilities</Eyebrow>
+          <Eyebrow index="07">Capabilities</Eyebrow>
           <SectionHeading>Built for the loop, not for the test suite.</SectionHeading>
           <Lede>
             Everything here exists because an agent needed it mid-run: a page that

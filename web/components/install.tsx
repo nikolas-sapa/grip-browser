@@ -9,6 +9,7 @@ const EXTRAS = [
   { command: "pip install grip-browser", note: "core" },
   { command: "pip install grip-browser[anthropic]", note: "with the Anthropic adapter" },
   { command: "pip install grip-browser[openai]", note: "with the OpenAI adapter" },
+  { command: "pip install grip-browser[gemini]", note: "with the Gemini adapter" },
 ];
 
 export function Install() {
@@ -18,7 +19,7 @@ export function Install() {
         <div className="grid gap-12 lg:grid-cols-12 lg:gap-16">
           <div className="min-w-0 lg:col-span-5">
             <Reveal>
-              <Eyebrow index="07">Install</Eyebrow>
+              <Eyebrow index="10">Install</Eyebrow>
               <SectionHeading>Python 3.11+ and a Chrome.</SectionHeading>
               <Lede>
                 grip finds Chrome or Chromium automatically, and falls back to the
@@ -71,6 +72,21 @@ export function Install() {
                   </div>
                 ))}
               </div>
+            </Reveal>
+
+            <Reveal delay={0.1}>
+              <p className="mt-4 text-[13px] leading-[1.65] text-muted-foreground">
+                No Anthropic, OpenAI or Gemini key on hand? Pass{" "}
+                <code className="font-mono text-[12.5px] text-foreground">
+                  base_url
+                </code>{" "}
+                to the OpenAI adapter (or set{" "}
+                <code className="font-mono text-[12.5px] text-foreground">
+                  OPENAI_BASE_URL
+                </code>
+                ) and point it at any OpenAI-compatible endpoint: Ollama,
+                vLLM, LM Studio, OpenRouter.
+              </p>
             </Reveal>
 
             <Reveal delay={0.12}>

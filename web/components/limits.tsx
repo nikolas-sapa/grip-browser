@@ -10,7 +10,7 @@ export function Limits() {
         <div className="grid gap-12 lg:grid-cols-12 lg:gap-16">
           <div className="min-w-0 lg:col-span-5">
             <Reveal>
-              <Eyebrow index="06">Limits</Eyebrow>
+              <Eyebrow index="09">Limits</Eyebrow>
               <SectionHeading>What grip will not do for you.</SectionHeading>
               <Lede>
                 The README and the security policy are candid about the edges of
