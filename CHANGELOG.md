@@ -4,7 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.7.0] - 2026-08-12
+
+### Added
+
+- **Non-semantic clickable element discovery.** Elements with a JS click
+  listener but no interactive tag or ARIA role (e.g. a `<div>` with
+  `addEventListener('click')`) are now found and clickable by description.
+  Detection uses CDP `DOMDebugger.getEventListeners`, bounded by a cheap
+  scoring pass (`PRE_RANK_LIMIT=150`) with listener probes only on survivors
+  (`MAX_LISTENER_PROBE_NODES=40`), issued concurrently. Measured snapshot
+  latency cost: Wikipedia 8.5ms → 10.7ms, Hacker News 9.1ms → 12.5ms, no
+  token-count change on pages without such elements.
+- **`allow_popups` on `NavigationPolicy`** (default `False` — existing secure
+  behaviour unchanged). Opting in disables popup blocking; the popup's CDP
+  target has no Fetch interception, so `NavigationPolicy` is not enforced
+  inside it.
 
 ### Changed
 
@@ -12,13 +27,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unreviewed side effect of v0.6.0.** `window.open()`/`target="_blank"` still
   fails under the default policy — that has not changed — but it is now a
   documented choice (`NavigationPolicy(allow_popups=True)` / `Browser(...,
-  allow_popups=True)`) rather than a silent one. Opting in permits popups at
-  the cost of the same protection blocking existed for: the popup's CDP
-  target has no Fetch interception, so `NavigationPolicy` is not enforced
-  inside it.
-- A blocked popup is no longer silent. It now logs a `WARNING` explaining why
-  nothing happened and is counted on `Page.popups_blocked`, and each block is
+  allow_popups=True)`) rather than a silent one.
+- A blocked popup is no longer silent. It now logs a `WARNING` naming the URL
+  and the flag, is counted on `Page.popups_blocked`, and each block is
   recorded as a `"popup_blocked"` entry in `Page`'s `Trace`.
+
+### Known limitations
+
+- Click listeners attached to an ancestor (event delegation) are not
+  detected; `getEventListeners` at the node cannot see them.
+- `click_at` remains unregistered as an agent tool by design — it takes
+  coordinates, which a model without vision cannot usefully produce.
 
 ## [0.6.0] - 2026-08-10
 

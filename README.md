@@ -147,6 +147,8 @@ CONTENT:
 
 **1,998 tokens per snapshot, median** across those 8 pages on 2026-08-10, but the range is 50 to 19,946 and the median is not what you should budget for. example.com, the smallest page on the web, is 50 tokens. The Wikipedia article on Python is 19,946 — against 459,193 raw.
 
+grip also finds elements a plain tag/ARIA scan misses: a `<div>` with a JS click listener and no interactive tag or role is detected via CDP `DOMDebugger.getEventListeners` and made clickable by description, same as a real button.
+
 ---
 
 ## Quick start
