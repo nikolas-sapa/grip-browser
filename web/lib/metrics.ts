@@ -238,10 +238,6 @@ export const limits = [
     body: "It did not used to be. On a click-driven navigation where the reported URL trailed the document, grip diffed two unrelated pages and emitted 5,701 tokens where the full snapshot was 2,963, in 5 of 16 runs. grip's own benchmark caught it, not a user, and it is now guarded twice: is_worth_sending() makes a delta that is not meaningfully smaller than the full snapshot lose to it, and _is_restamped_document() compares the elements behind shared handles, because a handle stamped per document names a different element once the document restarts. The Hacker News case that motivated it scored 0.04 agreement.",
   },
   {
-    title: "Unlabelled inputs: fixed",
-    body: "The form-fill scenario addresses inputs by ref (e1, e2) rather than by label, because httpbin's form carries its labels as sibling text and every input reaches the snapshot with an empty label. Shipped in 0.8.0: a fallback chain for exactly this case — label-for/wrapping label, aria-label, placeholder, title, sibling text, then a humanized name/id — so the same input becomes addressable by label.",
-  },
-  {
     title: "Narrow on purpose",
     body: "Playwright and Puppeteer are broader automation frameworks with cross-browser support and huge ecosystems. grip does one thing: feed a model the smallest useful view of a page. For human-driven cross-browser E2E testing, use Playwright.",
   },

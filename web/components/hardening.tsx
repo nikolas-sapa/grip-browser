@@ -18,7 +18,7 @@ const HARDENING = [
   },
   {
     title: "Newly visible",
-    body: "Element state — disabled, required, checked, selected, value — is in the snapshot now, along with scroll position and page height. iframes surface as rows, closed shadow roots are readable (attachShadow is patched before navigation), and canvas and labelled SVG are candidates. Comboboxes are recognized as a distinct control.",
+    body: "Element state — disabled, required, checked, selected, value — is in the snapshot now, along with scroll position and page height. iframes surface as rows, closed shadow roots are readable (attachShadow is patched before navigation), and canvas and labelled SVG are candidates. Comboboxes are recognized as a distinct control. Inputs whose label is only sibling text — the httpbin case, previously addressable by ref alone — now resolve a label through a fallback chain: label-for or wrapping label, aria-label, placeholder, title, sibling text, then a humanized name or id.",
   },
   {
     title: "New capabilities",
