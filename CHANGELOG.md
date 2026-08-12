@@ -4,6 +4,125 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] - 2026-08-12
+
+Three audits of the agent-facing surface (ergonomics, browser capability
+coverage, robustness), then the fixes. Most of these are defects an
+autonomous agent hits and a human driver routes around.
+
+### Security
+
+- **Typed passwords no longer reach snapshot text, the model, or trace
+  output.** `gripOwnText` fell through to `el.value` for password inputs.
+  The value-capture path and the accessible-text path now share one
+  exclusion set, so the two cannot drift apart.
+- **Page-authored element handles can no longer collide with grip's.**
+  A page could pre-author `data-grip-h` to shadow a live handle or break
+  selector resolution; handles are only trusted if grip minted them this
+  session, and selectors go through `CSS.escape`.
+- **Downloads landing outside the configured directory are dropped.**
+
+### Fixed — actions that reported success while doing nothing
+
+- **`click()` returned ok on disabled, off-screen and overlay-covered
+  elements.** It now hit-tests at the element centre and names the
+  occluding element when something is in the way.
+- **`type()` bypassed React/Vue value trackers** (raw `el.value` assignment,
+  no key events, so typeahead never fired) and still reported success. It
+  now uses the native value setter, brackets the write with key events, and
+  verifies the value took.
+- **Every action snapshotted before the page settled**, so a click that
+  navigated returned the pre-click page and the agent clicked again.
+- **`CONTENT` was truncated at 2000 characters with no marker**, so the
+  agent believed it had read the whole page.
+- **`page_error` and `prompt_injection` were computed and then dropped** in
+  rendering: an agent blocked by an anti-bot wall or auth wall was told
+  nothing at all.
+
+### Fixed — wrong element, wrong conclusion
+
+- **`click("Save")` could hit "Save draft".** Exact match now wins outright;
+  genuine ambiguity raises `AMBIGUOUS_TARGET` listing the candidates instead
+  of silently guessing.
+- **A stale ref from a previous document silently resolved to a different
+  element.** Refs from a superseded snapshot are now rejected with a
+  re-snapshot hint.
+- **Failed navigations returned as success.** `Page.navigate`'s `errorText`
+  was ignored and the load timeout was swallowed, so DNS failures and
+  connection refusals surfaced as a loaded page with status 0.
+- **A browser crash was re-classified by string match into
+  `ELEMENT_NOT_FOUND`**, looping the agent straight back into a dead
+  connection. Typed errors are no longer re-classified.
+
+### Added — state and content agents could not see
+
+- **Element state in the snapshot**: `disabled`, `required`, `checked`,
+  `selected` and `value` (password values excluded). Verifying that a box
+  is ticked or a submit button is enabled is most of task verification.
+- **Inputs labelled only by sibling text are now addressable by label**,
+  via an inference chain (label-for/wrapping label, `aria-label`,
+  placeholder, title, sibling text, humanized name/id).
+- **Scroll position and page height**, plus `scroll()` targeting the
+  nearest scrollable ancestor rather than only the window, so inner panes,
+  virtual lists and infinite scroll can be reached.
+- **Closed shadow roots**, via an `attachShadow` patch installed before
+  navigation. They were previously invisible with no signal.
+- **iframes** surfaced as rows (no cross-frame traversal yet), **canvas**
+  rects and **labelled SVG**, and **comboboxes** with their options.
+
+### Added — capabilities
+
+- **JavaScript dialogs are handled by policy.** Nothing subscribed to
+  `Page.javascriptDialogOpening`, so an `alert()`/`confirm()` froze the tab
+  until timeout.
+- **`wait_for()`** for a text/ref condition, and same-document navigation
+  now invalidates the cached snapshot, so `pushState` no longer leaves a
+  stale one behind.
+- **`hover()`**, for menus that only open on pointer events.
+- **`select()` falls back to open, re-snapshot, pick** for non-native
+  comboboxes instead of failing outright.
+- **Conservative cookie-banner dismissal**, once per navigation.
+- **File-chooser interception**, for drop zones that create the input on
+  click, and **popup adoption** for OAuth flows.
+- **Viewport and device emulation**, and **permission control** with
+  notifications and geolocation denied by default so a prompt cannot stall
+  a task.
+
+### Fixed — MCP
+
+- **The server died on every tool call when an LLM SDK was not installed.**
+  The adapter was resolved eagerly at browser construction, so `open` and
+  `click` — which need no model — failed with an `ImportError` on any host
+  that sets provider keys without grip's optional extras. It is now
+  resolved lazily, only for the `run` tool.
+- **`press`, `upload`, `links`, `popups_blocked`, `wait_for`, `hover` and
+  `scroll` exposed**; several existed in the Python API but not over MCP.
+- **Error recovery hints now reach the client** instead of being dropped at
+  the MCP boundary.
+- **`screenshot` returns an image block** rather than raw base64 as tool
+  text.
+- **Overlapping tool calls could act on the wrong tab**; calls are
+  serialized.
+
+### Fixed — robustness
+
+- **The Chrome process and temp profile leaked whenever `kill()` timed
+  out**, and on any teardown path that was not an explicit `close()`.
+- **CDP commands had a fixed 30s timeout with no override.**
+- **Crashes and socket drops surfaced as a generic `ConnectionError`**;
+  both now map to a typed `BROWSER_CRASHED`.
+- **`Fetch.enable` paused every subresource** to enforce a policy that only
+  concerns navigations.
+- **The trace grew unbounded** on a long-lived server.
+
+### Still not done
+
+Cross-origin iframe traversal (iframes are surfaced, not entered), TLS/JA3
+fingerprint parity (below the DevTools Protocol, unreachable from a Python
+client), and challenge solve rates remain unmeasured. `enable_downloads` is
+deliberately not exposed over MCP: it would let a client create a directory
+at an arbitrary server-side path.
+
 ## [0.7.0] - 2026-08-12
 
 ### Added
