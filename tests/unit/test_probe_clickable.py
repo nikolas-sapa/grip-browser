@@ -51,7 +51,8 @@ def test_probe_uses_cursor_pointer_as_one_signal_not_the_gate():
     fn_body = PROBE_CLICKABLE_JS[PROBE_CLICKABLE_JS.index("function gripCollectProbeCandidates"):]
     assert "cursor" in fn_body
     # Not an early-return/if-gate on cursor: it only adds to an existing score.
-    assert "if (style.cursor" not in fn_body.replace("if (style.cursor === 'pointer') score += 2;", "")
+    scored_only = fn_body.replace("if (style.cursor === 'pointer') score += 2;", "")
+    assert "if (style.cursor" not in scored_only
 
 
 class _FakeListenersEngine:
@@ -67,7 +68,8 @@ class _FakeListenersEngine:
     async def send(self, method: str, params: dict | None = None) -> dict:
         params = params or {}
         self.calls.append((method, params))
-        if method == "Runtime.evaluate" and "gripCollectProbeCandidates" in params.get("expression", ""):
+        expr = params.get("expression", "")
+        if method == "Runtime.evaluate" and "gripCollectProbeCandidates" in expr:
             return {"result": {"value": self._probe_json}}
         if method == "Runtime.evaluate":
             # _resolve_probe_object_ids: resolves each handle to a fake objectId.
@@ -95,22 +97,22 @@ async def test_container_with_no_click_listener_is_not_collected():
     own text, so gripHasOwnText passed) but that never registered a click
     listener must not reach the snapshot."""
     probe = json.dumps([
-        {"handle": "h_real", "tag": "div", "role": "div", "text": "Item 1-4",
+        {"handle": "h1", "tag": "div", "role": "div", "text": "Item 1-4",
          "inShadowDom": False, "cx": 10, "cy": 20},
-        {"handle": "h_container", "tag": "span", "role": "span", "text": "Page 1",
+        {"handle": "h2", "tag": "span", "role": "span", "text": "Page 1",
          "inShadowDom": False, "cx": 30, "cy": 40},
     ])
     engine = _FakeListenersEngine(
         probe_json=probe,
         listeners_by_handle={
-            "h_real": [{"type": "click"}],
-            "h_container": [],  # no listener at all
+            "h1": [{"type": "click"}],
+            "h2": [],  # no listener at all
         },
     )
     page = Page(engine=engine, trace=Trace())
     out = await page._discover_probe_elements()
     handles = {el.handle for el in out}
-    assert handles == {"h_real"}
+    assert handles == {"h1"}
 
 
 @pytest.mark.asyncio
@@ -118,12 +120,12 @@ async def test_non_click_listener_alone_does_not_count():
     """mousedown/pointerdown-only elements (drag handles, etc.) are excluded
     rather than guessed at — only an actual 'click' listener counts."""
     probe = json.dumps([
-        {"handle": "h_drag", "tag": "div", "role": "div", "text": "Drag me",
+        {"handle": "h3", "tag": "div", "role": "div", "text": "Drag me",
          "inShadowDom": False, "cx": 0, "cy": 0},
     ])
     engine = _FakeListenersEngine(
         probe_json=probe,
-        listeners_by_handle={"h_drag": [{"type": "mousedown"}, {"type": "pointerdown"}]},
+        listeners_by_handle={"h3": [{"type": "mousedown"}, {"type": "pointerdown"}]},
     )
     page = Page(engine=engine, trace=Trace())
     out = await page._discover_probe_elements()

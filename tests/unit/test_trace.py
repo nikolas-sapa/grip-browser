@@ -20,7 +20,7 @@ def make_entry(action="click", tokens=50, duration=120, error=None):
 
 def test_trace_starts_empty():
     t = Trace()
-    assert t.actions == []
+    assert list(t.actions) == []
     assert t.total_tokens == 0
     assert t.total_duration_ms == 0
 
@@ -99,3 +99,28 @@ def test_to_jsonl_writes_file():
     assert len(lines) == 1
     record = json.loads(lines[0])
     assert record["action"] == "click"
+
+
+def test_actions_capped_at_max_actions():
+    t = Trace(max_actions=3)
+    for i in range(10):
+        t.add(make_entry(action=f"click-{i}"))
+    assert len(t.actions) == 3
+    # Oldest entries are dropped first; the most recent survive.
+    assert [e.action for e in t.actions] == ["click-7", "click-8", "click-9"]
+
+
+def test_totals_stay_exact_after_actions_age_out():
+    t = Trace(max_actions=2)
+    for _ in range(5):
+        t.add(make_entry(tokens=10, duration=1))
+    assert t.total_tokens == 50
+    assert t.total_duration_ms == 5
+    assert len(t.actions) == 2
+
+
+def test_default_max_actions_is_reasonably_bounded():
+    t = Trace()
+    for i in range(2000):
+        t.add(make_entry(action=f"a{i}"))
+    assert len(t.actions) < 2000

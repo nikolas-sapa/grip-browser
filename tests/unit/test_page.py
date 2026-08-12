@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 import json
 import pytest
@@ -6,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from grip.compression.summarizer import Element, PageSnapshot
 from grip.errors import GripError
 from grip.errors.types import ErrorType
-from grip.page import Page
+from grip.page import Page, ScrollPosition
 from grip.cdp.engine import CDPEngine
 from grip.security.policy import NavigationPolicy
 from grip.trace import Trace
@@ -43,6 +44,8 @@ async def test_snapshot_returns_page_snapshot():
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "button", "role": "button", "text": "Buy",
@@ -50,6 +53,7 @@ async def test_snapshot_returns_page_snapshot():
                 "cx": 100, "cy": 50,
                 "computedDisplay": "block", "computedVisibility": "visible",
                 "computedOpacity": "1", "ariaHidden": False, "width": 80, "height": 30,
+                "handle": "h1",
             }
         ])}},
         {"result": {"value": "Buy our products"}},
@@ -63,19 +67,162 @@ async def test_snapshot_returns_page_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_does_not_reclassify_an_already_typed_grip_error(monkeypatch):
+    """A GripError raised from inside the gather (e.g. BROWSER_CRASHED from a
+    lost CDP connection) must reach the caller unchanged — the blanket
+    `except Exception` below it exists for untyped CDP errors, and
+    re-classifying an already-typed one by string-matching str(e) would
+    downgrade a browser crash to ELEMENT_NOT_FOUND/RE_SNAPSHOT, looping the
+    caller straight back into the dead connection."""
+    from grip.errors.types import BrowserError, RecoveryAction
+
+    page = Page(engine=make_cdp_mock(), trace=Trace())
+    crash = GripError(BrowserError(
+        type=ErrorType.BROWSER_CRASHED,
+        message="CDP connection lost: it's gone",
+        confidence=0.9,
+        recovery=[RecoveryAction.RETRY],
+    ))
+
+    async def fake_discover():
+        raise crash
+
+    # The other gather members aren't cancelled just because this one raised
+    # (plain asyncio.gather doesn't do that) — stub them too so the test
+    # exercises only the except-clause behaviour, not stray unmocked CDP
+    # calls racing alongside it.
+    monkeypatch.setattr(page, "_discover_elements", fake_discover)
+    monkeypatch.setattr(page, "_get_page_text", AsyncMock(return_value=""))
+    monkeypatch.setattr(page, "_get_page_info", AsyncMock(return_value=("", "")))
+    monkeypatch.setattr(page, "_discover_probe_elements", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        page, "_get_scroll_metrics", AsyncMock(return_value=ScrollPosition(0, 0, 0, 0, 0, 0))
+    )
+    with pytest.raises(GripError) as exc:
+        await page.snapshot()
+    assert exc.value.error.type is ErrorType.BROWSER_CRASHED
+    assert exc.value is crash
+
+
+@pytest.mark.asyncio
+async def test_element_with_page_authored_handle_is_dropped():
+    """gripStamp() (grip/cdp/shadow.py) reuses a data-grip-h attribute a page
+    already set rather than overwriting it, so a page can hand back an
+    arbitrary string as a "handle" — and every place that turns a handle
+    into a querySelector('[data-grip-h="..."]') string builds it by JS-side
+    concatenation. A handle that isn't gripStamp's own 'h' + digits format
+    is dropped before it can reach one of those queries."""
+    engine = make_cdp_mock()
+    engine.send.side_effect = [
+        {},   # Runtime.enable
+        {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
+        {"result": {"value": json.dumps([
+            {
+                "index": 0, "tag": "button", "role": "button", "text": "Buy",
+                "placeholder": None, "inShadowDom": False, "cx": 100, "cy": 50,
+                "handle": 'h1"] , img[src=x onerror=alert(1)',  # not h\d+
+            },
+            {
+                "index": 1, "tag": "button", "role": "button", "text": "Legit",
+                "placeholder": None, "inShadowDom": False, "cx": 100, "cy": 50,
+                "handle": "h2",
+            },
+        ])}},
+        {"result": {"value": ""}},
+        {"targetInfo": {"title": "Shop", "url": "https://shop.com"}},
+        {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
+        {"result": {"value": "{}"}},  # scroll metrics
+    ]
+    page = Page(engine=engine, trace=Trace())
+    snapshot = await page.snapshot()
+    assert [el.text for el in snapshot.elements] == ["Legit"]
+
+
+@pytest.mark.asyncio
+async def test_element_interaction_state_is_wired_through_to_the_snapshot():
+    """gripElementState (grip/cdp/shadow.py) emits disabled/required/checked/
+    selected/value alongside identity — RawElement (grip/security/sanitizer.py)
+    and this construction site have to actually forward them, or the whole
+    feature silently renders every element as "no state known" regardless of
+    what DISCOVER_ELEMENTS_JS reported. A password field's value is withheld
+    by the JS itself (no "value" key at all) — confirmed here by its absence
+    surviving as None, not by any redaction happening in this file."""
+    engine = make_cdp_mock()
+    engine.send.side_effect = [
+        {},   # Runtime.enable
+        {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
+        {"result": {"value": json.dumps([
+            {
+                "index": 0, "tag": "input", "role": "checkbox", "text": "Agree",
+                "placeholder": None, "inShadowDom": False, "cx": 0, "cy": 0,
+                "handle": "h1",
+                "disabled": True, "required": True, "checked": True,
+                "selected": None, "value": None,
+            },
+            {
+                "index": 1, "tag": "input", "role": "textbox", "text": "Search",
+                "placeholder": None, "inShadowDom": False, "cx": 0, "cy": 0,
+                "handle": "h2",
+                "disabled": False, "required": False, "checked": None,
+                "selected": None, "value": "hello",
+            },
+            {
+                "index": 2, "tag": "input", "role": "textbox", "text": "Password",
+                "placeholder": None, "inShadowDom": False, "cx": 0, "cy": 0,
+                "handle": "h3",
+                "disabled": False, "required": False, "checked": None,
+                "selected": None,
+                # No "value" key at all — gripElementState withholds it for
+                # password inputs; there is nothing here to redact.
+            },
+        ])}},
+        {"result": {"value": ""}},
+        {"targetInfo": {"title": "Form", "url": "https://x.test"}},
+        {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
+        {"result": {"value": "{}"}},  # scroll metrics
+    ]
+    page = Page(engine=engine, trace=Trace())
+    snapshot = await page.snapshot()
+    checkbox, search, password = snapshot.elements
+    assert (checkbox.disabled, checkbox.required, checkbox.checked) == (True, True, True)
+    assert search.value == "hello"
+    assert password.value is None
+
+    # The full boundary: raw discovery dict -> RawElement (security/sanitizer.py)
+    # -> Element (compression/summarizer.py) -> the rendered snapshot text an
+    # agent actually reads. A test asserting only on Element attributes can
+    # pass while format() still renders nothing — this is the render path
+    # Runner/mcp.server actually send.
+    from grip.compression.summarizer import Summarizer
+
+    rendered = Summarizer().format(snapshot)
+    assert "(disabled, required, checked)" in rendered
+    assert '="hello"' in rendered
+    assert "secret" not in rendered and "hunter2" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_snapshot_increments_version():
     engine = make_cdp_mock()
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": "[]"}},
         {"result": {"value": ""}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
         {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
+        {"result": {"value": "{}"}},  # scroll metrics
         {"result": {"value": "[]"}},
         {"result": {"value": ""}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
         {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
+        {"result": {"value": "{}"}},  # scroll metrics
     ]
     page = Page(engine=engine, trace=Trace())
     s1 = await page.snapshot()
@@ -91,9 +238,38 @@ async def test_click_raises_element_stale_when_handle_gone(monkeypatch):
         return {"result": {"value": {"ok": False, "reason": "not_found"}}}
 
     monkeypatch.setattr(page._engine, "send", fake_send)
+    # click()'s one-shot retry-after-stale re-snapshots on "not_found" before
+    # giving up (Page._retry_after_stale) — stub snapshot() itself rather than
+    # letting the retry drive a real CDP round trip through a fixture that
+    # only knows how to answer the click dispatch. The button is still there
+    # on the re-snapshot; it's the dispatch that keeps failing.
+    monkeypatch.setattr(page, "snapshot", AsyncMock(return_value=page._current_snapshot))
     with pytest.raises(GripError) as exc:
         await page.click("Buy")
     assert exc.value.error.type is ErrorType.ELEMENT_STALE
+
+
+@pytest.mark.asyncio
+async def test_click_recovers_after_one_stale_retry(monkeypatch):
+    """The other half of the retry: a same-document re-render that only
+    fails once (the common SPA case) must succeed on the retry rather than
+    raising — this is the whole point of Page._retry_after_stale existing."""
+    page = _page_with_snapshot([_el(index=0, handle="h1", tag="button", text="Buy")])
+    outcomes = iter([
+        {"ok": False, "reason": "not_found"},
+        {"ok": True, "reason": ""},
+    ])
+    calls = []
+
+    async def fake_send(method, params=None):
+        calls.append(method)
+        return {"result": {"value": next(outcomes)}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    monkeypatch.setattr(page, "snapshot", AsyncMock(return_value=page._current_snapshot))
+    monkeypatch.setattr(page, "_settle", AsyncMock())
+    await page.click("Buy")  # must not raise
+    assert calls.count("Runtime.evaluate") == 2, "expected one retry dispatch"
 
 
 @pytest.mark.asyncio
@@ -110,14 +286,229 @@ async def test_type_raises_when_target_not_typable(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_click_exact_text_wins_over_a_substring_match(monkeypatch):
+    """click("Save") must click the button literally labeled "Save" even
+    though "Save draft" also substring-matches — exact text wins outright,
+    ahead of the substring tier, so ambiguity never even gets evaluated."""
+    page = _page_with_snapshot([
+        _el(index=0, handle="h1", tag="button", text="Save"),
+        _el(index=1, handle="h2", tag="button", text="Save draft"),
+    ])
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {"ok": True, "reason": ""}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    monkeypatch.setattr(page, "_settle", AsyncMock())
+    match = page._find_element("Save")
+    assert match is not None and match.handle == "h1"
+    await page.click("Save")  # no GripError
+
+
+@pytest.mark.asyncio
+async def test_click_raises_ambiguous_target_when_no_exact_match_exists():
+    """Ambiguity only fires once nothing exact resolves it: two substring
+    matches, neither exactly "Delete", must be reported rather than guessed
+    at (first-match-in-document-order previously let this silently hit the
+    wrong row)."""
+    page = _page_with_snapshot([
+        _el(index=0, handle="h1", tag="button", text="Delete row 1"),
+        _el(index=1, handle="h2", tag="button", text="Delete row 2"),
+    ])
+    with pytest.raises(GripError) as exc:
+        await page.click("Delete")
+    assert exc.value.error.type is ErrorType.AMBIGUOUS_TARGET
+    assert "e1" in exc.value.error.message
+    assert "e2" in exc.value.error.message
+
+
+@pytest.mark.asyncio
+async def test_click_exact_ref_wins_despite_fuzzy_ambiguity(monkeypatch):
+    """Precedence is unchanged for a caller that already knows the ref: an
+    exact ref match returns immediately, even though "Save" alone would be
+    ambiguous against the same snapshot."""
+    page = _page_with_snapshot([
+        _el(index=0, handle="h1", tag="button", text="Save"),
+        _el(index=1, handle="h2", tag="button", text="Save draft"),
+    ])
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {"ok": True, "reason": ""}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    await page.click("e2")  # no GripError
+
+
+@pytest.mark.asyncio
+async def test_click_raises_stale_ref_from_previous_document():
+    """A ref carried over in an agent's context from a page it has since
+    navigated away from must fail loudly, not silently resolve to whatever
+    now holds that number."""
+    # index=1 -> ref "e2", so "e1" (below) matches nothing on this page.
+    page = _page_with_snapshot([_el(index=1, handle="h2", tag="button", text="Buy")])
+    # Simulate what snapshot() does across a navigation: "e1" was issued once
+    # (to a since-gone element) and is never reused — see RefRegistry.reset().
+    page._refs._next = 3
+    with pytest.raises(GripError) as exc:
+        await page.click("e1")
+    assert exc.value.error.type is ErrorType.STALE_REF
+
+
+@pytest.mark.asyncio
+async def test_click_unknown_description_is_not_found_not_stale():
+    """A description that was never a ref at all stays ELEMENT_NOT_FOUND —
+    STALE_REF is reserved for text that actually looks like a past ref."""
+    page = _page_with_snapshot([_el(index=0, handle="h1", tag="button", text="Buy")])
+    with pytest.raises(GripError) as exc:
+        await page.click("Checkout")
+    assert exc.value.error.type is ErrorType.ELEMENT_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_settle_short_circuits_when_page_stops_changing(monkeypatch):
+    """A page that goes quiet returns from _settle() well before the cap —
+    two consecutive identical signatures end the wait, not the full timeout."""
+    page = _bare_page()
+
+    async def fake_signature():
+        return "quiet"
+
+    monkeypatch.setattr(page, "_page_signature", fake_signature)
+    start = time.monotonic()
+    await page._settle(timeout=0.5)
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.3, f"settle() did not short-circuit: {elapsed}s"
+
+
+@pytest.mark.asyncio
+async def test_settle_caps_wait_when_page_keeps_changing(monkeypatch):
+    """A page still mutating at the deadline is bounded by the cap, not left
+    to poll forever."""
+    page = _bare_page()
+    counter = {"n": 0}
+
+    async def fake_signature():
+        counter["n"] += 1
+        return f"sig-{counter['n']}"  # always different: never settles
+
+    monkeypatch.setattr(page, "_page_signature", fake_signature)
+    start = time.monotonic()
+    await page._settle(timeout=0.15)
+    elapsed = time.monotonic() - start
+    assert 0.15 <= elapsed < 0.3
+
+
+@pytest.mark.asyncio
+async def test_click_settles_after_a_successful_action(monkeypatch):
+    """A successful click waits for _settle() before returning, so the
+    runner's follow-up snapshot() doesn't see the pre-change page."""
+    page = _page_with_snapshot([_el(index=0, handle="h1", tag="button", text="Buy")])
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {"ok": True, "reason": ""}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    settled = {"called": False}
+
+    async def fake_settle(timeout=None):
+        settled["called"] = True
+
+    monkeypatch.setattr(page, "_settle", fake_settle)
+    await page.click("Buy")
+    assert settled["called"]
+
+
+@pytest.mark.asyncio
+async def test_click_does_not_settle_after_a_failed_action(monkeypatch):
+    """No point waiting for the page to react to an action that never
+    happened — and it would only add latency to an already-failing call."""
+    page = _page_with_snapshot([_el(index=0, handle="h1", tag="button", text="Buy")])
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {"ok": False, "reason": "not_found"}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    settled = {"called": False}
+
+    async def fake_settle(timeout=None):
+        settled["called"] = True
+
+    monkeypatch.setattr(page, "_settle", fake_settle)
+    with pytest.raises(GripError):
+        await page.click("Buy")
+    assert not settled["called"]
+
+
+@pytest.mark.asyncio
+async def test_scroll_by_direction(monkeypatch):
+    page = _bare_page()
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {
+            "ok": True, "x": 0, "y": 800,
+            "pageHeight": 4000, "pageWidth": 1200,
+            "viewportHeight": 800, "viewportWidth": 1200,
+        }}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    page._current_snapshot = PageSnapshot(
+        version=1, url="https://x.test", title="t", elements=[],
+        text_content="", tokens_estimated=0,
+    )
+    pos = await page.scroll("down", pages=1.0)
+    assert pos.y == 800
+    assert pos.page_height == 4000
+
+
+@pytest.mark.asyncio
+async def test_scroll_rejects_unknown_direction():
+    page = _bare_page()
+    page._current_snapshot = PageSnapshot(
+        version=1, url="https://x.test", title="t", elements=[],
+        text_content="", tokens_estimated=0,
+    )
+    with pytest.raises(ValueError):
+        await page.scroll("sideways")
+
+
+@pytest.mark.asyncio
+async def test_scroll_to_ref(monkeypatch):
+    page = _page_with_snapshot([_el(index=0, handle="h1", tag="a", text="Footer link")])
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {
+            "ok": True, "x": 0, "y": 3000,
+            "pageHeight": 4000, "pageWidth": 1200,
+            "viewportHeight": 800, "viewportWidth": 1200,
+        }}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    pos = await page.scroll(ref="e1")
+    assert pos.y == 3000
+
+
+@pytest.mark.asyncio
+async def test_scroll_to_stale_ref_raises_element_stale(monkeypatch):
+    page = _page_with_snapshot([_el(index=0, handle="h1", tag="a", text="Footer link")])
+
+    async def fake_send(method, params=None):
+        return {"result": {"value": {"ok": False, "reason": "not_found"}}}
+
+    monkeypatch.setattr(page._engine, "send", fake_send)
+    with pytest.raises(GripError) as exc:
+        await page.scroll(ref="e1")
+    assert exc.value.error.type is ErrorType.ELEMENT_STALE
+
+
+@pytest.mark.asyncio
 async def test_select_succeeds_on_ok_outcome(monkeypatch):
     page = _page_with_snapshot(
         [_el(index=0, handle="h1", tag="select", text="Role")]
     )
-    seen = {}
+    seen = []
 
     async def fake_send(method, params=None):
-        seen["expression"] = (params or {}).get("expression", "")
+        seen.append((params or {}).get("expression", ""))
         return {"result": {"value": {"ok": True, "reason": ""}}}
 
     monkeypatch.setattr(page._engine, "send", fake_send)
@@ -125,8 +516,11 @@ async def test_select_succeeds_on_ok_outcome(monkeypatch):
     # The value the caller passed has to actually reach the generated
     # expression — this is the only layer a mocked engine can verify; the
     # text-vs-value precedence itself lives in _SELECT_OPTION_JS and is
-    # exercised for real in tests/integration.
-    assert json.dumps("Admin") in seen["expression"]
+    # exercised for real in tests/integration. A successful select() also
+    # runs _settle() afterwards (its own Runtime.evaluate calls), so this
+    # checks every expression sent rather than assuming select()'s own is
+    # the last one.
+    assert any(json.dumps("Admin") in expr for expr in seen)
 
 
 @pytest.mark.asyncio
@@ -177,6 +571,9 @@ async def test_select_raises_element_stale_when_handle_gone(monkeypatch):
         return {"result": {"value": {"ok": False, "reason": "not_found"}}}
 
     monkeypatch.setattr(page._engine, "send", fake_send)
+    # See test_click_raises_element_stale_when_handle_gone — select() retries
+    # once after a "not_found" outcome too.
+    monkeypatch.setattr(page, "snapshot", AsyncMock(return_value=page._current_snapshot))
     with pytest.raises(GripError) as exc:
         await page.select("Role", "Admin")
     assert exc.value.error.type is ErrorType.ELEMENT_STALE
@@ -205,7 +602,14 @@ async def test_goto_invalidates_cached_snapshot(monkeypatch):
     monkeypatch.setattr(page._engine, "send", fake_send)
     monkeypatch.setattr(page._engine, "on", lambda *a: None)
     monkeypatch.setattr(page._engine, "off", lambda *a: None)
-    await page.goto("https://y.test", timeout=0.01)
+    # Nothing here ever fires Page.loadEventFired, so this goto() times out
+    # with no response for the document — and now raises NETWORK_TIMEOUT
+    # (see test_goto_honours_its_own_timeout) rather than swallowing it. The
+    # cache-invalidation this test is about happens unconditionally before
+    # that, so it still holds even though the call itself raises.
+    with pytest.raises(GripError) as exc:
+        await page.goto("https://y.test", timeout=0.01)
+    assert exc.value.error.type is ErrorType.NETWORK_TIMEOUT
     assert page._current_snapshot is None
 
 
@@ -251,7 +655,13 @@ async def test_goto_still_navigates_when_target_is_on_another_url(monkeypatch):
     page = _bare_page()
     calls = _already_loaded_engine(page, monkeypatch, "about:blank")
 
-    await page.goto("https://y.test", timeout=0.05)
+    # Nothing in this fixture fires Page.loadEventFired, so this goto() times
+    # out with no response — and now raises (see
+    # test_goto_honours_its_own_timeout). Page.navigate having actually been
+    # sent is what this test is about; that call already happened by the
+    # time the timeout fires.
+    with contextlib.suppress(GripError):
+        await page.goto("https://y.test", timeout=0.05)
 
     assert "Page.navigate" in calls, "a loaded but different document must not short-circuit"
 
@@ -263,7 +673,8 @@ async def test_goto_still_navigates_when_document_is_still_loading(monkeypatch):
         page, monkeypatch, "https://y.test/", ready_state="loading"
     )
 
-    await page.goto("https://y.test", timeout=0.05)
+    with contextlib.suppress(GripError):
+        await page.goto("https://y.test", timeout=0.05)
 
     assert "Page.navigate" in calls
 
@@ -281,8 +692,14 @@ async def test_goto_honours_its_own_timeout(monkeypatch):
     monkeypatch.setattr(page._engine, "off", lambda *a: None)
 
     start = time.monotonic()
-    await page.goto("https://slow.test", timeout=0.05)
+    # No response ever comes back for the document, so this is exactly the
+    # "page never loaded" case Finding 5 is about: it must not return as if
+    # it had succeeded, so it raises a typed, caller-visible error instead of
+    # the old bare `except TimeoutError: pass`.
+    with pytest.raises(GripError) as exc:
+        await page.goto("https://slow.test", timeout=0.05)
     assert time.monotonic() - start < 2.0, "goto blocked past its timeout"
+    assert exc.value.error.type is ErrorType.NETWORK_TIMEOUT
 
 
 @pytest.mark.asyncio
@@ -356,7 +773,7 @@ async def test_goto_refuses_redirect_to_private_ip(monkeypatch):
     """A public URL that 302s to a private/metadata target must be refused too
     — the redirect leg pauses again at the Fetch domain and is failed before
     it is ever sent, not merely re-checked after Chrome already issued it."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
 
     async def navigate_side_effect():
@@ -395,7 +812,7 @@ async def test_post_load_fetch_to_private_ip_is_blocked(monkeypatch):
     Interception has to survive goto() returning — this fails on the old
     Network.requestWillBeSent listener, which was torn down in goto()'s
     finally the moment the load event fired."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
 
     async def navigate_side_effect():
@@ -429,7 +846,7 @@ async def test_blocked_subresource_does_not_raise_out_of_goto(monkeypatch):
     without turning into an exception out of goto() — pages legitimately pull
     in many third-party resources, and only the top-level document should
     fail the navigation."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
 
     async def navigate_side_effect():
@@ -454,11 +871,43 @@ async def test_blocked_subresource_does_not_raise_out_of_goto(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_enable_is_scoped_to_document_xhr_fetch(monkeypatch):
+    """"*" (any resourceType) paused every subresource — image, font, CSS —
+    each costing a Fetch.requestPaused round trip for a request
+    NavigationPolicy was never going to refuse. Only a document/XHR/fetch
+    URL can carry the caller to a private/metadata host, so those are the
+    only resourceTypes armed."""
+    engine, listeners, sent, _session_sent = _fetch_engine()
+    page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
+
+    async def navigate_side_effect():
+        for cb in listeners.get("Page.loadEventFired", []):
+            cb({})
+
+    orig_send = engine.send
+
+    async def fake_send(method, params=None):
+        if method == "Page.navigate":
+            await navigate_side_effect()
+        return await orig_send(method, params)
+
+    monkeypatch.setattr(engine, "send", fake_send)
+
+    await page.goto("https://public.test/", timeout=1.0)
+
+    _, fetch_enable_params = next(p for p in sent if p[0] == "Fetch.enable")
+    patterns = fetch_enable_params["patterns"]
+    resource_types = {p["resourceType"] for p in patterns}
+    assert resource_types == {"Document", "XHR", "Fetch"}
+    assert all(p["urlPattern"] == "*" for p in patterns)
+
+
+@pytest.mark.asyncio
 async def test_goto_allows_private_target_and_its_redirect_when_opted_in(monkeypatch):
     """allow_private=True permits both a direct private-IP target and a
     redirect leg landing on one — and skips Fetch interception entirely,
     since a permissive policy has nothing left for it to enforce."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy(allow_private=True))
 
     async def navigate_side_effect():
@@ -474,8 +923,13 @@ async def test_goto_allows_private_target_and_its_redirect_when_opted_in(monkeyp
     monkeypatch.setattr(engine, "send", fake_send)
 
     # Nothing fires Page.loadEventFired in this fake, so goto() rides out its
-    # own short timeout — the point being it does not raise NAVIGATION_REFUSED.
-    await page.goto("http://127.0.0.1:8080/", timeout=0.05)
+    # own short timeout and now raises NETWORK_TIMEOUT for that (no response
+    # at all) — the point of this test is that it is NETWORK_TIMEOUT, not
+    # NAVIGATION_REFUSED: allow_private=True actually let the private-IP
+    # target and its redirect through.
+    with pytest.raises(GripError) as exc:
+        await page.goto("http://127.0.0.1:8080/", timeout=0.05)
+    assert exc.value.error.type is ErrorType.NETWORK_TIMEOUT
 
     assert not any(m == "Fetch.enable" for m, _ in sent), (
         "allow_private=True should not pay for interception it can't use"
@@ -491,7 +945,7 @@ async def test_popup_target_is_closed_from_its_paused_state(monkeypatch):
     its own Fetch-domain state that Fetch.enable on this target never touches.
     Chosen fix — block it outright — verified by never resuming it: only
     Target.closeTarget for it, never Runtime.runIfWaitingForDebugger."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
 
     async def navigate_side_effect():
@@ -529,7 +983,7 @@ async def test_blocked_popup_is_counted_logged_and_traced(monkeypatch, caplog):
     ways — a WARNING log line, Page.popups_blocked, and a Trace entry."""
     import logging
 
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, _sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
 
     async def navigate_side_effect():
@@ -562,13 +1016,15 @@ async def test_blocked_popup_is_counted_logged_and_traced(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_popups_allowed_when_opted_in(monkeypatch):
-    """NavigationPolicy(allow_popups=True) skips arming popup blocking
-    entirely — Target.setAutoAttach is never sent, so Chrome runs
-    window.open() unintercepted, and nothing is ever counted as blocked."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    """NavigationPolicy(allow_popups=True) still arms auto-attach (see
+    _ensure_popup_blocking) — now to observe/adopt a popup for
+    wait_for_popup(), not to block it — but never closes it and never counts
+    it as blocked."""
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy(allow_popups=True))
 
     async def navigate_side_effect():
+        _fire_attached(listeners, "popup-session", "popup-target", "page", url="https://oauth.test/")
         for cb in listeners.get("Page.loadEventFired", []):
             cb({})
 
@@ -584,10 +1040,17 @@ async def test_popups_allowed_when_opted_in(monkeypatch):
     await page.goto("https://public.test/", timeout=1.0)
     await asyncio.sleep(0)
 
-    assert not any(m == "Target.setAutoAttach" for m, _ in sent), (
-        "allow_popups=True must not arm the block at all"
+    assert any(m == "Target.setAutoAttach" for m, _ in sent), (
+        "allow_popups=True still needs auto-attach armed to observe a popup"
+    )
+    assert not any(m == "Target.closeTarget" for m, _ in sent), (
+        "an allowed popup must never be closed"
     )
     assert page.popups_blocked == 0
+
+    info = await page.wait_for_popup(timeout=1.0)
+    assert info.target_id == "popup-target"
+    assert info.url == "https://oauth.test/"
 
 
 @pytest.mark.asyncio
@@ -629,7 +1092,7 @@ async def test_subframe_document_block_does_not_raise_out_of_goto(monkeypatch):
     "Document". Only the main frame (frameId == this target's id) may raise
     NAVIGATION_REFUSED out of goto() — a sub-frame block behaves like a
     sub-resource block, silently."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), target_id="T1", policy=NavigationPolicy())
 
     async def navigate_side_effect():
@@ -662,7 +1125,7 @@ async def test_subframe_document_block_does_not_raise_out_of_goto(monkeypatch):
 async def test_main_frame_document_block_still_raises_out_of_goto(monkeypatch):
     """The counterpart to the sub-frame test above: a block on the main frame
     (frameId == target_id) must still surface as NAVIGATION_REFUSED."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, _sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), target_id="T1", policy=NavigationPolicy())
 
     async def navigate_side_effect():
@@ -688,20 +1151,26 @@ async def test_main_frame_document_block_still_raises_out_of_goto(monkeypatch):
 @pytest.mark.asyncio
 async def test_second_snapshot_exposes_a_delta():
     engine = make_cdp_mock()
-    # One Runtime.enable, one Fetch.enable, then three canned responses per
-    # snapshot. Same URL both times — a URL change is the one case build_delta
-    # refuses to diff.
+    # One Runtime.enable, one Fetch.enable, one Page.enable (dialog handling's
+    # Page-domain arming), one Page.addScriptToEvaluateOnNewDocument
+    # (closed-shadow patch) — all first-snapshot-only — then three canned
+    # responses per snapshot. Same URL both times — a URL change is the one
+    # case build_delta refuses to diff.
     engine.send.side_effect = [
         {},
         {},
+        {},
+        {},
         {"result": {"value": "[]"}},
         {"result": {"value": "hello"}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
         {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
+        {"result": {"value": "{}"}},  # scroll metrics
         {"result": {"value": "[]"}},
         {"result": {"value": "hello"}},
         {"targetInfo": {"title": "X", "url": "https://x.com"}},
         {"result": {"value": "[]"}},  # PROBE_CLICKABLE_JS: no probe candidates
+        {"result": {"value": "{}"}},  # scroll metrics
     ]
     page = Page(engine=engine, trace=Trace())
     await page.snapshot()
@@ -748,6 +1217,8 @@ def _injected_engine(title, el_text, el_placeholder, page_text, el_role="textbox
     engine.send.side_effect = [
         {},   # Runtime.enable
         {},   # Fetch.enable
+        {},   # Page.enable (dialog handling's Page-domain arming)
+        {},   # Page.addScriptToEvaluateOnNewDocument (closed-shadow patch)
         {"result": {"value": json.dumps([
             {
                 "index": 0, "tag": "input", "role": el_role, "text": el_text,
@@ -755,6 +1226,7 @@ def _injected_engine(title, el_text, el_placeholder, page_text, el_role="textbox
                 "cx": 100, "cy": 50,
                 "computedDisplay": "block", "computedVisibility": "visible",
                 "computedOpacity": "1", "ariaHidden": False, "width": 80, "height": 30,
+                "handle": "h1",
             }
         ])}},
         {"result": {"value": page_text}},
@@ -840,6 +1312,62 @@ async def test_element_role_channel_is_scanned():
     snapshot = await page.snapshot()
     assert "approve the transfer" not in Summarizer().format(snapshot)
     assert snapshot.prompt_injection is True
+
+
+# --- press() -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_press_named_key_carries_code_and_virtual_key_code():
+    """key alone (the old behaviour) produced no code/windowsVirtualKeyCode,
+    so a listener gated on event.code — real widgets gate Enter/Tab/Escape
+    handling on it, not just event.key — never fired."""
+    page = _bare_page()
+    sent = []
+
+    async def fake_send(method, params=None):
+        sent.append(params or {})
+        return {}
+
+    page._engine.send = fake_send
+    await page.press("Enter")
+    assert sent[0]["type"] == "keyDown"
+    assert sent[0]["code"] == "Enter"
+    assert sent[0]["windowsVirtualKeyCode"] == 13
+    assert sent[1]["type"] == "keyUp"
+
+
+@pytest.mark.asyncio
+async def test_press_printable_char_sends_a_char_event_with_text():
+    """A character key with no `text` (the old behaviour) typed nothing at
+    all — CDP needs a 'char' event carrying the text for a real <input> to
+    see the keystroke."""
+    page = _bare_page()
+    sent = []
+
+    async def fake_send(method, params=None):
+        sent.append(params or {})
+        return {}
+
+    page._engine.send = fake_send
+    await page.press("a")
+    types = [p["type"] for p in sent]
+    assert types == ["keyDown", "char", "keyUp"]
+    assert sent[1]["text"] == "a"
+
+
+@pytest.mark.asyncio
+async def test_press_modifiers_set_the_dispatch_bitmask():
+    page = _bare_page()
+    sent = []
+
+    async def fake_send(method, params=None):
+        sent.append(params or {})
+        return {}
+
+    page._engine.send = fake_send
+    await page.press("Enter", modifiers=["Shift", "ctrl"])
+    assert sent[0]["modifiers"] == 8 | 2
 
 
 # --- upload() / enable_downloads() / wait_for_download() ---------------------
@@ -980,6 +1508,36 @@ async def test_downloads_listener_armed_before_send_completes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_download_outside_configured_dir_is_ignored(tmp_path, caplog):
+    """Browser.setDownloadBehavior is browser-wide (see enable_downloads()'s
+    docstring) — a completed download reported here can belong to a
+    different Page/tab's own directory. A filePath outside what THIS Page
+    configured must not be handed back as if it were the file this caller
+    asked for."""
+    import logging
+
+    listeners: dict[str, list] = {}
+
+    async def fake_send(method, params=None, session_id=None):
+        return {}
+
+    engine = make_cdp_mock()
+    engine.send = fake_send
+    engine.on = lambda ev, cb: listeners.setdefault(ev, []).append(cb)
+    page = Page(engine=engine, trace=Trace())
+    await page.enable_downloads(tmp_path / "mine")
+
+    elsewhere = tmp_path / "someone-elses-tab" / "file.bin"
+    with caplog.at_level(logging.WARNING):
+        for cb in listeners["Browser.downloadProgress"]:
+            cb({"state": "completed", "filePath": str(elsewhere)})
+
+    assert page._download_queue is not None
+    assert page._download_queue.empty(), "a path outside the configured dir must not be queued"
+    assert any("outside" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_wait_for_download_returns_path_once_progress_event_completes(tmp_path):
     listeners: dict[str, list] = {}
 
@@ -1025,7 +1583,7 @@ async def test_fetch_interception_refuses_download_navigation_to_private_target(
     resourceType branching (see grip/page.py), so a download-triggering
     navigation to a private address is refused exactly like any other paused
     request — no special-casing was added or needed to keep this true."""
-    engine, listeners, sent, session_sent = _fetch_engine()
+    engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy())
 
     async def navigate_side_effect():

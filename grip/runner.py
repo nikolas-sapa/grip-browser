@@ -49,6 +49,34 @@ _TOOLS = [
         }, "required": ["target", "value"]},
     }},
     {"type": "function", "function": {
+        "name": "hover",
+        "description": (
+            "Move the pointer over an element without clicking it, to reveal "
+            "a hover-only menu/tooltip that a plain click can't reach."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string", "description": "Description of element to hover."}
+        }, "required": ["target"]},
+    }},
+    {"type": "function", "function": {
+        "name": "wait_for",
+        "description": (
+            "Block until a condition becomes true, then re-snapshot — for an "
+            "SPA route change or XHR-driven update a snapshot right after "
+            "click/type is too early to see. Pass exactly one of text/ref/"
+            "selector."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "Substring of the page's visible prose."},
+            "ref": {
+                "type": "string",
+                "description": "Substring of a specific element's own text (a click/type target).",
+            },
+            "selector": {"type": "string", "description": "Raw CSS selector."},
+            "timeout": {"type": "number", "description": "Seconds to wait (default 10)."},
+        }},
+    }},
+    {"type": "function", "function": {
         "name": "read",
         "description": (
             "Read the page as prose: ordered, citable text blocks with navigation "
@@ -119,6 +147,19 @@ class Runner:
     # kind of drift a shared implementation exists to prevent.
     def _page_payload(self) -> str:
         text, self._last_sent_version = self._page.payload(self._last_sent_version)
+        # A dialog is otherwise silent to the model: click()/type() dispatched
+        # fine and the payload reads like nothing happened, when actually a
+        # confirm()/alert() was auto-answered on its behalf (see
+        # Page.consume_dialogs()). Every dispatch below routes its result
+        # through here, so this is the one place that needs to say so.
+        dialogs = self._page.consume_dialogs()
+        if dialogs:
+            notes = "\n".join(
+                f"[dialog] {d['type']} auto-{'accepted' if d['accepted'] else 'dismissed'}: "
+                f"{d['message']!r}"
+                for d in dialogs
+            )
+            text = f"{notes}\n\n{text}"
         return text
 
     # A delta describes a change against the state the model was last shown, so
@@ -249,6 +290,17 @@ class Runner:
         if name == "select":
             await self._page.select(args["target"], args["value"])
             await self._page.snapshot()
+            return self._page_payload()
+        if name == "hover":
+            await self._page.hover(args["target"])
+            await self._page.snapshot()
+            return self._page_payload()
+        if name == "wait_for":
+            await self._page.wait_for(
+                text=args.get("text"), ref=args.get("ref"),
+                selector=args.get("selector"), timeout=args.get("timeout", 10.0),
+            )
+            # wait_for() already re-snapshots once its condition is true.
             return self._page_payload()
         if name == "read":
             # Bounded, because the tool takes no arguments and cannot: a long-form

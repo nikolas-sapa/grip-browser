@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import json
 import time
 
@@ -188,7 +189,7 @@ async def test_launch_runs_off_the_event_loop(monkeypatch):
     # test actually cares about is that launch()'s blocking sleep(0.15) ran off
     # the event loop, so the ticker's own ~0.01s cadence never got starved —
     # checked via the gaps between consecutive ticks, not total elapsed time.
-    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(ticks)]
     assert max(gaps) < 0.1, f"event loop was blocked during launch: gaps={gaps}"
 
 
@@ -351,10 +352,16 @@ async def test_each_tab_gets_its_own_fetch_interception_armed(monkeypatch):
     gives each call to CDPEngine() a genuinely distinct object instead."""
     browser_engine = MagicMock()
     browser_engine.connect = AsyncMock()
-    browser_engine.send = AsyncMock(side_effect=[
-        {"targetId": "T1"},  # Target.createTarget, tab 1
-        {"targetId": "T2"},  # Target.createTarget, tab 2
-    ])
+    target_ids = iter(["T1", "T2"])
+
+    async def browser_send(method, params=None):
+        # _connect() applies the default permissions on this same engine before
+        # open() is ever reached; only Target.createTarget needs a real reply.
+        if method == "Target.createTarget":
+            return {"targetId": next(target_ids)}
+        return {}
+
+    browser_engine.send = AsyncMock(side_effect=browser_send)
 
     page_engines: list[MagicMock] = []
 
@@ -502,3 +509,302 @@ async def test_load_session_restores_localstorage_into_a_matching_open_tab(tmp_p
     assert seen_exprs, "must have written localStorage into the matching open tab"
     assert "localStorage.setItem" in seen_exprs[0]
     assert '"k"' in seen_exprs[0] and '"v"' in seen_exprs[0]
+
+
+@pytest.mark.asyncio
+async def test_default_permissions_deny_notifications_and_geolocation():
+    """Without an explicit setting, both must be denied so a real Chrome never
+    shows a prompt with nobody there to answer it."""
+    calls = []
+
+    async def browser_send(method, params=None):
+        if method == "Target.createTarget":
+            return {"targetId": "T1"}
+        calls.append((method, params))
+        return {}
+
+    engine = MagicMock()
+    engine.connect = AsyncMock()
+    engine.send = AsyncMock(side_effect=browser_send)
+    monkeypatch_engine = engine
+
+    with patch("grip.browser.CDPEngine", return_value=monkeypatch_engine):
+        browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+        await browser._connect()
+
+    permission_calls = [c for c in calls if c[0] == "Browser.setPermission"]
+    assert {"notifications", "geolocation"} == {
+        c[1]["permission"]["name"] for c in permission_calls
+    }
+    assert all(c[1]["setting"] == "denied" for c in permission_calls)
+
+
+@pytest.mark.asyncio
+async def test_permissions_option_can_grant_explicitly():
+    calls = []
+
+    async def browser_send(method, params=None):
+        calls.append((method, params))
+        return {}
+
+    engine = MagicMock()
+    engine.connect = AsyncMock()
+    engine.send = AsyncMock(side_effect=browser_send)
+
+    with patch("grip.browser.CDPEngine", return_value=engine):
+        browser = Browser(
+            cdp_url="ws://localhost:9222/devtools/browser/abc",
+            permissions={"notifications": True},
+        )
+        await browser._connect()
+
+    settings = {
+        c[1]["permission"]["name"]: c[1]["setting"]
+        for c in calls
+        if c[0] == "Browser.setPermission"
+    }
+    assert settings == {"notifications": "granted", "geolocation": "denied"}
+
+
+@pytest.mark.asyncio
+async def test_a_permission_grant_failure_does_not_block_attaching():
+    """A remote CDP endpoint (attach mode via cdp_url) may not implement
+    Browser.setPermission at all — that must not fail the whole connect()."""
+
+    async def boom(method, params=None):
+        raise RuntimeError("Browser.setPermission not supported here")
+
+    engine = MagicMock()
+    engine.connect = AsyncMock()
+    engine.send = AsyncMock(side_effect=boom)
+
+    with patch("grip.browser.CDPEngine", return_value=engine):
+        browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+        await browser._connect()  # must not raise
+
+    assert browser._engine is engine
+
+
+@pytest.mark.asyncio
+async def test_open_applies_the_default_desktop_viewport():
+    async def page_send(method, params=None):
+        return {}
+
+    page_engine = MagicMock()
+    page_engine.connect = AsyncMock()
+    page_engine.send = AsyncMock(side_effect=page_send)
+
+    browser_engine = MagicMock()
+    browser_engine.connect = AsyncMock()
+    browser_engine.send = AsyncMock(return_value={"targetId": "T1"})
+
+    engines = iter([browser_engine, page_engine])
+    with patch("grip.browser.CDPEngine", side_effect=lambda: next(engines)):
+        browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+
+        async def fake_goto(self, url, timeout=30.0):
+            self._current_url = url
+
+        with patch.object(Page, "goto", fake_goto):
+            await browser.open("https://a.test")
+
+    metrics_calls = [
+        c for c in page_engine.send.call_args_list
+        if c.args[0] == "Emulation.setDeviceMetricsOverride"
+    ]
+    assert len(metrics_calls) == 1
+    params = metrics_calls[0].args[1]
+    assert params == {
+        "width": 1280,
+        "height": 800,
+        "deviceScaleFactor": 1,
+        "mobile": False,
+    }
+    touch_calls = [
+        c for c in page_engine.send.call_args_list
+        if c.args[0] == "Emulation.setTouchEmulationEnabled"
+    ]
+    assert touch_calls[0].args[1] == {"enabled": False}
+    assert not any(
+        c.args[0] == "Network.setUserAgentOverride" for c in page_engine.send.call_args_list
+    ), "a desktop (non-mobile) viewport must not override the UA"
+
+
+@pytest.mark.asyncio
+async def test_open_applies_a_custom_mobile_viewport_with_ua_override():
+    async def page_send(method, params=None):
+        return {}
+
+    page_engine = MagicMock()
+    page_engine.connect = AsyncMock()
+    page_engine.send = AsyncMock(side_effect=page_send)
+
+    browser_engine = MagicMock()
+    browser_engine.connect = AsyncMock()
+    browser_engine.send = AsyncMock(return_value={"targetId": "T1"})
+
+    engines = iter([browser_engine, page_engine])
+    with patch("grip.browser.CDPEngine", side_effect=lambda: next(engines)):
+        browser = Browser(
+            cdp_url="ws://localhost:9222/devtools/browser/abc",
+            viewport={"width": 390, "height": 844, "mobile": True, "touch": True},
+        )
+
+        async def fake_goto(self, url, timeout=30.0):
+            self._current_url = url
+
+        with patch.object(Page, "goto", fake_goto):
+            await browser.open("https://a.test")
+
+    metrics_calls = [
+        c for c in page_engine.send.call_args_list
+        if c.args[0] == "Emulation.setDeviceMetricsOverride"
+    ]
+    assert metrics_calls[0].args[1] == {
+        "width": 390,
+        "height": 844,
+        "deviceScaleFactor": 1,
+        "mobile": True,
+    }
+    touch_calls = [
+        c for c in page_engine.send.call_args_list
+        if c.args[0] == "Emulation.setTouchEmulationEnabled"
+    ]
+    assert touch_calls[0].args[1] == {"enabled": True}
+    ua_calls = [
+        c for c in page_engine.send.call_args_list
+        if c.args[0] == "Network.setUserAgentOverride"
+    ]
+    assert len(ua_calls) == 1
+    assert "Mobile" in ua_calls[0].args[1]["userAgent"]
+
+
+@pytest.mark.asyncio
+async def test_open_applies_geolocation_override_when_configured():
+    async def page_send(method, params=None):
+        return {}
+
+    page_engine = MagicMock()
+    page_engine.connect = AsyncMock()
+    page_engine.send = AsyncMock(side_effect=page_send)
+
+    browser_engine = MagicMock()
+    browser_engine.connect = AsyncMock()
+    browser_engine.send = AsyncMock(return_value={"targetId": "T1"})
+
+    engines = iter([browser_engine, page_engine])
+    with patch("grip.browser.CDPEngine", side_effect=lambda: next(engines)):
+        browser = Browser(
+            cdp_url="ws://localhost:9222/devtools/browser/abc",
+            geolocation={"latitude": 51.5072, "longitude": -0.1276},
+        )
+
+        async def fake_goto(self, url, timeout=30.0):
+            self._current_url = url
+
+        with patch.object(Page, "goto", fake_goto):
+            await browser.open("https://a.test")
+
+    geo_calls = [
+        c for c in page_engine.send.call_args_list
+        if c.args[0] == "Emulation.setGeolocationOverride"
+    ]
+    assert len(geo_calls) == 1
+    assert geo_calls[0].args[1] == {
+        "latitude": 51.5072,
+        "longitude": -0.1276,
+        "accuracy": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_geolocation_option_also_grants_the_geolocation_permission():
+    """An override with the permission still denied is a no-op: Chrome blocks
+    navigator.geolocation regardless of what Emulation.setGeolocationOverride
+    says. Passing geolocation= has to imply granting it."""
+    calls = []
+
+    async def browser_send(method, params=None):
+        if method == "Target.createTarget":
+            return {"targetId": "T1"}
+        calls.append((method, params))
+        return {}
+
+    engine = MagicMock()
+    engine.connect = AsyncMock()
+    engine.send = AsyncMock(side_effect=browser_send)
+
+    with patch("grip.browser.CDPEngine", return_value=engine):
+        browser = Browser(
+            cdp_url="ws://localhost:9222/devtools/browser/abc",
+            geolocation={"latitude": 51.5072, "longitude": -0.1276},
+        )
+        await browser._connect()
+
+    settings = {
+        c[1]["permission"]["name"]: c[1]["setting"]
+        for c in calls
+        if c[0] == "Browser.setPermission"
+    }
+    assert settings == {"notifications": "denied", "geolocation": "granted"}
+
+
+@pytest.mark.asyncio
+async def test_geolocation_option_does_not_override_an_explicit_deny():
+    """permissions={"geolocation": False} is an explicit choice (e.g. a task that
+    wants the override in place but denied until it's needed) -- geolocation=
+    must not silently overrule it."""
+    calls = []
+
+    async def browser_send(method, params=None):
+        if method == "Target.createTarget":
+            return {"targetId": "T1"}
+        calls.append((method, params))
+        return {}
+
+    engine = MagicMock()
+    engine.connect = AsyncMock()
+    engine.send = AsyncMock(side_effect=browser_send)
+
+    with patch("grip.browser.CDPEngine", return_value=engine):
+        browser = Browser(
+            cdp_url="ws://localhost:9222/devtools/browser/abc",
+            geolocation={"latitude": 51.5072, "longitude": -0.1276},
+            permissions={"geolocation": False},
+        )
+        await browser._connect()
+
+    settings = {
+        c[1]["permission"]["name"]: c[1]["setting"]
+        for c in calls
+        if c[0] == "Browser.setPermission"
+    }
+    assert settings == {"notifications": "denied", "geolocation": "denied"}
+
+
+@pytest.mark.asyncio
+async def test_open_skips_geolocation_override_when_not_configured():
+    async def page_send(method, params=None):
+        return {}
+
+    page_engine = MagicMock()
+    page_engine.connect = AsyncMock()
+    page_engine.send = AsyncMock(side_effect=page_send)
+
+    browser_engine = MagicMock()
+    browser_engine.connect = AsyncMock()
+    browser_engine.send = AsyncMock(return_value={"targetId": "T1"})
+
+    engines = iter([browser_engine, page_engine])
+    with patch("grip.browser.CDPEngine", side_effect=lambda: next(engines)):
+        browser = Browser(cdp_url="ws://localhost:9222/devtools/browser/abc")
+
+        async def fake_goto(self, url, timeout=30.0):
+            self._current_url = url
+
+        with patch.object(Page, "goto", fake_goto):
+            await browser.open("https://a.test")
+
+    assert not any(
+        c.args[0] == "Emulation.setGeolocationOverride" for c in page_engine.send.call_args_list
+    )

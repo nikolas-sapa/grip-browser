@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import subprocess
 import tempfile
+import weakref
 from pathlib import Path
+from typing import Any, cast
 
 _STEALTH_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -108,13 +111,50 @@ class ChromeLauncher:
         self.launch_timeout = (
             launch_timeout if launch_timeout is not None else default_launch_timeout()
         )
-        self._process: subprocess.Popen[bytes] | None = None
-        self._stderr_path: str | None = None
-        self._user_data_dir: str | None = user_data_dir
         # Only delete what we created. A caller pointing at their own profile is
         # doing it to keep logins, service workers and IndexedDB across runs —
         # rmtree'ing that would be the opposite of persistence.
         self._owns_user_data_dir = user_data_dir is None
+        # Process/paths live in this dict, not in plain instance attributes,
+        # because weakref.finalize below must never hold a strong reference to
+        # self — that would keep an abandoned launcher alive forever and the
+        # finalizer would never fire. The properties just under __init__ make
+        # the rest of the class read/write self._process etc. as before.
+        self._state: dict[str, Any] = {
+            "process": None,
+            "stderr_path": None,
+            "user_data_dir": user_data_dir,
+            "owns_user_data_dir": self._owns_user_data_dir,
+        }
+        # Reaps the Chrome process and temp profile dir even if the caller never
+        # calls terminate()/aterminate() — e.g. a Browser that's dropped instead
+        # of closed. _reap is a staticmethod bound via the class, not `self._reap`,
+        # so this registration itself doesn't hold self alive either.
+        self._finalizer = weakref.finalize(self, ChromeLauncher._reap, self._state)
+
+    @property
+    def _process(self) -> subprocess.Popen[bytes] | None:
+        return cast("subprocess.Popen[bytes] | None", self._state["process"])
+
+    @_process.setter
+    def _process(self, value: subprocess.Popen[bytes] | None) -> None:
+        self._state["process"] = value
+
+    @property
+    def _stderr_path(self) -> str | None:
+        return cast("str | None", self._state["stderr_path"])
+
+    @_stderr_path.setter
+    def _stderr_path(self, value: str | None) -> None:
+        self._state["stderr_path"] = value
+
+    @property
+    def _user_data_dir(self) -> str | None:
+        return cast("str | None", self._state["user_data_dir"])
+
+    @_user_data_dir.setter
+    def _user_data_dir(self, value: str | None) -> None:
+        self._state["user_data_dir"] = value
 
     def launch(
         self,
@@ -250,19 +290,43 @@ class ChromeLauncher:
         await asyncio.to_thread(self.terminate)
 
     def terminate(self) -> None:
-        if self._process:
-            self._process.terminate()
+        self._reap(self._state)
+
+    @staticmethod
+    def _reap(state: dict[str, Any]) -> None:
+        """The actual teardown, shared by terminate() and the weakref.finalize
+        registered in __init__. Takes the state dict rather than a launcher, so
+        the finalizer can call this without holding a reference to self.
+
+        Wrapped in try/finally at each step: the kill()-after-timeout path used
+        to raise TimeoutExpired straight out of terminate() when a Chrome with
+        many open tabs missed even the second 5s window, which skipped the
+        stderr unlink and the rmtree below it — silently orphaning the temp
+        profile dir on every timed-out kill.
+        """
+        process = state["process"]
+        if process:
             try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                # A Chrome holding many tabs open can miss the 5s window. Never let
-                # teardown raise — that leaks the process and the temp profile.
-                self._process.kill()
-                self._process.wait(timeout=5)
-            self._process = None
-        if self._stderr_path:
-            Path(self._stderr_path).unlink(missing_ok=True)
-            self._stderr_path = None
-        if self._user_data_dir and self._owns_user_data_dir:
-            shutil.rmtree(self._user_data_dir, ignore_errors=True)
-            self._user_data_dir = None
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    # Never let teardown raise here either — a process that
+                    # still won't die is not a reason to skip the cleanup below.
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=5)
+            finally:
+                state["process"] = None
+        stderr_path = state["stderr_path"]
+        if stderr_path:
+            try:
+                Path(stderr_path).unlink(missing_ok=True)
+            finally:
+                state["stderr_path"] = None
+        user_data_dir = state["user_data_dir"]
+        if user_data_dir and state["owns_user_data_dir"]:
+            try:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            finally:
+                state["user_data_dir"] = None

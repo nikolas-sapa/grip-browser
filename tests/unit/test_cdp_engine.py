@@ -2,8 +2,9 @@ import asyncio
 import json
 import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from grip.cdp.engine import CDPEngine
+from grip.errors.types import ErrorType, GripError
 
 
 class _FakeSocket:
@@ -72,6 +73,86 @@ async def test_dead_receive_loop_fails_pending_sends_fast():
     await asyncio.sleep(0)
 
     start = time.monotonic()
-    with pytest.raises((ConnectionError, RuntimeError)):
+    with pytest.raises(GripError) as exc_info:
         await engine.send("Runtime.evaluate", {"expression": "1"})
+    assert exc_info.value.error.type == ErrorType.BROWSER_CRASHED
     assert time.monotonic() - start < 1.0, "send waited on the full 30s timeout"
+
+class _NeverRespondsSocket:
+    """Accepts sends but never produces a matching response — used to prove a
+    per-call timeout expires on its own schedule, not the engine's default."""
+
+    async def send(self, data):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_send_timeout_override_expires_before_default():
+    engine = CDPEngine(default_timeout=30.0)
+    engine._ws = _NeverRespondsSocket()
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await engine.send("Runtime.evaluate", {"expression": "1"}, timeout=0.05)
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, "per-call timeout did not override the 30s default"
+
+
+@pytest.mark.asyncio
+async def test_send_uses_engine_default_timeout_when_no_override_given():
+    """Proves send() actually reads self.default_timeout, not just that a
+    per-call override works — a no-op default would pass the override test
+    above but let this one hang for the full module DEFAULT_TIMEOUT."""
+    engine = CDPEngine(default_timeout=0.05)
+    engine._ws = _NeverRespondsSocket()
+
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await engine.send("Runtime.evaluate", {"expression": "1"})
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, "engine default_timeout was not honored"
+
+
+@pytest.mark.asyncio
+async def test_engine_closed_reflects_connection_state():
+    engine = CDPEngine()
+    engine._ws = _FakeSocket(die_after=0)
+    assert engine.closed is False
+    assert engine.closed_reason is None
+
+    engine._receive_task = asyncio.create_task(engine._receive_loop())
+    with pytest.raises(GripError):
+        await engine.send("Runtime.evaluate", {"expression": "1"})
+
+    assert engine.closed is True
+    assert engine.closed_reason is not None
+    assert engine.closed_reason.type == ErrorType.BROWSER_CRASHED
+
+
+@pytest.mark.asyncio
+async def test_target_crashed_event_fails_pending_with_typed_error():
+    engine = CDPEngine()
+    engine._ws = MagicMock()
+
+    fut = asyncio.get_running_loop().create_future()
+    engine._pending[1] = fut
+
+    engine._handle_target_crashed({"reason": "oom", "errorCode": 5})
+
+    assert engine.closed is True
+    assert fut.done()
+    with pytest.raises(GripError) as exc_info:
+        fut.result()
+    assert exc_info.value.error.type == ErrorType.BROWSER_CRASHED
+    assert "oom" in exc_info.value.error.message
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_does_not_reraise_into_the_void():
+    """A dead task nobody awaits must not raise — that's the 'exception never
+    retrieved' noise this fix removes. Awaiting it here must return cleanly."""
+    engine = CDPEngine()
+    engine._ws = _FakeSocket(die_after=0)
+    task = asyncio.create_task(engine._receive_loop())
+    await task  # would raise ConnectionResetError before the fix
+    assert engine.closed is True

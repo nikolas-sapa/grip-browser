@@ -39,7 +39,7 @@ async def test_safe_mode_blocks_press():
 async def test_safe_mode_allows_snapshot():
     page = _make_safe_page()
     page._engine.send.side_effect = [
-        {}, {},
+        {}, {}, {}, {},
         {"result": {"value": "[]"}},
         {"result": {"value": ""}},
         {"targetInfo": {"title": "Test", "url": "https://example.com"}},

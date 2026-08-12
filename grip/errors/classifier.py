@@ -100,6 +100,45 @@ class ErrorClassifier:
             recovery=[RecoveryAction.RE_SNAPSHOT, RecoveryAction.RETRY],
         )
 
+    # A description that substring-matches more than one visible element used
+    # to be resolved first-match-in-document-order, which is silently wrong
+    # (click("Save") landing on "Save draft") rather than loudly wrong — the
+    # model never learns its click hit something else. Listing the real
+    # candidates lets it retry with an exact ref instead of guessing again.
+    def classify_ambiguous_target(
+        self, description: str, candidates: list[tuple[str, str]]
+    ) -> BrowserError:
+        shown = candidates[:5]
+        listed = "; ".join(
+            f"{ref} ({label[:60]!r})" for ref, label in shown
+        )
+        if len(candidates) > len(shown):
+            listed += f"; and {len(candidates) - len(shown)} more"
+        return BrowserError(
+            type=ErrorType.AMBIGUOUS_TARGET,
+            message=(
+                f"{description!r} matched {len(candidates)} elements: {listed}. "
+                "Retry with one of these exact refs instead of a text description."
+            ),
+            confidence=0.9,
+            recovery=[RecoveryAction.RE_SNAPSHOT, RecoveryAction.RETRY],
+        )
+
+    # A ref carried over from a snapshot of a document this page has since
+    # navigated away from. Refs are never reused across documents (see
+    # RefRegistry.reset), so a ref number that once existed but isn't in the
+    # current snapshot didn't just typo — it names an element that is gone.
+    def classify_stale_ref(self, ref: str) -> BrowserError:
+        return BrowserError(
+            type=ErrorType.STALE_REF,
+            message=(
+                f"Ref {ref!r} belonged to a previous page snapshot and does not "
+                "resolve on the current page. Re-snapshot and use a fresh ref."
+            ),
+            confidence=0.95,
+            recovery=[RecoveryAction.RE_SNAPSHOT],
+        )
+
     def classify_page_state(
         self,
         title: str,

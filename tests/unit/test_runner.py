@@ -19,6 +19,13 @@ def make_page_mock():
     snap = MagicMock()
     snap.tokens_estimated = 40
     snap.version = 1
+    # Summarizer.format() compares these against int 0 (see
+    # _format_viewport_line) — an unset MagicMock attribute answers any
+    # comparison with another MagicMock, not a bool, and blows up there.
+    snap.scroll_top = 0
+    snap.scroll_left = 0
+    snap.scroll_height = 0
+    snap.client_height = 0
     page.snapshot.return_value = snap
     page.payload = MagicMock(return_value=("PAGE: mock", 1))
     return page
@@ -79,6 +86,9 @@ class FakePage:
         from grip.compression.summarizer import Summarizer
         from grip.page import render_payload
         return render_payload(self._current_snapshot, self.delta, last_sent_version, Summarizer())
+
+    def consume_dialogs(self):
+        return []
 
     async def click(self, target):
         # The real Page.click snapshots itself when the ref cache is cold, which is
@@ -164,7 +174,9 @@ async def test_pruning_keeps_only_the_newest_full_snapshot_when_every_turn_navig
 async def test_runner_calls_done_on_finish():
     page = make_page_mock()
     llm = make_llm([
-        LLMResponse(content=None, tool_call=ToolCall(name="done", arguments={"result": "finished"})),
+        LLMResponse(
+            content=None, tool_call=ToolCall(name="done", arguments={"result": "finished"})
+        ),
     ])
     runner = Runner(llm=llm, page=page, trace=Trace())
     result = await runner.run("Do something")
@@ -331,7 +343,7 @@ async def test_error_results_are_not_fenced_as_untrusted_page_text():
     ]
     runner = Runner(llm=make_llm(responses), page=page, trace=Trace())
     await runner.run("do the thing")
-    err = [str(m["content"]) for m in runner._messages if m.get("role") == "tool"][0]
+    err = next(str(m["content"]) for m in runner._messages if m.get("role") == "tool")
     assert "RE_SNAPSHOT" in err
     assert "<page_state>" not in err, "recovery guidance was fenced off as untrusted"
 
@@ -358,7 +370,10 @@ def _payload_with(delta, snapshot, last_sent):
     page = MagicMock()
     page._current_snapshot = snapshot
     page.delta = delta
-    page.payload = lambda last_sent_version: render_payload(snapshot, delta, last_sent_version, Summarizer())
+    page.payload = lambda last_sent_version: render_payload(
+        snapshot, delta, last_sent_version, Summarizer()
+    )
+    page.consume_dialogs.return_value = []
     runner = Runner(llm=MagicMock(), page=page, trace=Trace())
     runner._last_sent_version = last_sent
     return runner, runner._page_payload()
