@@ -16,13 +16,14 @@ export function Mcp() {
         <div className="grid gap-12 lg:grid-cols-12 lg:gap-16">
           <div className="min-w-0 lg:col-span-5">
             <Reveal>
-              <Eyebrow index="08">MCP server</Eyebrow>
+              <Eyebrow index="09">MCP server</Eyebrow>
               <SectionHeading>grip as a stdio MCP server.</SectionHeading>
               <Lede>
-                `grip-mcp` exposes 12 tools over stdio: open, goto, snapshot,
+                `grip-mcp` exposes 19 tools over stdio: open, goto, snapshot,
                 click, type, select, read, screenshot, run, list_tabs,
-                switch_tab, close_tab. Eleven of them need no LLM key at all —
-                only `run` does.
+                switch_tab, close_tab, press, upload, links, popups_blocked,
+                wait_for, hover and scroll. Eighteen of them need no LLM key
+                at all — only `run` does.
               </Lede>
               <div className="mt-6 flex flex-wrap gap-2">
                 {CLIENTS.map((client) => (

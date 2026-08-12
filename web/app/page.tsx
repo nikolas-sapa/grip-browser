@@ -7,6 +7,7 @@ import { TaskSuccess } from "@/components/task-success";
 import { CodeShowcase } from "@/components/code-showcase";
 import { Cli } from "@/components/cli";
 import { Features } from "@/components/features";
+import { Hardening } from "@/components/hardening";
 import { Mcp } from "@/components/mcp";
 import { Limits } from "@/components/limits";
 import { Install } from "@/components/install";
@@ -26,6 +27,7 @@ export default function Home() {
         <CodeShowcase />
         <Cli />
         <Features />
+        <Hardening />
         <Mcp />
         <Limits />
         <Install />

@@ -19,7 +19,7 @@ export function Install() {
         <div className="grid gap-12 lg:grid-cols-12 lg:gap-16">
           <div className="min-w-0 lg:col-span-5">
             <Reveal>
-              <Eyebrow index="10">Install</Eyebrow>
+              <Eyebrow index="11">Install</Eyebrow>
               <SectionHeading>Python 3.11+ and a Chrome.</SectionHeading>
               <Lede>
                 grip finds Chrome or Chromium automatically, and falls back to the
@@ -112,8 +112,9 @@ export function Install() {
               <div className="mt-4">
                 <Method>
                   Integration tests run against real Chrome over live network.
-                  Counts are for the current branch and will move, so re-run them
-                  rather than trusting the number.
+                  ruff and mypy are clean on the same branch. Counts are for
+                  the current branch and will move, so re-run them rather than
+                  trusting the number.
                 </Method>
               </div>
             </Reveal>

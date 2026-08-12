@@ -18,7 +18,7 @@
  * competitor tool.
  */
 
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
 
 export const BENCHMARK = {
   date: "2026-08-10",
@@ -214,9 +214,9 @@ export const liveTimings = {
 } as const;
 
 export const tests = {
-  unit: 249,
+  unit: 470,
   gripsearch: 33,
-  integration: 74,
+  integration: 108,
 } as const;
 
 /**
@@ -238,8 +238,8 @@ export const limits = [
     body: "It did not used to be. On a click-driven navigation where the reported URL trailed the document, grip diffed two unrelated pages and emitted 5,701 tokens where the full snapshot was 2,963, in 5 of 16 runs. grip's own benchmark caught it, not a user, and it is now guarded twice: is_worth_sending() makes a delta that is not meaningfully smaller than the full snapshot lose to it, and _is_restamped_document() compares the elements behind shared handles, because a handle stamped per document names a different element once the document restarts. The Hacker News case that motivated it scored 0.04 agreement.",
   },
   {
-    title: "Unlabelled inputs cannot be addressed semantically",
-    body: "The form-fill scenario addresses inputs by ref (e1, e2) rather than by label, because httpbin's form carries its labels as sibling text and every input reaches the snapshot with an empty label. Refs are what the model sees, so it is a real agent path, but the semantic matcher cannot currently reach an unlabelled input.",
+    title: "Unlabelled inputs: fixed",
+    body: "The form-fill scenario addresses inputs by ref (e1, e2) rather than by label, because httpbin's form carries its labels as sibling text and every input reaches the snapshot with an empty label. Shipped in 0.8.0: a fallback chain for exactly this case — label-for/wrapping label, aria-label, placeholder, title, sibling text, then a humanized name/id — so the same input becomes addressable by label.",
   },
   {
     title: "Narrow on purpose",
