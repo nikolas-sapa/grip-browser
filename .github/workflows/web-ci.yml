@@ -17,7 +17,7 @@ jobs:
       # Full checkout, not a sparse/partial one: web/app/changelog/page.tsx
       # reads ../CHANGELOG.md (repo root) at build time, so `next build`
       # needs the whole tree, not just web/.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node
         uses: actions/setup-node@v4
