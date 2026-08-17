@@ -8,10 +8,44 @@ version = "0.8.1"
 description = "Token-efficient, CDP-native browser SDK for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Nikolas Sapalidis", email = "niksapa150@gmail.com" },
+]
+keywords = [
+    "browser-automation",
+    "cdp",
+    "chrome-devtools-protocol",
+    "ai-agents",
+    "llm",
+    "mcp",
+    "web-scraping",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Typing :: Typed",
+]
 dependencies = [
     "websockets>=12.0",
     "tiktoken>=0.7.0",
 ]
+
+[project.urls]
+Homepage = "https://grip-browser.vercel.app"
+Repository = "https://github.com/nikolas-sapa/grip-browser"
+Changelog = "https://github.com/nikolas-sapa/grip-browser/blob/main/CHANGELOG.md"
+Issues = "https://github.com/nikolas-sapa/grip-browser/issues"
+Documentation = "https://github.com/nikolas-sapa/grip-browser/blob/main/README.md"
 
 [project.optional-dependencies]
 dev = [
