@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, useReducedMotion } from "framer-motion";
+import { motion, useReducedMotion } from "motion/react";
 import type { ReactNode } from "react";
 
 // One reveal primitive for the whole page: a short rise with exponential
