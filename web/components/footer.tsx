@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { GithubMark } from "@/components/icons";
 import { PACKAGE, VERSION } from "@/lib/metrics";
 
@@ -27,17 +28,27 @@ export function Footer() {
         </div>
 
         <nav className="flex flex-wrap items-center gap-x-6 gap-y-2 sm:ml-auto">
-          {LINKS.map((link) => (
-            <a
-              key={link.label}
-              href={link.href}
-              target={link.internal ? undefined : "_blank"}
-              rel={link.internal ? undefined : "noreferrer"}
-              className="text-[13px] text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {link.label}
-            </a>
-          ))}
+          {LINKS.map((link) =>
+            link.internal ? (
+              <Link
+                key={link.label}
+                href={link.href}
+                className="text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {link.label}
+              </Link>
+            ) : (
+              <a
+                key={link.label}
+                href={link.href}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {link.label}
+              </a>
+            ),
+          )}
           <a
             href={PACKAGE.github}
             target="_blank"

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { PACKAGE, VERSION } from "@/lib/metrics";
@@ -35,22 +36,22 @@ export function Nav() {
       )}
     >
       <div className="mx-auto flex h-full max-w-6xl items-center gap-6 px-6">
-        <a href="/#top" className="flex items-baseline gap-2">
+        <Link href="/#top" className="flex items-baseline gap-2">
           <span className="text-[15px] font-semibold tracking-[-0.02em]">grip</span>
           <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
             v{VERSION}
           </span>
-        </a>
+        </Link>
 
         <nav className="ml-auto hidden items-center gap-6 md:flex">
           {LINKS.map((link) => (
-            <a
+            <Link
               key={link.href}
               href={link.href}
               className="text-[13px] text-muted-foreground transition-colors hover:text-foreground"
             >
               {link.label}
-            </a>
+            </Link>
           ))}
         </nav>
 
