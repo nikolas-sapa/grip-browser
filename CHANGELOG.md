@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.2] - 2026-08-17
+
+Packaging only. No change to any code path: `grip/` is byte-identical to
+0.8.1, and this release exists because PyPI will not accept new metadata for
+a version already uploaded.
+
+### Fixed
+
+- **The PyPI page carried no metadata.** `[project]` had no `classifiers`,
+  no `keywords`, no `authors`, no `license` field and no `[project.urls]`, so
+  the published page had no links back to the repository, the changelog, the
+  issue tracker or the site, and the package did not appear under any trove
+  classifier. All five are now declared, with the classifier list restricted
+  to what is actually true: `Development Status :: 4 - Beta`, the four Python
+  versions CI tests (3.11 through 3.14), and `Typing :: Typed`, which
+  `grip/py.typed` has always backed.
+
+### Added
+
+- **A release workflow that fails closed on version drift.** Publishing runs
+  on a `v*` tag through PyPI trusted publishing (OIDC, no stored token) and
+  refuses to build unless the tag, `pyproject.toml` and the newest heading in
+  this file all state the same version. The three had no mechanism keeping
+  them in agreement before.
+- CI for the site (type check, lint and build, none of which ran before a
+  push), Dependabot for pip, npm and Actions, and a pre-commit config
+  mirroring the versions CI installs.
+
 ## [0.8.1] - 2026-08-12
 
 Measurement release. Two things the site called "unmeasured" got measured,

@@ -18,7 +18,7 @@
  * competitor tool.
  */
 
-export const VERSION = "0.8.1";
+export const VERSION = "0.8.2";
 
 export const BENCHMARK = {
   date: "2026-08-10",
