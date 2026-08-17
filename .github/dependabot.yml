@@ -1,9 +1,14 @@
+# Cooldown mirrors ~/.npmrc's minimum-release-age=10080 (7 days): a release
+# younger than that is refused by npm locally, so proposing it here only
+# produces PRs that pass CI and then break `npm install` on a dev machine.
 version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       pip-minor-patch:
@@ -15,7 +20,19 @@ updates:
     directory: "/web"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
+    ignore:
+      # ESLint 10 breaks the eslint-plugin-react bundled inside
+      # eslint-config-next (resolveBasedir calls context.getFilename, removed
+      # in 10). Nothing here can fix it; drop this once Next ships support.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      # @types/node tracks the runtime, not the newest release: CI and Vercel
+      # run Node 22, so types for 26 would type-check APIs that are not there.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch:
         update-types:
@@ -26,6 +43,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       actions-minor-patch:
