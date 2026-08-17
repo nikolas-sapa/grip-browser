@@ -47,6 +47,15 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
     groups:
+      # upload-artifact and download-artifact must move together: their v4/v7
+      # and v7/v8 backends are not interchangeable, so a PR bumping one half
+      # leaves a workflow that uploads a dist the next job cannot find.
+      # Grouping them means the bump arrives as one reviewable change once
+      # both halves have a matching major.
+      artifact-actions:
+        patterns:
+          - "actions/upload-artifact"
+          - "actions/download-artifact"
       actions-minor-patch:
         update-types:
           - "minor"
