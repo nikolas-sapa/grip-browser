@@ -1,7 +1,8 @@
 import { GithubMark } from "@/components/icons";
 import { PACKAGE, VERSION } from "@/lib/metrics";
 
-const LINKS = [
+const LINKS: { href: string; label: string; internal?: boolean }[] = [
+  { href: "/changelog", label: "Changelog", internal: true },
   { href: PACKAGE.github, label: "GitHub" },
   { href: PACKAGE.pypi, label: "PyPI" },
   { href: `${PACKAGE.github}/blob/main/SECURITY.md`, label: "Security" },
@@ -30,8 +31,8 @@ export function Footer() {
             <a
               key={link.label}
               href={link.href}
-              target="_blank"
-              rel="noreferrer"
+              target={link.internal ? undefined : "_blank"}
+              rel={link.internal ? undefined : "noreferrer"}
               className="text-[13px] text-muted-foreground transition-colors hover:text-foreground"
             >
               {link.label}

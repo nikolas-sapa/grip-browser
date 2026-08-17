@@ -6,11 +6,13 @@ import { PACKAGE, VERSION } from "@/lib/metrics";
 import { GithubMark } from "@/components/icons";
 import { ThemeToggle } from "@/components/theme-toggle";
 
+// Absolute so the bar works from /changelog as well as the landing page.
 const LINKS = [
-  { href: "#cost", label: "Token cost" },
-  { href: "#breakdown", label: "Breakdown" },
-  { href: "#code", label: "Code" },
-  { href: "#limits", label: "Limits" },
+  { href: "/#cost", label: "Token cost" },
+  { href: "/#breakdown", label: "Breakdown" },
+  { href: "/#code", label: "Code" },
+  { href: "/#limits", label: "Limits" },
+  { href: "/changelog", label: "Changelog" },
 ];
 
 export function Nav() {
@@ -33,7 +35,7 @@ export function Nav() {
       )}
     >
       <div className="mx-auto flex h-full max-w-6xl items-center gap-6 px-6">
-        <a href="#top" className="flex items-baseline gap-2">
+        <a href="/#top" className="flex items-baseline gap-2">
           <span className="text-[15px] font-semibold tracking-[-0.02em]">grip</span>
           <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
             v{VERSION}
