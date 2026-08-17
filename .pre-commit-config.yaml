@@ -1,0 +1,27 @@
+# Mirrors the versions and config CI installs and enforces (see
+# .github/workflows/test.yml and pyproject.toml [tool.ruff]/[tool.mypy]).
+# All rule selection lives in pyproject.toml; hooks here just point at it so
+# there is one source of truth, not two that can drift apart.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(grip|gripsearch|evaluation|benchmarks)/
+        # No ruff-format hook on purpose. CI runs `ruff check` only, and the
+        # tree is not ruff-format clean (45 of 70 files would be rewritten),
+        # so a format hook would bury real work under a reformat diff while
+        # still not matching what CI gates on.
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.0
+    hooks:
+      - id: mypy
+        # CI lints against the mcp extra installed (grip/mcp/server.py
+        # depends on it for strict mode to resolve real types instead of
+        # falling to the pyproject ignore_missing_imports override).
+        additional_dependencies: ["mcp>=2.0.0"]
+        files: ^(grip|gripsearch)/
+        pass_filenames: false
+        args: [grip/, gripsearch/]

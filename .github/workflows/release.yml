@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes grip-browser only. gripsearch/ is a separate distribution with
+# its own release path — do not wire it into this workflow.
+#
+# One-time setup before the first run: register a PyPI trusted publisher on
+# the grip-browser project (PyPI project settings -> Publishing) pointing at
+# this repo, workflow filename "release.yml", and the environment below (if
+# one is configured). No PyPI token is stored in this repo.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert tag, pyproject.toml, and CHANGELOG.md agree
+        id: check
+        run: |
+          set -euo pipefail
+
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+
+          PYPROJECT_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+
+          # First "## [X.Y.Z] - date" heading in the changelog, i.e. the
+          # newest entry.
+          CHANGELOG_VERSION=$(grep -m1 -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | sed -E 's/^## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+
+          echo "tag=$TAG_VERSION pyproject=$PYPROJECT_VERSION changelog=$CHANGELOG_VERSION"
+
+          if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ] || [ "$TAG_VERSION" != "$CHANGELOG_VERSION" ]; then
+            echo "::error::Version drift: tag=$TAG_VERSION pyproject.toml=$PYPROJECT_VERSION CHANGELOG.md=$CHANGELOG_VERSION must all match"
+            exit 1
+          fi
+
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: pip install build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check distribution metadata
+        run: twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: [verify-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: [verify-version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
