@@ -16,6 +16,32 @@ pip install grip-browser
 
 ---
 
+## The one measurement worth arguing about
+
+Same page, same machine, same encoder (`tiktoken cl100k_base`), 2026-08-10.
+
+| Hacker News | tokens |
+|---|---:|
+| Raw HTML | 13,701 |
+| **grip snapshot** | **3,540** |
+| Playwright MCP accessibility snapshot | 13,773 |
+
+**Playwright MCP's accessibility tree is larger than the raw HTML it was compressing.** On
+this page. Not marginally in our favour, larger.
+
+That is not a Playwright bug, it is what happens on link-dense pages. There is very little
+markup to strip, but every link still needs a role, a name and a ref, so you pay full price
+for the structure and save almost nothing on the tags. The compression mechanism goes
+negative.
+
+It means "the a11y tree is compact" is a property of typical pages, not a property of
+accessibility trees. On 6 of our 8 pages Playwright MCP wins comfortably. On this one it
+loses to the markup.
+
+Per-page table and method: [`benchmarks/RESULTS_COMPETITORS.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_COMPETITORS.md)
+
+---
+
 ## What is Grip?
 
 **Grip is a CDP-native browser SDK for AI agents that turns a web page into a ~2,000-token semantic snapshot instead of ~59,000 tokens of raw HTML** (medians over 8 real pages, 2026-08-10). It runs on the Chrome DevTools Protocol directly — no Playwright, no Puppeteer, no wrapper binary.
