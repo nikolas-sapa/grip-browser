@@ -27,7 +27,7 @@ Same page, same machine, same encoder (`tiktoken cl100k_base`), 2026-08-10.
 | Playwright MCP accessibility snapshot | 13,773 |
 
 **Playwright MCP's accessibility tree is larger than the raw HTML it was compressing.** On
-this page. Not marginally in our favour, larger.
+this page. Not marginally, larger.
 
 That is not a Playwright bug, it is what happens on link-dense pages. There is very little
 markup to strip, but every link still needs a role, a name and a ref, so you pay full price

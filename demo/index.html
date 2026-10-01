@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grip — the browser layer for AI agents</title>
+<style>
+  :root{
+    --bg:#0B0B0D; --panel:#141417; --line:#232328; --text:#F3F2EE;
+    --muted:#8B8B94; --accent:#006bff; --warn:#E5484D; --ok:#30A46C;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+    -webkit-font-smoothing:antialiased;padding:0 24px 96px}
+  .wrap{max-width:820px;margin:0 auto}
+  h1{font-size:34px;font-weight:650;letter-spacing:-.02em;margin:72px 0 6px}
+  h2{font-size:20px;font-weight:600;letter-spacing:-.01em;margin:56px 0 14px}
+  p{color:#C9C9D1;margin:14px 0}
+  .sub{color:var(--muted);font-size:15px;margin-bottom:0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;
+    background:#1B1B20;padding:2px 6px;border-radius:4px;color:#D6D6DE}
+  pre{background:#101014;border:1px solid var(--line);border-radius:10px;
+    padding:16px 18px;overflow-x:auto;margin:20px 0}
+  pre code{background:none;padding:0;font-size:13.5px;color:#D6D6DE}
+  .lede{font-size:19px;color:var(--text);line-height:1.55;margin:28px 0 0}
+  table{width:100%;border-collapse:collapse;margin:20px 0;font-size:15px}
+  th,td{text-align:right;padding:10px 12px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:500;font-size:13px;
+    text-transform:uppercase;letter-spacing:.06em}
+  td.win{color:var(--ok);font-weight:600}
+  td.lose{color:var(--warn);font-weight:600}
+  tr.hl td{background:#16161B}
+  tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+  .hero{background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:28px;margin:32px 0}
+  .hero .num{font-size:44px;font-weight:680;letter-spacing:-.03em;
+    font-variant-numeric:tabular-nums}
+  .note{border-left:2px solid var(--line);padding:2px 0 2px 18px;
+    color:var(--muted);font-size:14.5px;margin:20px 0}
+  .note strong{color:#C9C9D1;font-weight:550}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:28px 0}
+  .card{background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;padding:20px}
+  .card h3{font-size:14px;color:var(--muted);font-weight:500;
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+  .card p{margin:0;font-size:15px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  footer{margin-top:72px;padding-top:24px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:14px}
+  @media(max-width:620px){.grid{grid-template-columns:1fr}h1{font-size:28px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>grip</h1>
+  <p class="sub">A CDP-native browser SDK for AI agents. Published on PyPI.</p>
+
+  <p class="lede">An agent that reads a page usually pays for the whole document.
+  grip sends it the interactive elements and visible text instead, structured and
+  indexable.</p>
+
+  <pre><code>pip install grip-browser</code></pre>
+
+  <h2>One measurement worth arguing about</h2>
+
+  <p>Same page, same machine, same encoder
+  (<code>tiktoken cl100k_base</code>), measured 2026-08-10.</p>
+
+  <div class="hero">
+    <div class="num">13,773</div>
+    <p style="margin:8px 0 0">Playwright MCP's accessibility snapshot on Hacker News,
+    against <strong style="color:#F3F2EE">13,701 tokens</strong> of raw HTML for the
+    same page.</p>
+    <p style="margin:14px 0 0">The accessibility tree came out larger than the markup it
+    was compressing. Not marginally. Larger.</p>
+  </div>
+
+  <p>That is not a Playwright bug. It is what happens on link-dense pages. There is very
+  little markup to strip, but every link still needs a role, a name and a ref, so you pay
+  full price for the structure and save almost nothing on the tags. The compression
+  mechanism goes negative.</p>
+
+  <p>It means <em>"the accessibility tree is compact"</em> is a property of typical pages,
+  not a property of accessibility trees. On six of our eight pages Playwright MCP wins
+  comfortably. On this one it loses to the markup.</p>
+
+  <h2>All eight pages</h2>
+
+  <table>
+    <tr>
+      <th>Page</th><th>Raw HTML</th><th>grip</th><th>Playwright MCP</th>
+    </tr>
+    <tr class="hl">
+      <td>hacker news</td><td>13,701</td><td class="win">3,540</td><td class="lose">13,773</td>
+    </tr>
+    <tr>
+      <td>wikipedia</td><td>459,193</td><td class="win">19,946</td><td>144,927</td>
+    </tr>
+    <tr>
+      <td>github</td><td>172,050</td><td class="win">2,517</td><td>11,848</td>
+    </tr>
+    <tr>
+      <td>react.dev</td><td>103,848</td><td class="win">1,550</td><td>11,346</td>
+    </tr>
+    <tr>
+      <td>bbc</td><td>110,383</td><td class="win">2,426</td><td>12,832</td>
+    </tr>
+    <tr>
+      <td>python docs</td><td>8,818</td><td class="win">1,077</td><td>5,699</td>
+    </tr>
+    <tr>
+      <td>arxiv</td><td>13,976</td><td class="win">1,570</td><td>5,293</td>
+    </tr>
+    <tr>
+      <td>example.com</td><td>167</td><td class="win">50</td><td>123</td>
+    </tr>
+  </table>
+
+  <p>grip is smaller on 8 of 8. The spread is the point, though. Quoting the median alone
+  is wrong for most individual pages by a large factor in one direction or the other.
+  Median: 1,998 tokens for grip against 58,912 for raw HTML, or 16.0x.</p>
+
+  <h2>What this does not measure</h2>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Payload size only</h3>
+      <p>Nothing about task success, latency, reliability, cross-browser support, or
+      ecosystem size. A smaller payload is not a better tool. If your agent fails the
+      task, the token count of its failure is irrelevant.</p>
+    </div>
+    <div class="card">
+      <h3>Playwright is not bad</h3>
+      <p>It is a general-purpose framework with a far larger ecosystem, and it drives
+      human-written E2E suites across three browsers. grip does one narrow thing. Judge
+      them on the axis you actually need.</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <p><strong>A note on browser-use.</strong> On a like-for-like payload comparison
+    browser-use comes out at 0.90x of grip's snapshot, so it is smaller. That is because
+    it serialises less of the page, not because it compresses better: on Wikipedia its
+    6,778 tokens cover a viewport with 26 pages still below it, while grip's 19,946 cover
+    the whole article. Quoting 0.90x without that caveat inverts what the number means.</p>
+  </div>
+
+  <div class="note">
+    <p><strong>One of our own runs was wrong.</strong> Playwright MCP reported a constant
+    32 tokens on all eight pages at one point. It was tokenising an error string because
+    the browser was not installed. We caught it, published it, and added a guard. It is in
+    the benchmark file because a number you cannot trust is worse than no number.</p>
+  </div>
+
+  <h2>Also in the box</h2>
+
+  <table>
+    <tr><th>Capability</th><th>Playwright MCP</th><th>Puppeteer</th><th>grip</th></tr>
+    <tr><td>Built on</td><td>Playwright</td><td>Chromium binary API</td><td>pure CDP</td></tr>
+    <tr><td>Shadow DOM traversal</td><td>partial</td><td>no</td><td class="win">full</td></tr>
+    <tr><td>Fuzzy element match</td><td>no</td><td>no</td><td class="win">yes</td></tr>
+    <tr><td>Typed error recovery</td><td>no</td><td>no</td><td class="win">yes</td></tr>
+    <tr><td>Prompt-injection guard</td><td>no</td><td>no</td><td class="win">yes</td></tr>
+  </table>
+
+  <footer>
+    <p>Built by Nikolas Sapalidis, 17, in Greece. MIT licensed.
+    Source and full method:
+    <a href="https://github.com/nikolas-sapa/grip-browser">github.com/nikolas-sapa/grip-browser</a></p>
+  </footer>
+
+</div>
+</body>
+</html>

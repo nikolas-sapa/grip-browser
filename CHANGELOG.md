@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.4] - 2026-10-01
+
+Docs and landing page only. No change to any code path.
+
+### Added
+
+- README: Hacker News comparison placed above the median statistics. Playwright MCP's
+  accessibility snapshot costs 13,773 tokens against 13,701 tokens of raw HTML on the
+  same page, because link-dense pages carry almost no markup to strip while every link
+  still needs a role, a name and a ref. grip is 3,540 on that page.
+- Landing page: new `A11yInversion` section carrying the same measurement, with the
+  qualifier that Playwright MCP wins on 6 of 8 pages in the corpus.
+
+### Fixed
+
+- GitHub repository description quoted the weakest page in the benchmark corpus
+  (example.com, 50 vs 167 tokens) as a 240x headline. It now states the 16.0x median.
+
 ## [0.8.3] - 2026-08-29
 
 Docs only. No change to any code path.
