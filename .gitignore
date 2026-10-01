@@ -10,3 +10,4 @@ dist/
 .scratch/
 web/node_modules/
 web/.next/
+.vercel

@@ -1,6 +1,7 @@
 import { Nav } from "@/components/nav";
 import { Hero } from "@/components/hero";
 import { TokenCost } from "@/components/token-cost";
+import { A11yInversion } from "@/components/a11y-inversion";
 import { Mechanisms } from "@/components/mechanisms";
 import { Delta } from "@/components/delta";
 import { TaskSuccess } from "@/components/task-success";
@@ -20,6 +21,7 @@ export default function Home() {
       <main>
         <Hero />
         <TokenCost />
+        <A11yInversion />
         <div className="mx-auto h-px max-w-6xl rule" />
         <Mechanisms />
         <Delta />

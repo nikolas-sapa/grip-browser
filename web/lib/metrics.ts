@@ -18,7 +18,7 @@
  * competitor tool.
  */
 
-export const VERSION = "0.8.2";
+export const VERSION = "0.8.3";
 
 export const BENCHMARK = {
   date: "2026-08-10",
@@ -197,6 +197,38 @@ export const strippedTextCaveat = {
   pages: 23,
   source: "evaluation/, the 23 pages where both arms succeeded",
 } as const;
+
+/**
+ * The one page in the corpus where the accessibility tree came out larger than
+ * the markup it was compressing.
+ *
+ * Source: benchmarks/RESULTS_COMPETITORS.md, 2026-08-10, same run and encoder
+ * as every other figure on this page.
+ *
+ * This is a claim about page shape, not about Playwright. It is published
+ * because it is the case where the popular one-liner ("the a11y tree is
+ * compact") stops being true, and because it is the reason this page states a
+ * median with a range rather than a headline ratio.
+ */
+export const a11yInversion = {
+  page: "Hacker News",
+  rawHtml: 13_701,
+  grip: 3_540,
+  playwrightMcp: 13_773,
+  /** playwrightMcp / rawHtml, on this page. Above 1 means expansion. */
+  expansion: "1.005x",
+  /** Of the eight pages in the corpus, how many Playwright MCP won on. */
+  playwrightWins: 6,
+  totalPages: 8,
+  doc: "benchmarks/RESULTS_COMPETITORS.md",
+} as const;
+
+/**
+ * Why it happens, in one paragraph. Ships with the number, because without it
+ * the number reads as a competitor bug rather than a property of the page.
+ */
+export const A11Y_INVERSION_MECHANISM =
+  "Link density. On a page that is mostly links there is very little markup to strip, but every link still needs a role, a name and a ref, so you pay full price for the structure and save almost nothing on the tags. The compression mechanism goes negative. This makes the ratio a property of typical pages rather than a property of accessibility trees, which is why this page quotes a median with a range and never a single headline ratio.";
 
 /** A 200k context window, and what each approach does to it. */
 export const contextWindow = {
