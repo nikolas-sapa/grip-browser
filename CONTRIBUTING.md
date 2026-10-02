@@ -7,10 +7,11 @@ git clone https://github.com/nikolas-sapa/grip-browser
 cd grip-browser
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,mcp]"
 ```
 
-`dev` extras install pytest, pytest-asyncio, pytest-mock, mypy, and ruff.
+`dev` extras install pytest, pytest-asyncio, pytest-mock, pytest-cov, mypy,
+and ruff. The `mcp` extra is also required for the MCP server's type checks.
 
 This installs the `grip` package in editable mode. Because hatchling's
 default editable install puts the whole repo root on `sys.path`, `import
@@ -52,20 +53,17 @@ CHROME_EXECUTABLE=/path/to/chrome pytest tests/integration/ tests/gripsearch/ -v
 ## Lint and type check
 
 ```bash
-ruff check grip/
-mypy grip/
+ruff check grip/ gripsearch/ evaluation/ benchmarks/
+mypy grip/ gripsearch/
 ```
 
-The project currently has a number of pre-existing ruff and mypy findings in
-`grip/` (mostly import ordering, a few missing stubs for optional adapters,
-and some `Optional`-narrowing gaps) — a clean checkout will not pass either
-command cleanly today. Don't try to fix unrelated findings in an unrelated
-PR; just make sure your change doesn't add new ones. CI's lint job runs
-non-blocking for the same reason — see `.github/workflows/test.yml`.
+CI gates both commands with zero findings required. See
+`.github/workflows/test.yml` for the current checks.
 
-CI runs `pytest tests/unit/` on every push and PR against Python 3.11, 3.12,
-and 3.13, followed by `tests/integration/` and `tests/gripsearch/` on the
-same matrix. Run the unit tests locally before opening a PR; running the
+CI runs `pytest tests/unit/` on pushes and PRs targeting `main` against
+Python 3.11, 3.12, 3.13, and 3.14, with an 80% coverage floor, followed by
+`tests/integration/` and `tests/gripsearch/` on the same matrix, excluding
+tests marked `network`. Run the unit tests locally before opening a PR; running the
 integration/gripsearch suites locally too is encouraged if you have Chrome
 available.
 
@@ -74,6 +72,5 @@ available.
 1. Fork the repo
 2. Create a branch: `git checkout -b feat/my-change`
 3. Add or update tests for your change
-4. Make sure `pytest tests/unit/` passes and your change doesn't introduce
-   new `ruff check grip/` or `mypy grip/` findings
+4. Make sure `pytest tests/unit/` and the lint and type checks above pass
 5. Open a PR describing what problem it solves and how you tested it
