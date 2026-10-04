@@ -315,6 +315,64 @@ async def test_main_registers_every_tool_with_its_schema():
 
 
 @pytest.mark.asyncio
+async def test_mcp_grip_error_preserves_recovery_hint(monkeypatch):
+    pytest.importorskip("mcp")
+    from mcp.server import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+
+    from grip.errors import RecoveryAction
+    from grip.mcp import server
+
+    captured = {}
+    monkeypatch.setattr(
+        MCPServer, "run", lambda self, transport="stdio", **kw: captured.setdefault("s", self)
+    )
+    server.main()
+    server.reset_state()
+    server._page = _RaisingClickPage([RecoveryAction.RE_SNAPSHOT, RecoveryAction.RETRY])
+    try:
+        with pytest.raises(ToolError, match="suggested recovery: RE_SNAPSHOT, RETRY") as exc:
+            await captured["s"].call_tool("click", {"target": "Buy"})
+        assert not isinstance(exc.value, UnexpectedToolError)
+        assert "Element for 'Buy' no longer matches the snapshot." in str(exc.value)
+    finally:
+        server.reset_state()
+
+
+@pytest.mark.asyncio
+async def test_mcp_unexpected_errors_do_not_expose_exception_text(monkeypatch):
+    pytest.importorskip("mcp")
+    from mcp.server import MCPServer
+    from mcp.server.mcpserver.exceptions import UnexpectedToolError
+
+    from grip.mcp import server
+
+    captured = {}
+    monkeypatch.setattr(
+        MCPServer, "run", lambda self, transport="stdio", **kw: captured.setdefault("s", self)
+    )
+    server.main()
+
+    class _CrashingClickPage:
+        def __init__(self, error_type):
+            self._error_type = error_type
+
+        async def click(self, target):
+            raise self._error_type("sentinel-secret")
+
+    server.reset_state()
+    try:
+        for error_type in (RuntimeError, ValueError):
+            server._page = _CrashingClickPage(error_type)
+            with pytest.raises(UnexpectedToolError) as exc:
+                await captured["s"].call_tool("click", {"target": "Buy"})
+            assert str(exc.value) == "Error executing tool click"
+            assert "sentinel-secret" not in str(exc.value)
+    finally:
+        server.reset_state()
+
+
+@pytest.mark.asyncio
 async def test_lifespan_closes_the_browser_on_clean_shutdown():
     """The clean stdio-exit path used to strand a Chrome process: reset_state()
     only dropped the handle, close() was never called anywhere. The lifespan
