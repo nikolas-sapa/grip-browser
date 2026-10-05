@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import Any
+
+import pytest
 
 from grip.compression.delta import build_delta, format_delta, is_worth_sending
 from grip.compression.summarizer import Element, PageSnapshot
@@ -153,3 +155,100 @@ def test_a_delta_barely_smaller_than_its_snapshot_is_not_worth_sending():
     every ref, so a delta has to be meaningfully cheaper to earn its place."""
     assert not is_worth_sending("x" * 95, "y" * 100)
     assert is_worth_sending("x" * 40, "y" * 100)
+
+
+# Fifteen visible changes, each exercised in both directions (30 fixtures).
+_VISIBLE_CHANGES = [
+    ({}, {"value": "typed"}),
+    ({"value": "old"}, {"value": "new"}),
+    ({}, {"checked": True}),
+    ({}, {"selected": True}),
+    ({}, {"disabled": True}),
+    ({}, {"required": True}),
+    ({}, {"is_combobox": True}),
+    ({"is_combobox": True}, {"is_combobox": True, "combobox_expanded": True}),
+    ({"is_combobox": True}, {"is_combobox": True, "combobox_options": ["Alpha"]}),
+    ({"is_combobox": True, "combobox_options": ["Alpha"]},
+     {"is_combobox": True, "combobox_options": ["Beta"]}),
+    ({}, {"closed_shadow_unreadable": True}),
+    ({"tag": "canvas", "canvas_width": 100, "canvas_height": 50},
+     {"tag": "canvas", "canvas_width": 200, "canvas_height": 50}),
+    ({"tag": "button"}, {"tag": "input"}),
+    ({"text": "", "role": "button"}, {"text": "", "role": "switch"}),
+    ({"text": "", "placeholder": "Old"}, {"text": "", "placeholder": "New"}),
+]
+
+
+@pytest.mark.parametrize("states", _VISIBLE_CHANGES)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_visible_element_changes_have_distinct_delta_sides(states, reverse):
+    old_state, new_state = states[::-1] if reverse else states
+    base = _el("e1", "h0", "Control")
+    before, after = replace(base, **old_state), replace(base, **new_state)
+    d = build_delta(_snap(1, [before], "unchanged"), _snap(2, [after], "unchanged"))
+    assert d is not None and not d.is_empty
+    assert len(d.changed) == 1
+    ref, old, new = d.changed[0]
+    assert ref == "e1" and old != new
+    from grip.compression.summarizer import Summarizer
+
+    assert Summarizer._element_state_suffix(before) in old
+    assert Summarizer._element_state_suffix(after) in new
+    assert len(d.changed[0]) == 3 and all(isinstance(part, str) for part in d.changed[0])
+    assert "~ [e1]" in format_delta(d)
+    assert "no change" not in format_delta(d)
+    assert d.content_ops == [] and d.added == [] and d.removed == []
+    same = build_delta(_snap(2, [after], "unchanged"), _snap(3, [replace(after)], "unchanged"))
+    assert same is not None and same.is_empty
+
+
+@pytest.mark.parametrize("states", _VISIBLE_CHANGES)
+def test_added_elements_include_canonical_visible_state(states):
+    from grip.compression.summarizer import Summarizer
+
+    el = replace(_el("e2", "h1", "Control"), **states[1])
+    d = build_delta(_snap(1, [], ""), _snap(2, [el], ""))
+    rendered = format_delta(d)
+    suffix = Summarizer._element_state_suffix(el)
+    assert suffix in rendered
+    assert repr(el.text or el.placeholder or el.role) in rendered
+    assert "+ [" in rendered and d.added == [el]
+
+
+def test_replacement_reports_removed_and_added_state():
+    old = replace(_el("e1", "h0", "Control"), checked=True)
+    new = replace(_el("e2", "h1", "Control"), disabled=True, value="new")
+    d = build_delta(_snap(1, [old], ""), _snap(2, [new], ""))
+    assert d.removed == ["e1"] and d.added == [new] and d.changed == []
+    assert '(disabled)' in format_delta(d) and '="new"' in format_delta(d)
+
+
+@pytest.mark.parametrize("updates", [
+    {"cx": 10, "cy": 20}, {"checked": False}, {"value": ""},
+    {"role": "switch", "placeholder": "hidden"},
+    {"canvas_width": 10, "canvas_height": 20},
+    {"combobox_expanded": True, "combobox_options": ["hidden"]},
+])
+def test_non_rendered_changes_stay_empty(updates):
+    el = _el("e1", "h0", "Control")
+    d = build_delta(_snap(1, [el], ""), _snap(2, [replace(el, **updates)], ""))
+    assert d is not None and d.is_empty
+
+
+def test_option_preview_count_change_is_visible_but_hidden_tail_text_is_not():
+    el = replace(_el("e1", "h0", "Control"), is_combobox=True,
+                 combobox_options=["A", "B", "C", "D", "E", "tail"])
+    changed = replace(el, combobox_options=[*el.combobox_options, "another"])
+    d = build_delta(_snap(1, [el], ""), _snap(2, [changed], ""))
+    assert d is not None and not d.is_empty
+    hidden = replace(el, combobox_options=["A", "B", "C", "D", "E", "different"])
+    d = build_delta(_snap(1, [el], ""), _snap(2, [hidden], ""))
+    assert d is not None and d.is_empty
+
+
+def test_label_text_cannot_mask_checked_state_change():
+    before = _el("e1", "h0", "Control (checked)")
+    after = replace(before, text="Control", checked=True)
+    d = build_delta(_snap(1, [before], ""), _snap(2, [after], ""))
+    assert d is not None and not d.is_empty
+    assert d.changed == [("e1", "'Control (checked)'", "'Control' (checked)")]
