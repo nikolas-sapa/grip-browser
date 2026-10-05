@@ -95,14 +95,18 @@ class CDPEngine:
         message: dict[str, Any] = {"id": msg_id, "method": method, "params": params or {}}
         if session_id is not None:
             message["sessionId"] = session_id
-        payload = json.dumps(message)
-        await self._ws.send(payload)
-        effective_timeout = timeout if timeout is not None else self.default_timeout
         try:
-            return await asyncio.wait_for(fut, timeout=effective_timeout)
-        except TimeoutError as e:
+            payload = json.dumps(message)
+            await self._ws.send(payload)
+            effective_timeout = timeout if timeout is not None else self.default_timeout
+            try:
+                return await asyncio.wait_for(fut, timeout=effective_timeout)
+            except TimeoutError as e:
+                raise TimeoutError(f"CDP command {method} timed out") from e
+        finally:
             self._pending.pop(msg_id, None)
-            raise TimeoutError(f"CDP command {method} timed out") from e
+            if not fut.done():
+                fut.cancel()
 
     def on(self, event: str, callback: Callable[[dict[str, Any]], None]) -> None:
         self._listeners.setdefault(event, []).append(callback)

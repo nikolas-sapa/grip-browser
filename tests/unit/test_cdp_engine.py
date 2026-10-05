@@ -156,3 +156,30 @@ async def test_receive_loop_does_not_reraise_into_the_void():
     task = asyncio.create_task(engine._receive_loop())
     await task  # would raise ConnectionResetError before the fix
     assert engine.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_send_removes_pending_request():
+    engine = CDPEngine()
+    engine._ws = _NeverRespondsSocket()
+    task = asyncio.create_task(engine.send("Runtime.evaluate"))
+    await asyncio.sleep(0)
+    assert len(engine._pending) == 1
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(engine._pending) == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_socket_send_removes_pending_request(mock_ws):
+    engine = CDPEngine()
+    engine._ws = mock_ws
+    mock_ws.send.side_effect = ConnectionResetError("peer went away")
+
+    with pytest.raises(ConnectionResetError, match="peer went away"):
+        await engine.send("Runtime.evaluate")
+
+    assert len(engine._pending) == 0

@@ -80,9 +80,13 @@ async def _ensure_browser() -> Browser:
     return _browser
 
 
+class _PageRequiredError(RuntimeError):
+    """A tool needs an active page before it can run."""
+
+
 def _require_page() -> Page:
     if _page is None:
-        raise RuntimeError("call 'open' with a url first")
+        raise _PageRequiredError("call 'open' with a url first")
     return _page
 
 
@@ -311,6 +315,7 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
 def main() -> None:
     try:
         from mcp.server import MCPServer
+        from mcp.server.mcpserver.exceptions import ToolError
     except ModuleNotFoundError as e:  # pragma: no cover — needs a base install
         # A bare ModuleNotFoundError from a console script tells the user nothing
         # about the extra they were meant to install.
@@ -321,11 +326,16 @@ def main() -> None:
 
     server = MCPServer("grip", lifespan=_lifespan)
 
+    async def _call_tool(name: str, arguments: dict[str, Any]) -> str:
+        try:
+            return await call_tool(name, arguments)
+        except (_PageRequiredError, GripError) as e:
+            raise ToolError(str(e)) from e
+
     # Tool functions raise on failure rather than formatting an "ERROR: ..."
-    # string. MCPServer's real dispatch path (_handle_call_tool, used by
-    # server.run()) catches exactly this and turns it into a proper MCP tool
-    # result with is_error=True — the client can tell a failure from content by
-    # the protocol field instead of by pattern-matching text.
+    # string. The boundary above marks authored page-state and Grip errors as
+    # anticipated ToolErrors, preserving their recovery messages. MCPServer's
+    # real dispatch path returns is_error=True and masks unexpected exceptions.
     #
     # The signatures are the tool schemas — MCPServer derives inputSchema from
     # the annotations, so each wrapper is one line over the shared dispatch.
@@ -348,19 +358,19 @@ def main() -> None:
         description=f"Open a URL and return its snapshot. {_SNAPSHOT_SHAPES}",
     )
     async def _open(url: str) -> str:
-        return await call_tool("open", {"url": url})
+        return await _call_tool("open", {"url": url})
 
     @server.tool(name="goto", description="Navigate the current page to a URL.")
     async def _goto(url: str) -> str:
-        return await call_tool("goto", {"url": url})
+        return await _call_tool("goto", {"url": url})
 
     @server.tool(name="snapshot", description=f"Re-snapshot the page. {_SNAPSHOT_SHAPES}")
     async def _snapshot() -> str:
-        return await call_tool("snapshot", {})
+        return await _call_tool("snapshot", {})
 
     @server.tool(name="click", description=f"Click an element. {_TARGET_NOTE}")
     async def _click(target: str) -> str:
-        return await call_tool("click", {"target": target})
+        return await _call_tool("click", {"target": target})
 
     @server.tool(
         name="type",
@@ -370,7 +380,7 @@ def main() -> None:
         ),
     )
     async def _type(target: str, text: str) -> str:
-        return await call_tool("type", {"target": target, "text": text})
+        return await _call_tool("type", {"target": target, "text": text})
 
     @server.tool(
         name="select",
@@ -381,7 +391,7 @@ def main() -> None:
         ),
     )
     async def _select(target: str, value: str) -> str:
-        return await call_tool("select", {"target": target, "value": value})
+        return await _call_tool("select", {"target": target, "value": value})
 
     @server.tool(
         name="hover",
@@ -391,7 +401,7 @@ def main() -> None:
         ),
     )
     async def _hover(target: str) -> str:
-        return await call_tool("hover", {"target": target})
+        return await _call_tool("hover", {"target": target})
 
     @server.tool(
         name="wait_for",
@@ -409,7 +419,7 @@ def main() -> None:
     async def _wait_for(
         text: str = "", ref: str = "", selector: str = "", timeout: float = 10.0,
     ) -> str:
-        return await call_tool("wait_for", {
+        return await _call_tool("wait_for", {
             "text": text or None, "ref": ref or None, "selector": selector or None,
             "timeout": timeout,
         })
@@ -428,17 +438,17 @@ def main() -> None:
     async def _scroll(
         direction: str = "down", pages: float = 1.0, ref: str = "",
     ) -> str:
-        return await call_tool("scroll", {
+        return await _call_tool("scroll", {
             "direction": direction, "pages": pages, "ref": ref or None,
         })
 
     @server.tool(name="read", description="Read the page as citable prose blocks.")
     async def _read() -> str:
-        return await call_tool("read", {})
+        return await _call_tool("read", {})
 
     @server.tool(name="press", description="Press a key (e.g. 'Enter', 'Tab') on the page.")
     async def _press(key: str) -> str:
-        return await call_tool("press", {"key": key})
+        return await _call_tool("press", {"key": key})
 
     @server.tool(
         name="upload",
@@ -448,7 +458,7 @@ def main() -> None:
         ),
     )
     async def _upload(target: str, paths: list[str]) -> str:
-        return await call_tool("upload", {"target": target, "paths": paths})
+        return await _call_tool("upload", {"target": target, "paths": paths})
 
     @server.tool(
         name="links",
@@ -459,7 +469,7 @@ def main() -> None:
         ),
     )
     async def _links() -> str:
-        return await call_tool("links", {})
+        return await _call_tool("links", {})
 
     @server.tool(
         name="popups_blocked",
@@ -470,7 +480,7 @@ def main() -> None:
         ),
     )
     async def _popups_blocked() -> str:
-        return await call_tool("popups_blocked", {})
+        return await _call_tool("popups_blocked", {})
 
     @server.tool(
         name="screenshot",
@@ -481,7 +491,7 @@ def main() -> None:
         structured_output=False,
     )
     async def _screenshot() -> Any:
-        b64 = await call_tool("screenshot", {})
+        b64 = await _call_tool("screenshot", {})
         data = base64.b64decode(b64)
         try:
             from mcp.server.mcpserver.utilities.types import Image
@@ -497,7 +507,7 @@ def main() -> None:
         description="List open tabs (target_id and url, active tab marked).",
     )
     async def _list_tabs() -> str:
-        return await call_tool("list_tabs", {})
+        return await _call_tool("list_tabs", {})
 
     @server.tool(
         name="switch_tab",
@@ -507,7 +517,7 @@ def main() -> None:
         ),
     )
     async def _switch_tab(target_id: str) -> str:
-        return await call_tool("switch_tab", {"target_id": target_id})
+        return await _call_tool("switch_tab", {"target_id": target_id})
 
     @server.tool(
         name="close_tab",
@@ -518,7 +528,7 @@ def main() -> None:
         ),
     )
     async def _close_tab(target_id: str = "") -> str:
-        return await call_tool("close_tab", {"target_id": target_id})
+        return await _call_tool("close_tab", {"target_id": target_id})
 
     @server.tool(
         name="run",
@@ -529,7 +539,7 @@ def main() -> None:
         ),
     )
     async def _run(goal: str, url: str) -> str:
-        return await call_tool("run", {"goal": goal, "url": url})
+        return await _call_tool("run", {"goal": goal, "url": url})
 
     server.run("stdio")
 
