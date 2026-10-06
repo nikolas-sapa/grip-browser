@@ -410,3 +410,51 @@ def test_a_delta_cheaper_than_its_snapshot_is_still_sent():
     lean = SnapshotDelta(version=2, previous_version=1, removed=["e3"])
     _, out = _payload_with(lean, snapshot, last_sent=1)
     assert out.startswith("DELTA")
+
+
+@pytest.mark.asyncio
+async def test_replayed_legacy_calls_get_distinct_matching_ids():
+    runner = _runner_with(["First", "Second"])
+    await runner.run("click twice")
+    calls = [m["tool_calls"][0]["id"] for m in runner._messages if m.get("tool_calls")]
+    results = [m["tool_call_id"] for m in runner._messages if m["role"] == "tool"]
+    assert len(calls) == 2 and len(set(calls)) == 2
+    assert calls == results
+
+
+@pytest.mark.asyncio
+async def test_replayed_provider_call_retains_id_and_assistant_text():
+    call = MagicMock(name="provider_call")
+    call.name = "click"
+    call.arguments = {"target": "First"}
+    call.id = "toolu_provider_123"
+    runner = Runner(
+        llm=make_llm([
+            LLMResponse(content="Clicking now", tool_call=call),
+            LLMResponse(content=None, tool_call=ToolCall("done", {"result": "ok"})),
+        ]),
+        page=FakePage(["First"]), trace=Trace(),
+    )
+    await runner.run("click once")
+    assistant = next(m for m in runner._messages if m.get("tool_calls"))
+    result = next(m for m in runner._messages if m["role"] == "tool")
+    assert assistant["tool_calls"][0]["id"] == "toolu_provider_123"
+    assert result["tool_call_id"] == "toolu_provider_123"
+    assert assistant["content"] == "Clicking now"
+
+
+@pytest.mark.asyncio
+async def test_fallback_id_does_not_collide_with_prior_provider_id():
+    call = MagicMock(name="provider_call")
+    call.name, call.arguments, call.id = "click", {"target": "First"}, "grip_call_1"
+    runner = Runner(
+        llm=make_llm([
+            LLMResponse(content=None, tool_call=call),
+            LLMResponse(content=None, tool_call=ToolCall("click", {"target": "Second"})),
+            LLMResponse(content=None, tool_call=ToolCall("done", {"result": "ok"})),
+        ]),
+        page=FakePage(["First", "Second"]), trace=Trace(),
+    )
+    await runner.run("click twice")
+    ids = [m["tool_calls"][0]["id"] for m in runner._messages if m.get("tool_calls")]
+    assert ids[0] == "grip_call_1" and len(set(ids)) == 2

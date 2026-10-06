@@ -13,6 +13,8 @@ def test_tool_call_has_expected_fields():
     tc = ToolCall(name="click", arguments={"target": "button"})
     assert tc.name == "click"
     assert tc.arguments["target"] == "button"
+    assert tc.id is None
+    assert ToolCall(name="click", arguments={}, id="toolu_test").id == "toolu_test"
 
 
 def test_llm_adapter_is_protocol():

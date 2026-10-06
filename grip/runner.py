@@ -207,7 +207,8 @@ class Runner:
         ]
 
         final_result = None
-        for _ in range(self._max_steps):
+        used_call_ids: set[str] = set()
+        for step in range(self._max_steps):
             t0 = time.monotonic()
             try:
                 # Unbounded before, inside a 20-step loop: one stalled provider
@@ -259,16 +260,21 @@ class Runner:
                 final_result = tc.arguments.get("result")
                 break
 
+            call_id = tc.id or f"grip_call_{step}"
+            if tc.id is None:
+                while call_id in used_call_ids:
+                    call_id += "_"
+            used_call_ids.add(call_id)
             messages.append({
                 "role": "assistant",
-                "content": None,
-                "tool_calls": [{"id": "0", "type": "function", "function": {
+                "content": response.content,
+                "tool_calls": [{"id": call_id, "type": "function", "function": {
                     "name": tc.name, "arguments": str(tc.arguments),
                 }}],
             })
             messages.append({
                 "role": "tool",
-                "tool_call_id": "0",
+                "tool_call_id": call_id,
                 "content": str(tool_result) if errored else _fence(tool_result),
             })
             self._prune_superseded()

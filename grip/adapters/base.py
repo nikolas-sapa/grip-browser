@@ -8,6 +8,7 @@ from typing import Any, Protocol, runtime_checkable
 class ToolCall:
     name: str
     arguments: dict[str, Any]
+    id: str | None = None
 
 
 @dataclass
