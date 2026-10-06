@@ -140,6 +140,9 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     async with Browser(llm=llm, headless=not args.headed, launch_timeout=args.timeout) as browser:
         result = await browser.run(args.goal, args.url)
         _emit(result.data, as_json=args.json)
+        if result.success is False:
+            print(f"grip: run ended with {result.outcome}", file=sys.stderr)
+            return EXIT_RUNTIME_ERROR
     return EXIT_OK
 
 

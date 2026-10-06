@@ -201,3 +201,49 @@ async def test_runner_signed_native_call_without_id_keeps_wire_id_absent():
     assert wire_result["name"] == "snapshot" and "id" not in wire_result
     assistant = next(message for message in runner._messages if message["role"] == "assistant")
     assert assistant["tool_calls"][0]["id"] == "grip_call_0"
+
+
+@pytest.mark.parametrize("arguments", [
+    {"nested": {"value": float("nan")}},
+    {"nested": {"value": float("inf")}},
+    {"nested": {"value": float("-inf")}},
+    {"nested": {1: "invalid key"}},
+])
+async def test_invalid_sdk_response_arguments_reject_with_usage_before_dispatch(arguments):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from google.genai.types import GenerateContentResponse
+    from grip.adapters.base import LLMProtocolError
+    from grip.runner import Runner
+    from grip.trace import Trace
+    from tests.unit.test_runner import FakePage
+
+    # Actual SDK validation accepts these nested values. JSON transport would
+    # coerce a non-string object key, so construct the SDK response directly.
+    raw = GenerateContentResponse.model_validate({
+        "candidates": [{"content": {"role": "model", "parts": [{
+            "functionCall": {"id": "native-id", "name": "click", "args": {
+                "target": "First", **arguments,
+            }}, "thoughtSignature": "Y2FsbC1zaWduYXR1cmU=",
+        }]}}],
+        "usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 2,
+                          "totalTokenCount": 10},
+    })
+    assert raw.function_calls[0].args["nested"] == arguments["nested"]
+    generate = AsyncMock(return_value=raw)
+    adapter = object.__new__(GeminiAdapter)
+    adapter._model = "probe"
+    adapter._client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(
+        generate_content=generate)))
+    with pytest.raises(LLMProtocolError) as caught:
+        await adapter.complete([{"role": "user", "content": "click"}], [])
+    assert caught.value.usage.total_tokens == 10
+    generate.reset_mock()
+    runner = Runner(adapter, FakePage(["page"]), Trace())
+    runner._dispatch = AsyncMock()
+    result = await runner.run("click")
+    assert result.outcome == "action_error" and result.success is False
+    assert result.model_calls == generate.await_count == 1
+    assert result.tokens == 10 and result.usage_complete
+    runner._dispatch.assert_not_awaited()

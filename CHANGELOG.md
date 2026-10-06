@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.7] - 2026-10-06
+
+### Fixed
+
+- Main-frame document replacement retires element references even when the URL stays unchanged.
+- Browser setup failures and cancellation close partial tabs without releasing guards before verified target closure.
+- Owned Chrome shuts down after browser transport loss; remote target verification remains required.
+- Runner rejects reused or malformed native tool-call IDs before dispatching browser actions.
+- Gemini rejects non-JSON tool arguments while preserving reported provider usage.
+- Runner wait-for preflight matches the Page condition contract.
+- CLI run failures return exit code 1 and report their outcome on stderr, preserving existing stdout data.
+
 ## [0.8.6] - 2026-10-06
 
 ### Fixed

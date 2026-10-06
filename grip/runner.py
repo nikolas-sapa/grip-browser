@@ -148,9 +148,11 @@ def _validate_tool_call(name: str, arguments: dict[str, Any]) -> None:
             isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
         ):
             raise ValueError(f"argument {key} must be a positive number")
-    conditions = sum(bool(arguments.get(key)) for key in ("text", "ref", "selector"))
-    if name == "wait_for" and conditions != 1:
-        raise ValueError("wait_for requires exactly one nonempty condition")
+    if name == "wait_for":
+        conditions = [arguments.get(key) for key in ("text", "ref", "selector")
+                      if arguments.get(key) is not None]
+        if len(conditions) != 1 or not conditions[0]:
+            raise ValueError("wait_for requires exactly one nonempty condition")
 
 
 class _AmbiguousAction(Exception):
@@ -350,6 +352,14 @@ class Runner:
                 return finish("action_error", error="Model returned no text or tool call")
 
             tc = response.tool_call
+            if tc.id is not None and (not isinstance(tc.id, str) or not tc.id):
+                return finish("action_error", error="Tool call ID must be nonempty text")
+            if tc.id is not None and tc.id in used_call_ids:
+                return finish("action_error", error="Tool call ID was already used")
+            call_id = tc.id if tc.id is not None else f"grip_call_{step}"
+            if tc.id is None:
+                while call_id in used_call_ids:
+                    call_id += "_"
             # Validate replay before acting: a successful browser action must
             # always have arguments the provider can reconstruct next turn.
             serialized_arguments = _serialize_tool_arguments(tc.arguments)
@@ -357,6 +367,7 @@ class Runner:
                 _validate_tool_call(tc.name, tc.arguments)
             except ValueError as exc:
                 return finish("action_error", error=str(exc))
+            used_call_ids.add(call_id)
             # An error message is written by the runner, not by the page. Fencing
             # it would put the one instruction the model is meant to act on — the
             # suggested recovery — inside the region the system prompt tells it to
@@ -401,11 +412,6 @@ class Runner:
             if tc.name == "done":
                 return finish("done", data=tc.arguments["result"], success=True)
 
-            call_id = tc.id or f"grip_call_{step}"
-            if tc.id is None:
-                while call_id in used_call_ids:
-                    call_id += "_"
-            used_call_ids.add(call_id)
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": response.content,

@@ -992,3 +992,140 @@ async def test_cleanup_failure_retains_process_proof_for_safe_retry():
         await browser.close()
     engine.disconnect.assert_not_awaited()
     assert not browser._popup_chrome_terminated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["connect", "viewport", "geolocation", "goto"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_open_setup_failure_closes_target_and_page_socket(stage, cancel):
+    browser = Browser(geolocation={"latitude": 1, "longitude": 2})
+    root = MagicMock(spec=CDPEngine)
+    root.send = AsyncMock(side_effect=lambda method, *a, **k: (
+        {"targetId": "T1"} if method == "Target.createTarget" else {"targetInfos": []}
+    ))
+    browser._engine = root
+    browser._connect = AsyncMock()
+    browser._ensure_popup_routing = AsyncMock()
+    page_engine = MagicMock(spec=CDPEngine)
+    page_engine.connect = AsyncMock()
+    page_engine.disconnect = AsyncMock()
+    page_engine.send = AsyncMock(return_value={})
+    browser._apply_viewport = AsyncMock()
+    failure = asyncio.CancelledError() if cancel else RuntimeError("setup failed")
+    if stage == "connect":
+        page_engine.connect.side_effect = failure
+    elif stage == "viewport":
+        browser._apply_viewport.side_effect = failure
+    elif stage == "geolocation":
+        page_engine.send.side_effect = failure
+    with patch("grip.browser.CDPEngine", return_value=page_engine), \
+         patch.object(Page, "goto", new=AsyncMock(
+             side_effect=failure if stage == "goto" else None,
+         )), pytest.raises(type(failure)):
+        await browser.open("about:blank")
+    assert browser.pages == ()
+    page_engine.disconnect.assert_awaited_once()
+    assert any(c.args[0] == "Target.closeTarget" for c in root.send.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_owned_close_dead_inventory_still_verifies_process_exit():
+    process = MagicMock()
+    process.poll.return_value = 0
+    process.wait.return_value = 0
+    launcher = MagicMock()
+    launcher._process = process
+    launcher.aterminate = AsyncMock()
+    engine = MagicMock(spec=CDPEngine)
+    engine.send = AsyncMock(side_effect=RuntimeError("dead root transport"))
+    engine.disconnect = AsyncMock()
+    browser = Browser()
+    browser._launcher = launcher
+    browser._engine = engine
+    browser._popup_attach_armed = True
+    await browser.close()
+    assert browser._popup_chrome_terminated
+    engine.disconnect.assert_awaited_once()
+    await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_open_repeated_cancellation_waits_for_verified_cleanup():
+    browser = Browser()
+    created = asyncio.Event()
+    closing = asyncio.Event()
+    release = asyncio.Event()
+    engine = MagicMock(spec=CDPEngine)
+    engine.send = AsyncMock(return_value={"targetId": "T1"})
+    browser._engine = engine
+    browser._connect = AsyncMock()
+    browser._ensure_popup_routing = AsyncMock()
+    page_engine = MagicMock(spec=CDPEngine)
+
+    async def connect(*args):
+        created.set()
+        await asyncio.Event().wait()
+
+    async def close_target(target_id):
+        closing.set()
+        await release.wait()
+        browser._pages.clear()
+
+    page_engine.connect = AsyncMock(side_effect=connect)
+    page_engine.disconnect = AsyncMock()
+    browser._close_target = close_target
+    with patch("grip.browser.CDPEngine", return_value=page_engine):
+        opening = asyncio.create_task(browser.open("about:blank"))
+        await created.wait()
+        opening.cancel()
+        await closing.wait()
+        opening.cancel()
+        await asyncio.sleep(0)
+        assert not opening.done()
+        page_engine.disconnect.assert_not_awaited()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(opening, 1)
+    assert browser.pages == ()
+    page_engine.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_open_unverified_target_retains_guard_and_retry_ownership():
+    browser = Browser()
+    root = MagicMock(spec=CDPEngine)
+    root.send = AsyncMock(side_effect=lambda method, *a, **k: (
+        {"targetId": "T1"} if method == "Target.createTarget" else {}
+    ))
+    browser._engine = root
+    browser._connect = AsyncMock()
+    browser._ensure_popup_routing = AsyncMock()
+    page_engine = MagicMock(spec=CDPEngine)
+    page_engine.connect = AsyncMock()
+    page_engine.disconnect = AsyncMock()
+    browser._apply_viewport = AsyncMock(side_effect=RuntimeError("setup failed"))
+    with patch("grip.browser.CDPEngine", return_value=page_engine), \
+         pytest.raises(RuntimeError, match="setup failed"):
+        await browser.open("about:blank")
+    assert len(browser.pages) == 1
+    assert not browser.pages[0]._closed
+    page_engine.disconnect.assert_not_awaited()
+    root.send = AsyncMock(return_value={"targetInfos": []})
+    await browser.pages[0].close()
+    assert browser.pages == ()
+    page_engine.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_remote_dead_inventory_retains_root_connection():
+    engine = MagicMock(spec=CDPEngine)
+    engine.send = AsyncMock(side_effect=RuntimeError("dead root transport"))
+    engine.disconnect = AsyncMock()
+    browser = Browser()
+    browser._engine = engine
+    browser._popup_attach_armed = True
+    with pytest.raises(RuntimeError, match="dead root transport"):
+        await browser.close()
+    engine.disconnect.assert_not_awaited()
+    assert browser._engine is engine
+    assert browser._popup_attach_armed

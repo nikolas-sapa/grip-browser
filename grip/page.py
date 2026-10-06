@@ -935,6 +935,9 @@ class Page:
         frame = params.get("frame", {})
         if frame.get("parentId"):
             return
+        # DOM handles restart in each document, even when its URL is unchanged.
+        # Keep ref numbering monotonic while retiring the outgoing assignments.
+        self._refs.reset()
         self._invalidate_snapshot_cache()
 
     def _on_navigated_within_document(self, params: dict[str, Any]) -> None:
@@ -1596,8 +1599,6 @@ class Page:
         # still wins over a same-text div in _find_element's first-match scan.
         raw_elements = raw_elements + probe_elements
 
-        if self._current_url and url != self._current_url:
-            self._refs.reset()
         self._current_url = url
 
         scan = self._injector.scan(page_text)

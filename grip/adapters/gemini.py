@@ -192,6 +192,12 @@ class GeminiAdapter:
             if len(function_calls) > 1:
                 raise LLMProtocolError("multiple tool calls are unsupported", usage)
             fc = function_calls[0]
+            try:
+                arguments = _parse_args(fc.args if fc.args is not None else {})
+            except ValueError:
+                raise LLMProtocolError(
+                    "tool arguments must be a valid JSON object", usage
+                ) from None
             candidates = getattr(response, "candidates", None) or []
             candidates = candidates if isinstance(candidates, list) else []
             native = getattr(candidates[0], "content", None) if candidates else None
@@ -204,7 +210,7 @@ class GeminiAdapter:
             return LLMResponse(
                 content=None,
                 usage=usage,
-                tool_call=ToolCall(name=fc.name or "", arguments=fc.args or {}, id=fc.id),
+                tool_call=ToolCall(name=fc.name or "", arguments=arguments, id=fc.id),
                 replay_metadata=metadata,
             )
         return LLMResponse(content=response.text, tool_call=None, usage=usage)

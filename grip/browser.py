@@ -294,19 +294,6 @@ class Browser:
         target_id = result["targetId"]
 
         page_engine = CDPEngine()
-        await page_engine.connect(self._page_ws_url(target_id))
-        # Before goto(), not after: emulation set post-navigation is too late for a
-        # page that branches its layout/UA off these on the very first paint.
-        await self._apply_viewport(page_engine)
-        if self._geolocation:
-            await page_engine.send(
-                "Emulation.setGeolocationOverride",
-                {
-                    "latitude": self._geolocation["latitude"],
-                    "longitude": self._geolocation["longitude"],
-                    "accuracy": self._geolocation.get("accuracy", 1),
-                },
-            )
         page = Page(
             engine=page_engine,
             trace=self.trace,
@@ -323,16 +310,34 @@ class Browser:
         self._pages.append(page)
         self._popup_owners[target_id] = page
         try:
+            await page_engine.connect(self._page_ws_url(target_id))
+            # Before goto(), not after: emulation set post-navigation is too late for a
+            # page that branches its layout/UA off these on the very first paint.
+            await self._apply_viewport(page_engine)
+            if self._geolocation:
+                await page_engine.send(
+                    "Emulation.setGeolocationOverride",
+                    {
+                        "latitude": self._geolocation["latitude"],
+                        "longitude": self._geolocation["longitude"],
+                        "accuracy": self._geolocation.get("accuracy", 1),
+                    },
+                )
             await page.goto(url)
         except BaseException:
-            # If goto() fails — or the caller cancels us mid-navigate, which is what
-            # asyncio.wait_for() around open() does on timeout — this coroutine never
-            # returns, so the caller has no Page to close. The tab and its websocket
-            # would then stay open for the lifetime of the Browser. Cancellation is a
-            # BaseException, so `except Exception` would miss the common case.
-            # Shielded so the cleanup completes even while we are being cancelled.
-            with contextlib.suppress(Exception):
-                await asyncio.shield(asyncio.ensure_future(page.close()))
+            # No Page reaches the caller on failure. Keep its guards connected
+            # until target absence is verified, including under repeated cancel.
+            cleanup = asyncio.create_task(page.close())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not cleanup.cancelled() and cleanup.exception() is not None:
+                logger.debug("Failed to close incomplete tab %s", target_id,
+                             exc_info=cleanup.exception())
             raise
         return page
 
@@ -556,14 +561,21 @@ class Browser:
                 await page.close()
             except Exception:
                 logger.debug("Failed to close tab %s", page._target_id, exc_info=True)
-        self._pages.clear()
         # An attach delivered while an opener closes retains its owner and
         # must complete its guarded closure before any session is detached.
         while self._popup_tasks:
             await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
         # Flush queued attachment events before the final closure check.
         if self._engine and self._popup_attach_armed and not self._popup_chrome_terminated:
-            targets = await self._engine.send("Target.getTargets", {})
+            try:
+                targets = await self._engine.send("Target.getTargets", {}, timeout=2.0)
+            except Exception:
+                if self._launcher is None:
+                    raise
+                # A dead transport cannot prove target absence. Owned process
+                # death can, and must precede detaching any page guard socket.
+                await self._shutdown_owned_chrome(graceful=False)
+                targets = {"targetInfos": []}
             while self._popup_tasks:
                 await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
             target_infos = targets.get("targetInfos")
@@ -590,11 +602,16 @@ class Browser:
             # End the owned process before releasing debugger pauses. A remote
             # browser instead requires all owned openers/blocked children gone.
             await self._shutdown_owned_chrome()
+        if self._popup_chrome_terminated:
+            for page in dict.fromkeys([*self._pages, *self._popup_owners.values()]):
+                await page.close()
+        self._pages.clear()
         if self._engine and self._popup_attach_armed:
-            with contextlib.suppress(Exception):
-                await self._engine.send("Target.setAutoAttach", {
-                    "autoAttach": False, "waitForDebuggerOnStart": False, "flatten": True,
-                })
+            if not self._popup_chrome_terminated:
+                with contextlib.suppress(Exception):
+                    await self._engine.send("Target.setAutoAttach", {
+                        "autoAttach": False, "waitForDebuggerOnStart": False, "flatten": True,
+                    })
             while self._popup_tasks:
                 await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
             await self._resolve_unclosed_popups()

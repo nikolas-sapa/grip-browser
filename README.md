@@ -650,6 +650,11 @@ grip doctor                            # check Python version, Chrome, grip vers
 picks an adapter from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
 (`OPENAI_BASE_URL` for an OpenAI-compatible endpoint), or `GEMINI_API_KEY`.
 
+`grip run` returns exit code 1 for a step limit, model timeout, action error or
+uncertain mutation, with the outcome on stderr. Text and JSON stdout retain the
+result data payload. Model text without an explicit `done` remains unverified;
+exit code 0 alone does not prove the task completed.
+
 ---
 
 ## MCP Server
