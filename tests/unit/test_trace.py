@@ -18,6 +18,24 @@ def make_entry(action="click", tokens=50, duration=120, error=None):
     )
 
 
+def test_typed_outputs_and_copied_errors_do_not_persist_transformed_values(tmp_path):
+    secret = "TRANSFORMED-secret-token"
+    original_error = BrowserError(ErrorType.ELEMENT_STALE, secret, 1.0)
+    entry = make_entry("type", error=original_error)
+    entry.input["text"] = "secret-token"
+    entry.output = {"ok": False, "reason": f"value_mismatch:{secret}",
+                    "result": {"values": [secret, 42, True, None]}}
+    trace = Trace()
+    trace.add(entry)
+    path = tmp_path / "trace.jsonl"
+    trace.to_jsonl(str(path))
+    assert "secret-token" not in path.read_text()
+    assert "secret-token" not in str(trace.actions[0].to_dict())
+    assert original_error.message == secret and entry.error is not original_error
+    assert entry.output["ok"] is False
+    assert entry.output["result"]["values"][1:] == [42, True, None]
+
+
 def test_trace_starts_empty():
     t = Trace()
     assert list(t.actions) == []

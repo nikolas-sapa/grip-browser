@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import importlib
 import json
 from typing import Any
 
+from grip.adapters.base import LLMProtocolError, LLMResponse, LLMUsage, ToolCall, _reported_count
+
+openai: Any
 try:
-    import openai  # type: ignore[import-not-found]  # optional dependency, guarded below
+    openai = importlib.import_module("openai")
 except ImportError:
     openai = None
-
-from grip.adapters.base import LLMResponse, ToolCall
 
 
 class OpenAIAdapter:
@@ -38,15 +40,53 @@ class OpenAIAdapter:
         if tools:
             kwargs["tools"] = tools
         response = await self._client.chat.completions.create(**kwargs)
+        raw_usage = getattr(response, "usage", None)
+        usage = (
+            None
+            if raw_usage is None
+            else LLMUsage(
+                provider="openai",
+                total_tokens=_reported_count(getattr(raw_usage, "total_tokens", None)),
+                input_tokens=_reported_count(getattr(raw_usage, "prompt_tokens", None)),
+                output_tokens=_reported_count(getattr(raw_usage, "completion_tokens", None)),
+                cache_read_input_tokens=_reported_count(
+                    getattr(
+                        getattr(raw_usage, "prompt_tokens_details", None), "cached_tokens", None
+                    )
+                ),
+                thought_tokens=_reported_count(
+                    getattr(
+                        getattr(raw_usage, "completion_tokens_details", None),
+                        "reasoning_tokens",
+                        None,
+                    )
+                ),
+            )
+        )
+        if not response.choices:
+            raise LLMProtocolError("model response contains no choices", usage)
         choice = response.choices[0]
         msg = choice.message
         if msg.tool_calls:
+            if len(msg.tool_calls) > 1:
+                raise LLMProtocolError("multiple tool calls are unsupported", usage)
             tc = msg.tool_calls[0]
+            try:
+                arguments = json.loads(tc.function.arguments)
+                if not isinstance(arguments, dict):
+                    raise ValueError("not an object")
+                json.dumps(arguments, allow_nan=False)
+            except (TypeError, ValueError, RecursionError):
+                raise LLMProtocolError(
+                    "tool arguments must be a valid JSON object", usage
+                ) from None
             return LLMResponse(
                 content=None,
+                usage=usage,
                 tool_call=ToolCall(
                     name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
+                    id=tc.id,
+                    arguments=arguments,
                 ),
             )
-        return LLMResponse(content=msg.content, tool_call=None)
+        return LLMResponse(content=msg.content, tool_call=None, usage=usage)

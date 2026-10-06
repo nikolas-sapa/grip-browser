@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from grip.adapters.base import LLMUsage
 from grip.errors.types import BrowserError
 
 
@@ -18,6 +19,7 @@ class TraceEntry:
     tokens_consumed: int
     duration_ms: int
     error: BrowserError | None = None
+    model_usage: LLMUsage | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -28,6 +30,8 @@ class TraceEntry:
             "tokens_consumed": self.tokens_consumed,
             "duration_ms": self.duration_ms,
         }
+        if self.action == "model_call":
+            d["model_usage"] = self.model_usage.to_dict() if self.model_usage else None
         if self.error:
             d["error"] = {
                 "type": self.error.type.value,
@@ -39,6 +43,16 @@ class TraceEntry:
 
 
 _REDACTED_TEXT = "[REDACTED — typed text is never persisted]"
+
+
+def _redact_typed_output(value: Any) -> Any:
+    if isinstance(value, str):
+        return _REDACTED_TEXT
+    if isinstance(value, dict):
+        return {key: _redact_typed_output(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_typed_output(child) for child in value]
+    return value
 
 
 # A Browser's Trace outlives any single Page and every action on every page
@@ -55,14 +69,30 @@ class Trace:
         self.total_tokens: int = 0
         self.total_duration_ms: int = 0
         self.errors: list[BrowserError] = []
+        self.model_calls = 0
+        self.model_calls_with_usage = 0
+        self.model_usage_totals: dict[str, int] = {}
 
     def add(self, entry: TraceEntry) -> None:
         # An agent types passwords. The trace is a debugging artifact that gets
         # committed, pasted into issues and shipped to logs — the one place a
         # credential must not be. Redact at entry, not at serialization, so the
         # secret never lands in memory for a caller to read off `trace.actions`.
-        if entry.action == "type" and "text" in entry.input:
-            entry.input = {**entry.input, "text": _REDACTED_TEXT}
+        if entry.action == "type":
+            if "text" in entry.input:
+                entry.input = {**entry.input, "text": _REDACTED_TEXT}
+            entry.output = _redact_typed_output(entry.output)
+            if entry.error is not None:
+                entry.error = replace(entry.error, message=_REDACTED_TEXT)
+        if entry.action == "model_call":
+            self.model_calls += 1
+            if entry.model_usage is not None:
+                self.model_calls_with_usage += 1
+                for field, value in entry.model_usage.to_dict().items():
+                    if type(value) is int:
+                        self.model_usage_totals[field] = (
+                            self.model_usage_totals.get(field, 0) + value
+                        )
         self.actions.append(entry)
         self.total_tokens += entry.tokens_consumed
         self.total_duration_ms += entry.duration_ms

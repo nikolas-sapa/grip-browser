@@ -269,9 +269,8 @@ def _stale_error():
 
 
 @pytest.mark.asyncio
-async def test_tool_error_is_fed_back_and_the_run_continues():
-    """A stale click must not end the run: the classifier's whole recovery
-    taxonomy exists to be acted on."""
+async def test_mutation_semantic_error_does_not_justify_retry():
+    """Semantic error alone cannot prove a browser action emitted no events."""
     from grip.errors import GripError
 
     page = FakePage(["A", "B"])
@@ -290,10 +289,10 @@ async def test_tool_error_is_fed_back_and_the_run_continues():
     ]
     runner = Runner(llm=make_llm(responses), page=page, trace=Trace())
     result = await runner.run("do the thing")
-    tool_msgs = [str(m["content"]) for m in runner._messages if m.get("role") == "tool"]
-    assert any("ELEMENT_STALE" in m for m in tool_msgs)
-    assert any("RE_SNAPSHOT" in m for m in tool_msgs), "recovery hint was not passed on"
-    assert result.data == "ok", "run aborted instead of recovering"
+    assert result.outcome == "ambiguous_action" and result.success is False
+    assert calls == ["A"]
+    assert "do not repeat" in result.error
+    assert not any(m.get("role") == "tool" for m in runner._messages)
 
 
 @pytest.mark.asyncio
@@ -305,9 +304,9 @@ async def test_missing_tool_argument_does_not_crash_the_run():
     ]
     runner = Runner(llm=make_llm(responses), page=FakePage(["A"]), trace=Trace())
     result = await runner.run("do the thing")
-    assert result.data == "ok"
-    tool_msgs = [str(m["content"]) for m in runner._messages if m.get("role") == "tool"]
-    assert any("target" in m and "ERROR" in m for m in tool_msgs)
+    assert result.outcome == "action_error" and result.success is False
+    assert "target" in result.error
+    assert not any(m.get("role") == "tool" for m in runner._messages)
 
 
 @pytest.mark.asyncio
@@ -333,12 +332,12 @@ async def test_error_results_are_not_fenced_as_untrusted_page_text():
 
     page = FakePage(["A", "B"])
 
-    async def always_stale(target):
+    async def always_stale(max_chars=None):
         raise GripError(_stale_error())
 
-    page.click = always_stale
+    page.read = always_stale
     responses = [
-        LLMResponse(content=None, tool_call=ToolCall(name="click", arguments={"target": "A"})),
+        LLMResponse(content=None, tool_call=ToolCall(name="read", arguments={})),
         LLMResponse(content=None, tool_call=ToolCall(name="done", arguments={"result": "ok"})),
     ]
     runner = Runner(llm=make_llm(responses), page=page, trace=Trace())
@@ -410,3 +409,280 @@ def test_a_delta_cheaper_than_its_snapshot_is_still_sent():
     lean = SnapshotDelta(version=2, previous_version=1, removed=["e3"])
     _, out = _payload_with(lean, snapshot, last_sent=1)
     assert out.startswith("DELTA")
+
+
+@pytest.mark.asyncio
+async def test_replayed_legacy_calls_get_distinct_matching_ids():
+    runner = _runner_with(["First", "Second"])
+    await runner.run("click twice")
+    calls = [m["tool_calls"][0]["id"] for m in runner._messages if m.get("tool_calls")]
+    results = [m["tool_call_id"] for m in runner._messages if m["role"] == "tool"]
+    assert len(calls) == 2 and len(set(calls)) == 2
+    assert calls == results
+
+
+@pytest.mark.asyncio
+async def test_replayed_provider_call_retains_id_and_assistant_text():
+    call = MagicMock(name="provider_call")
+    call.name = "click"
+    call.arguments = {"target": "First"}
+    call.id = "toolu_provider_123"
+    runner = Runner(
+        llm=make_llm([
+            LLMResponse(content="Clicking now", tool_call=call),
+            LLMResponse(content=None, tool_call=ToolCall("done", {"result": "ok"})),
+        ]),
+        page=FakePage(["First"]), trace=Trace(),
+    )
+    await runner.run("click once")
+    assistant = next(m for m in runner._messages if m.get("tool_calls"))
+    result = next(m for m in runner._messages if m["role"] == "tool")
+    assert assistant["tool_calls"][0]["id"] == "toolu_provider_123"
+    assert result["tool_call_id"] == "toolu_provider_123"
+    assert assistant["content"] == "Clicking now"
+
+
+@pytest.mark.asyncio
+async def test_fallback_id_does_not_collide_with_prior_provider_id():
+    call = MagicMock(name="provider_call")
+    call.name, call.arguments, call.id = "click", {"target": "First"}, "grip_call_1"
+    runner = Runner(
+        llm=make_llm([
+            LLMResponse(content=None, tool_call=call),
+            LLMResponse(content=None, tool_call=ToolCall("click", {"target": "Second"})),
+            LLMResponse(content=None, tool_call=ToolCall("done", {"result": "ok"})),
+        ]),
+        page=FakePage(["First", "Second"]), trace=Trace(),
+    )
+    await runner.run("click twice")
+    ids = [m["tool_calls"][0]["id"] for m in runner._messages if m.get("tool_calls")]
+    assert ids[0] == "grip_call_1" and len(set(ids)) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", [
+    {"nested": {"text": "Ω 日本語"}},
+    {"nested": {"text": 'He said "hello", then \\ left'}},
+    {"nested": {"enabled": True, "disabled": False}},
+    {"nested": {"missing": None}},
+    {"nested": {"items": [1, "two", {"three": [False, None]}]}},
+    {},
+])
+async def test_tool_history_arguments_roundtrip_as_json(arguments):
+    import json
+
+    arguments = {"target": "First", **arguments} if arguments else arguments
+    name = "click" if arguments else "snapshot"
+    runner = Runner(
+        llm=make_llm([
+            LLMResponse(content=None, tool_call=ToolCall(name, arguments)),
+            LLMResponse(content="done", tool_call=None),
+        ]), page=FakePage(["First"]), trace=Trace(),
+    )
+    runner._dispatch = AsyncMock(return_value="clicked")
+    await runner.run("click once")
+    replay = next(m for m in runner._messages if m.get("tool_calls"))
+    serialized = replay["tool_calls"][0]["function"]["arguments"]
+    assert isinstance(serialized, str)
+    assert json.loads(serialized) == arguments
+    runner._dispatch.assert_awaited_once_with(name, arguments)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", [
+    {"nested": {"bad": float("nan")}}, {"bad": object()},
+    {"nested": {1: "coerced key"}}, {"nested": ("coerced", "tuple")},
+    {"nested": {"set value"}}, ["root must be object"],
+])
+async def test_non_json_tool_arguments_fail_before_dispatch(arguments):
+    runner = Runner(
+        llm=make_llm([LLMResponse(content=None, tool_call=ToolCall("click", arguments))]),
+        page=FakePage(["First"]), trace=Trace(),
+    )
+    runner._dispatch = AsyncMock(return_value="clicked")
+    with pytest.raises(ValueError, match="JSON"):
+        await runner.run("click once")
+    runner._dispatch.assert_not_awaited()
+    assert not any(m.get("tool_calls") for m in runner._messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", [
+    "done", "model_text", "empty", "blank", "step_limit", "zero_steps",
+    "llm_timeout", "provider_error", "initial_snapshot_error", "read_error",
+    "missing_done", "cancelled",
+])
+async def test_terminal_outcome_policy(case):
+    page = FakePage(["A"])
+    responses = [LLMResponse(None, ToolCall("done", {"result": "ok"}))]
+    options = {}
+    expected, data, success = "done", "ok", True
+    if case == "model_text":
+        responses = [LLMResponse("Final answer", None)]
+        expected, data, success = "model_text", "Final answer", None
+    elif case in {"empty", "blank"}:
+        responses = [LLMResponse(None if case == "empty" else "  ", None)]
+        expected, data, success = "action_error", None, False
+    elif case in {"step_limit", "zero_steps"}:
+        responses = [LLMResponse(None, ToolCall("snapshot", {}))] * 2
+        options["max_steps"] = 1 if case == "step_limit" else 0
+        expected, data, success = "step_limit", None, False
+    elif case == "llm_timeout":
+        responses = [TimeoutError("provider timeout")]
+        expected, data, success = "llm_timeout", None, False
+    elif case == "provider_error":
+        responses = [ConnectionError("provider disconnected")]
+        expected, data, success = "action_error", None, False
+    elif case == "initial_snapshot_error":
+        page.snapshot = AsyncMock(side_effect=RuntimeError("observation failed"))
+        expected, data, success = "action_error", None, False
+    elif case == "read_error":
+        responses = [LLMResponse(None, ToolCall("read", {}))]
+        page.read = AsyncMock(side_effect=RuntimeError("read failed"))
+        expected, data, success = "action_error", None, False
+    elif case == "missing_done":
+        responses = [LLMResponse(None, ToolCall("done", {}))]
+        expected, data, success = "action_error", None, False
+    elif case == "cancelled":
+        responses = [asyncio.CancelledError()]
+    runner = Runner(make_llm(responses), page, Trace(), **options)
+    if case == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await runner.run("goal")
+        return
+    start = time.monotonic()
+    result = await runner.run("goal")
+    assert time.monotonic() - start < 1
+    assert (result.outcome, result.data, result.success) == (expected, data, success)
+    if expected == "action_error":
+        assert result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,arguments", [
+    ("unknown", {}), ("done", {}), ("done", {"result": None}),
+    ("done", {"result": 7}), ("click", {}), ("click", {"target": 7}),
+    ("type", {"target": "A"}), ("type", {"target": "A", "text": None}),
+    ("select", {"target": "A"}), ("select", {"target": "A", "value": False}),
+    ("hover", {"target": []}), ("wait_for", {}),
+    ("wait_for", {"text": 7}), ("wait_for", {"text": "A", "selector": "button"}),
+    ("wait_for", {"text": "A", "timeout": -1}),
+    ("wait_for", {"text": "A", "timeout": True}),
+])
+async def test_invalid_tool_schema_never_dispatches(name, arguments):
+    runner = Runner(make_llm([LLMResponse(None, ToolCall(name, arguments))]),
+                    FakePage(["A"]), Trace())
+    runner._dispatch = AsyncMock(return_value="acted")
+    result = await runner.run("goal")
+    assert result.outcome == "action_error" and result.success is False and result.error
+    runner._dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", range(20))
+async def test_mutation_failure_never_replays(case):
+    from grip.errors.types import BrowserError, ErrorType, GripError, RecoveryAction
+
+    names = ["click", "type", "select"]
+    name = names[case % 3]
+    args = {"target": "Submit"}
+    if name == "type":
+        args["text"] = "value"
+    elif name == "select":
+        args["value"] = "value"
+    page = FakePage(["A"])
+    exception = [TimeoutError("lost response"), ConnectionError("transport loss"),
+                 RuntimeError("observation unavailable"),
+                 GripError(BrowserError(ErrorType.NETWORK_TIMEOUT, "timeout", 1,
+                                        [RecoveryAction.RETRY]))][case % 4]
+    mutation = AsyncMock()
+    setattr(page, name, mutation)
+    if case < 10:
+        mutation.side_effect = exception
+    else:
+        baseline = await page.snapshot()
+        page.snapshot = AsyncMock(side_effect=[baseline, exception])
+    llm = make_llm([LLMResponse(None, ToolCall(name, args))] * 3)
+    runner = Runner(llm, page, Trace(), max_steps=3)
+    result = await runner.run("submit once")
+    assert result.outcome == "ambiguous_action" and result.success is False
+    assert result.error and "do not repeat" in result.error.lower()
+    assert ("completed" in result.error) == (case >= 10)
+    mutation.assert_awaited_once()
+    assert llm.complete.await_count == 1
+    assert not any("suggested recovery" in str(m.get("content")) for m in runner._messages)
+
+
+@pytest.mark.asyncio
+async def test_failure_metadata_never_exposes_exception_body():
+    secret = "secret-typed-password-123"
+    runner = Runner(make_llm([ConnectionError(secret)]), FakePage(["A"]), Trace())
+    result = await runner.run("goal")
+    assert secret not in result.error
+    page = FakePage(["A"])
+    page.type = AsyncMock(side_effect=ConnectionError(secret))
+    trace = Trace()
+    runner = Runner(make_llm([LLMResponse(None, ToolCall("type", {
+        "target": "Password", "text": secret,
+    }))]), page, trace)
+    result = await runner.run("goal")
+    assert result.outcome == "ambiguous_action" and secret not in result.error
+    assert secret not in str([entry.to_dict() for entry in trace.actions])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", ["ELEMENT_STALE", "AMBIGUOUS_TARGET"])
+async def test_select_semantic_failure_after_opening_dropdown_is_not_retried(error_type):
+    from grip.errors.types import BrowserError, ErrorType, GripError, RecoveryAction
+
+    page = FakePage(["A"])
+    opened = []
+
+    async def partial_select(target, value):
+        opened.append(target)
+        raise GripError(BrowserError(ErrorType[error_type], "option not available", 1,
+                                     [RecoveryAction.RETRY]))
+
+    page.select = partial_select
+    llm = make_llm([
+        LLMResponse(None, ToolCall("select", {"target": "Dropdown", "value": "Choice"}))
+    ] * 3)
+    result = await Runner(llm, page, Trace(), max_steps=3).run("select once")
+    assert result.outcome == "ambiguous_action" and result.success is False
+    assert opened == ["Dropdown"] and llm.complete.await_count == 1
+    assert "do not repeat" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cdp_result", [
+    {"result": {"value": {"ok": False, "reason": "value_mismatch:controlled"}}},
+    {"result": {}},
+    {"exceptionDetails": {"text": "exception after input event"}},
+])
+async def test_actual_page_type_uncertain_cdp_result_never_repeats_input(cdp_result):
+    from grip.page import Page
+
+    mutation_attempts = []
+
+    async def send(method, params):
+        assert method == "Runtime.evaluate"
+        assert "dispatchEvent" in params["expression"]
+        mutation_attempts.append("input event attempted")
+        return cdp_result
+
+    engine = MagicMock()
+    engine.send = AsyncMock(side_effect=send)
+    trace = Trace()
+    page = Page(engine, trace)
+    snap = PageSnapshot(1, "https://fixture.test", "Field", [Element(
+        index=0, tag="input", role="textbox", text="Field", placeholder=None,
+        in_shadow_dom=False, cx=0, cy=0, ref="e1", handle="h1",
+    )], "", 0)
+    page._current_snapshot = snap
+    page.snapshot = AsyncMock(return_value=snap)
+    llm = make_llm([LLMResponse(None, ToolCall("type", {"target": "Field", "text": "value"}))] * 3)
+    result = await Runner(llm, page, trace, max_steps=3).run("type once")
+    assert result.outcome == "ambiguous_action" and result.success is False
+    assert mutation_attempts == ["input event attempted"]
+    assert engine.send.await_count == llm.complete.await_count == 1
+    assert "do not repeat" in result.error

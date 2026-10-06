@@ -4,6 +4,8 @@ import difflib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from grip.compression.summarizer import Summarizer
+
 if TYPE_CHECKING:
     from grip.compression.summarizer import Element, PageSnapshot
 
@@ -124,17 +126,38 @@ def build_delta(
     )
     delta.added = [el for ref, el in after.items() if ref not in before]
     delta.removed = [ref for ref in before if ref not in after]
-    delta.changed = [
-        (ref, before[ref].text, after[ref].text)
-        for ref in after
-        if ref in before and before[ref].text != after[ref].text
-    ]
+    for ref, el in after.items():
+        if ref not in before:
+            continue
+        old = before[ref]
+        old_tag = _TAG_ABBREV.get(old.tag, old.tag[:3])
+        new_tag = _TAG_ABBREV.get(el.tag, el.tag[:3])
+        old_desc, old_suffix = _element_description(old)
+        new_desc, new_suffix = _element_description(el)
+        if (old_tag, old_desc, old_suffix) != (new_tag, new_desc, new_suffix):
+            # Keep the label boundary explicit whenever state is present:
+            # label "Control (checked)" differs from checked label "Control".
+            if old_suffix or new_suffix:
+                old_desc = f"{old_desc!r}{old_suffix}"
+                new_desc = f"{new_desc!r}{new_suffix}"
+            # Keep text-only changes backward compatible. Include tag identity
+            # on both sides when it changes, so equal labels remain distinct.
+            if old_tag != new_tag:
+                old_desc = f"[{old_tag}] {old_desc}"
+                new_desc = f"[{new_tag}] {new_desc}"
+            delta.changed.append((ref, old_desc, new_desc))
     delta.content_ops = _content_ops(previous.text_content, current.text_content)
     return delta
 
 
 _TAG_ABBREV = {"button": "btn", "input": "inp", "a": "lnk", "select": "sel",
                "textarea": "inp"}
+
+
+def _element_description(el: Element) -> tuple[str, str]:
+    """Compare exactly the element state visible in the full snapshot."""
+    desc = el.text or el.placeholder or el.role
+    return desc, Summarizer._element_state_suffix(el)
 
 
 def format_delta(delta: SnapshotDelta) -> str:
@@ -144,7 +167,9 @@ def format_delta(delta: SnapshotDelta) -> str:
     for el in delta.added:
         abbrev = _TAG_ABBREV.get(el.tag, el.tag[:3])
         desc = el.text or el.placeholder or el.role
-        lines.append(f"  + [{abbrev}:{el.ref}] {desc!r}")
+        lines.append(
+            f"  + [{abbrev}:{el.ref}] {desc!r}{Summarizer._element_state_suffix(el)}"
+        )
     for ref in delta.removed:
         lines.append(f"  - [{ref}]")
     for ref, old, new in delta.changed:

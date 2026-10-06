@@ -13,6 +13,8 @@ def test_tool_call_has_expected_fields():
     tc = ToolCall(name="click", arguments={"target": "button"})
     assert tc.name == "click"
     assert tc.arguments["target"] == "button"
+    assert tc.id is None
+    assert ToolCall(name="click", arguments={}, id="toolu_test").id == "toolu_test"
 
 
 def test_llm_adapter_is_protocol():
@@ -174,11 +176,11 @@ async def test_gemini_adapter_encodes_request_from_runner_message_shapes():
         assert contents[0] == {"role": "user", "parts": [{"text": "Goal: find the price"}]}
         assert contents[1] == {
             "role": "model",
-            "parts": [{"function_call": {"name": "click", "args": {"target": "buy button"}}}],
+            "parts": [{"function_call": {"id": "0", "name": "click", "args": {"target": "buy button"}}}],
         }
         assert contents[2] == {
             "role": "user",
-            "parts": [{"function_response": {"name": "click", "response": {"result": "clicked"}}}],
+            "parts": [{"function_response": {"id": "0", "name": "click", "response": {"result": "clicked"}}}],
         }
 
         # Tool declarations: "click" keeps its schema, "snapshot" (empty
@@ -200,6 +202,7 @@ async def test_gemini_adapter_decodes_function_call_response():
         mock_genai.Client.return_value = mock_client
 
         mock_call = MagicMock()
+        mock_call.id = None
         mock_call.name = "click"
         mock_call.args = {"target": "submit"}
         mock_response = MagicMock()

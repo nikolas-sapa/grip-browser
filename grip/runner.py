@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from grip.adapters.base import LLMAdapter
+from grip.adapters.base import LLMAdapter, LLMProtocolError, LLMUsage
 from grip.compression.summarizer import Summarizer
 from grip.errors import GripError
 from grip.page import Page
@@ -16,7 +17,7 @@ from grip.trace import Trace, TraceEntry
 # read() result sitting in the transcript stays cheaper than re-snapshotting.
 _READ_MAX_CHARS = 12000
 
-_TOOLS = [
+_TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
         "name": "snapshot",
         "description": "Take a fresh snapshot of the current page state.",
@@ -105,6 +106,57 @@ _FENCE_OPEN = "<page_state>\n"
 _FENCE_CLOSE = "\n</page_state>"
 
 
+def _serialize_tool_arguments(arguments: dict[str, Any]) -> str:
+    """Serialize without JSON's implicit key or tuple coercions."""
+    if not isinstance(arguments, dict):
+        raise ValueError("tool arguments must be a JSON object")
+
+    def validate(value: Any) -> None:
+        if isinstance(value, dict):
+            if not all(isinstance(key, str) for key in value):
+                raise ValueError("tool arguments must have JSON string keys")
+            for child in value.values():
+                validate(child)
+        elif isinstance(value, list):
+            for child in value:
+                validate(child)
+        elif value is not None and not isinstance(value, (str, bool, int, float)):
+            raise ValueError("tool arguments must contain JSON values")
+
+    try:
+        validate(arguments)
+        return json.dumps(arguments, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("tool arguments must be valid JSON") from exc
+
+
+def _validate_tool_call(name: str, arguments: dict[str, Any]) -> None:
+    tool = next((tool for tool in _TOOLS if tool["function"]["name"] == name), None)
+    if tool is None:
+        raise ValueError("unknown tool")
+    schema = tool["function"]["parameters"]
+    for required in schema.get("required", []):
+        if required not in arguments:
+            raise ValueError(f"missing required argument: {required}")
+    for key, value in arguments.items():
+        field = schema["properties"].get(key)
+        if field is None:
+            continue
+        if field["type"] == "string" and not isinstance(value, str):
+            raise ValueError(f"argument {key} must be text")
+        if field["type"] == "number" and (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+        ):
+            raise ValueError(f"argument {key} must be a positive number")
+    conditions = sum(bool(arguments.get(key)) for key in ("text", "ref", "selector"))
+    if name == "wait_for" and conditions != 1:
+        raise ValueError("wait_for requires exactly one nonempty condition")
+
+
+class _AmbiguousAction(Exception):
+    pass
+
+
 def _fence(payload: object) -> str:
     # A page that emits the literal closing tag would otherwise walk out of the
     # fence and have the rest of its text read as instructions — the same forgery
@@ -117,7 +169,14 @@ def _fence(payload: object) -> str:
 class RunResult:
     data: Any
     trace: Trace
-    tokens: int = 0
+    tokens: int | None = None
+    outcome: str | None = None
+    error: str | None = None
+    success: bool | None = None
+    estimated_tokens: int = 0
+    model_calls: int = 0
+    usage: dict[str, int] = field(default_factory=dict)
+    usage_complete: bool = False
 
 
 class Runner:
@@ -189,8 +248,64 @@ class Runner:
             }
 
     async def run(self, goal: str) -> RunResult:
-        snapshot = await self._page.snapshot()
-        page_state = self._summarizer.format(snapshot)
+        estimate_start = self._trace.total_tokens
+        calls: list[LLMUsage | None] = []
+
+        def total(usage: LLMUsage | None) -> int | None:
+            if usage is None:
+                return None
+            if usage.total_tokens is not None:
+                return usage.total_tokens
+            if usage.input_tokens is None or usage.output_tokens is None:
+                return None
+            if usage.provider == "gemini" and usage.thought_tokens is None:
+                return None
+            measured = usage.input_tokens + usage.output_tokens
+            if usage.provider == "anthropic":
+                if (usage.cache_read_input_tokens is None
+                        or usage.cache_creation_input_tokens is None):
+                    return None
+                measured += usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+            elif usage.provider == "gemini":
+                # Gemini candidate output excludes separately reported thoughts.
+                measured += usage.thought_tokens or 0
+            return measured
+
+        def finish(
+            outcome: str, data: Any = None, error: str | None = None,
+            success: bool | None = False,
+        ) -> RunResult:
+            measured = [total(usage) for usage in calls]
+            complete = bool(calls) and all(value is not None for value in measured)
+            raw: dict[str, int] = {}
+            for usage in calls:
+                if usage is not None:
+                    for key, value in usage.to_dict().items():
+                        if type(value) is int:
+                            raw[key] = raw.get(key, 0) + value
+            return RunResult(
+                data, self._trace,
+                sum(value for value in measured if value is not None) if complete else None,
+                outcome, error, success,
+                estimated_tokens=self._trace.total_tokens - estimate_start,
+                model_calls=len(calls), usage=raw, usage_complete=complete,
+            )
+
+        def record_call(usage: LLMUsage | None, started: float) -> None:
+            calls.append(usage)
+            self._trace.add(TraceEntry(
+                timestamp=time.time(), action="model_call", input={}, output={},
+                tokens_consumed=0, duration_ms=int((time.monotonic() - started) * 1000),
+                model_usage=usage,
+            ))
+
+        try:
+            snapshot = await self._page.snapshot()
+            page_state = self._summarizer.format(snapshot)
+        except Exception as exc:
+            return finish(
+                "action_error", error=f"Initial observation failed ({type(exc).__name__})"
+            )
         self._last_sent_version = snapshot.version
         messages = self._messages
         messages[:] = [
@@ -206,27 +321,48 @@ class Runner:
             {"role": "user", "content": f"Goal: {goal}\n\n{_fence(page_state)}"},
         ]
 
-        final_result = None
-        for _ in range(self._max_steps):
+        last_error: str | None = None
+        used_call_ids: set[str] = set()
+        for step in range(self._max_steps):
             t0 = time.monotonic()
+            measured_usage = None
             try:
                 # Unbounded before, inside a 20-step loop: one stalled provider
                 # call hung the agent forever with no way out.
                 async with asyncio.timeout(self._llm_timeout):
                     response = await self._llm.complete(messages=messages, tools=_TOOLS)
+                measured_usage = response.usage
             except TimeoutError:
-                break
+                record_call(None, t0)
+                return finish("llm_timeout", error="Model request timed out")
+            except Exception as exc:
+                record_call(exc.usage if isinstance(exc, LLMProtocolError) else None, t0)
+                return finish("action_error", error=f"Model request failed ({type(exc).__name__})")
+            except asyncio.CancelledError:
+                record_call(None, t0)
+                raise
+            record_call(measured_usage, t0)
             duration_ms = int((time.monotonic() - t0) * 1000)
 
             if response.tool_call is None:
-                break
+                if response.content and response.content.strip():
+                    return finish("model_text", data=response.content, success=None)
+                return finish("action_error", error="Model returned no text or tool call")
 
             tc = response.tool_call
+            # Validate replay before acting: a successful browser action must
+            # always have arguments the provider can reconstruct next turn.
+            serialized_arguments = _serialize_tool_arguments(tc.arguments)
+            try:
+                _validate_tool_call(tc.name, tc.arguments)
+            except ValueError as exc:
+                return finish("action_error", error=str(exc))
             # An error message is written by the runner, not by the page. Fencing
             # it would put the one instruction the model is meant to act on — the
             # suggested recovery — inside the region the system prompt tells it to
             # never follow.
             errored = False
+            dispatch_started = time.monotonic()
             try:
                 tool_result = await self._dispatch(tc.name, tc.arguments)
             except GripError as e:
@@ -239,12 +375,19 @@ class Runner:
                     f"ERROR {e.error.type.name}: {e.error.message} "
                     f"(suggested recovery: {recovery})"
                 )
-            except KeyError as e:
-                errored = True
-                # ponytail: a KeyError raised deeper than argument lookup is
-                # reported as a missing argument too. Mis-attributed, but a wrong
-                # label the model can retry past beats ending the run.
-                tool_result = f"ERROR: tool call {tc.name!r} is missing argument {e}"
+            except _AmbiguousAction as exc:
+                duration_ms = int((time.monotonic() - dispatch_started) * 1000)
+                message = str(exc)
+                self._trace.add(TraceEntry(
+                    timestamp=time.time(), action=tc.name, input=tc.arguments,
+                    output={"outcome": "ambiguous_action", "error": message},
+                    tokens_consumed=0, duration_ms=duration_ms,
+                ))
+                return finish("ambiguous_action", error=message)
+            except Exception as exc:
+                return finish("action_error", error=f"Tool failed ({type(exc).__name__})")
+            last_error = str(tool_result) if errored else None
+            duration_ms = int((time.monotonic() - dispatch_started) * 1000)
 
             self._trace.add(TraceEntry(
                 timestamp=time.time(),
@@ -256,41 +399,57 @@ class Runner:
             ))
 
             if tc.name == "done":
-                final_result = tc.arguments.get("result")
-                break
+                return finish("done", data=tc.arguments["result"], success=True)
 
+            call_id = tc.id or f"grip_call_{step}"
+            if tc.id is None:
+                while call_id in used_call_ids:
+                    call_id += "_"
+            used_call_ids.add(call_id)
             messages.append({
                 "role": "assistant",
-                "content": None,
-                "tool_calls": [{"id": "0", "type": "function", "function": {
-                    "name": tc.name, "arguments": str(tc.arguments),
+                "content": response.content,
+                "tool_calls": [{"id": call_id, "type": "function", "function": {
+                    "name": tc.name, "arguments": serialized_arguments,
                 }}],
             })
             messages.append({
                 "role": "tool",
-                "tool_call_id": "0",
+                "tool_call_id": call_id,
                 "content": str(tool_result) if errored else _fence(tool_result),
             })
             self._prune_superseded()
 
-        return RunResult(data=final_result, trace=self._trace, tokens=self._trace.total_tokens)
+        if last_error is not None:
+            return finish("action_error", error="Safe action recovery exhausted step limit")
+        return finish("step_limit", error="Maximum model steps reached")
 
     async def _dispatch(self, name: str, args: dict[str, Any]) -> Any:
         if name == "snapshot":
             await self._page.snapshot()
             return self._page_payload()
-        if name == "click":
-            await self._page.click(args["target"])
-            await self._page.snapshot()
-            return self._page_payload()
-        if name == "type":
-            await self._page.type(args["target"], args["text"])
-            await self._page.snapshot()
-            return self._page_payload()
-        if name == "select":
-            await self._page.select(args["target"], args["value"])
-            await self._page.snapshot()
-            return self._page_payload()
+        if name in {"click", "type", "select"}:
+            try:
+                if name == "click":
+                    await self._page.click(args["target"])
+                elif name == "type":
+                    await self._page.type(args["target"], args["text"])
+                else:
+                    await self._page.select(args["target"], args["value"])
+            except Exception as exc:
+                # Page method exceptions do not prove that events were absent:
+                # type() can emit input/change then report ELEMENT_STALE, and
+                # custom select() can open its trigger before option resolution.
+                raise _AmbiguousAction(
+                    "Action outcome uncertain; do not repeat action"
+                ) from exc
+            try:
+                await self._page.snapshot()
+                return self._page_payload()
+            except Exception as exc:
+                raise _AmbiguousAction(
+                    "Action completed but observation failed; do not repeat action"
+                ) from exc
         if name == "hover":
             await self._page.hover(args["target"])
             await self._page.snapshot()

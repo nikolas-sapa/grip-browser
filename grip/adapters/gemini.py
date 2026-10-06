@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 from typing import Any
 
+from grip.adapters.base import LLMProtocolError, LLMResponse, LLMUsage, ToolCall, _reported_count
+
+genai: Any
+genai_types: Any
 try:
-    from google import genai  # type: ignore[import-not-found]  # optional dependency, guarded below
-    from google.genai import types as genai_types  # type: ignore[import-not-found]
+    genai = importlib.import_module("google.genai")
+    genai_types = importlib.import_module("google.genai.types")
 except ImportError:
     genai = None
     genai_types = None
-
-from grip.adapters.base import LLMResponse, ToolCall
 
 
 def _parse_args(raw: Any) -> dict[str, Any]:
@@ -67,11 +70,15 @@ def _to_contents(
                 for tc in tool_calls:
                     fn = tc["function"]
                     call_names[tc.get("id", "")] = fn["name"]
-                    parts.append(
-                        genai_types.Part.from_function_call(
-                            name=fn["name"], args=_parse_args(fn.get("arguments"))
-                        )
+                    part = genai_types.Part.from_function_call(
+                        name=fn["name"], args=_parse_args(fn.get("arguments"))
                     )
+                    if isinstance(tc.get("id"), str) and tc["id"]:
+                        if isinstance(part, dict):
+                            part["function_call"]["id"] = tc["id"]
+                        else:
+                            part.function_call.id = tc["id"]
+                    parts.append(part)
                 contents.append(genai_types.Content(role="model", parts=parts))
             else:
                 content = msg.get("content")
@@ -80,16 +87,16 @@ def _to_contents(
                     contents.append(genai_types.Content(role="model", parts=[part]))
         elif role == "tool":
             name = call_names.get(msg.get("tool_call_id", ""), "")
-            contents.append(
-                genai_types.Content(
-                    role="user",
-                    parts=[
-                        genai_types.Part.from_function_response(
-                            name=name, response={"result": msg.get("content")}
-                        )
-                    ],
-                )
+            part = genai_types.Part.from_function_response(
+                name=name, response={"result": msg.get("content")}
             )
+            call_id = msg.get("tool_call_id")
+            if isinstance(call_id, str) and call_id:
+                if isinstance(part, dict):
+                    part["function_response"]["id"] = call_id
+                else:
+                    part.function_response.id = call_id
+            contents.append(genai_types.Content(role="user", parts=[part]))
 
     return system_instruction, contents
 
@@ -127,11 +134,33 @@ class GeminiAdapter:
         response = await self._client.aio.models.generate_content(
             model=self._model, contents=contents, config=config
         )
+        raw_usage = getattr(response, "usage_metadata", None)
+        usage = (
+            None
+            if raw_usage is None
+            else LLMUsage(
+                provider="gemini",
+                total_tokens=_reported_count(getattr(raw_usage, "total_token_count", None)),
+                input_tokens=_reported_count(getattr(raw_usage, "prompt_token_count", None)),
+                output_tokens=_reported_count(getattr(raw_usage, "candidates_token_count", None)),
+                cache_read_input_tokens=_reported_count(
+                    getattr(raw_usage, "cached_content_token_count", None)
+                ),
+                thought_tokens=_reported_count(getattr(raw_usage, "thoughts_token_count", None)),
+            )
+        )
+        for candidate in getattr(response, "candidates", None) or []:
+            for part in getattr(getattr(candidate, "content", None), "parts", None) or []:
+                if getattr(part, "thought_signature", None):
+                    raise LLMProtocolError("Gemini thought signature replay is unsupported", usage)
         function_calls = response.function_calls
         if function_calls:
+            if len(function_calls) > 1:
+                raise LLMProtocolError("multiple tool calls are unsupported", usage)
             fc = function_calls[0]
             return LLMResponse(
                 content=None,
-                tool_call=ToolCall(name=fc.name or "", arguments=fc.args or {}),
+                usage=usage,
+                tool_call=ToolCall(name=fc.name or "", arguments=fc.args or {}, id=fc.id),
             )
-        return LLMResponse(content=response.text, tool_call=None)
+        return LLMResponse(content=response.text, tool_call=None, usage=usage)

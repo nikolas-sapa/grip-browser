@@ -418,7 +418,9 @@ async with Browser(llm=llm, headless=True) as browser:
         url="https://amazon.com"
     )
     print(result.data)
-    print(f"Used {result.tokens} tokens")
+    print(f"Outcome: {result.outcome}")
+    print(f"Provider tokens: {result.tokens if result.tokens is not None else 'unknown'}")
+    print(f"Estimated page tokens: {result.estimated_tokens}")
 ```
 
 grip handles the snapshot → decide → act loop automatically. You just provide the goal.
