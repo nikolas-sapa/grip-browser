@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.5] - 2026-10-06
+
+Browser and provider correctness fixes.
+
+### Fixed
+
+- Snapshot deltas retain visible control state changes.
+- Anthropic requests and replay use native tool history; tool arguments use strict JSON.
+- Runner distinguishes terminal outcomes and stops after uncertain mutations instead of replaying actions.
+- Reported provider usage stays separate from page estimates and preserves unknown counts. `RunResult.tokens` now means actual per-run usage and may be `None`; use `estimated_tokens` for page estimates.
+- Typed trace outputs and copied errors redact page-transformed values.
+- Gemini replays native signed Content with exact signature bytes and Part order.
+- OpenAI requests single tool calls; responses containing multiple calls remain explicitly unsupported.
+- Browser-level popup attachment events route to their opener, restoring default blocking and opt-in observation.
+- Runtime version and package metadata both report 0.8.5.
+
 ## [0.8.4] - 2026-10-01
 
 Docs and landing page only. No change to any code path.
