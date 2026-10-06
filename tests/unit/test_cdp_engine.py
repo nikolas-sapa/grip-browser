@@ -183,3 +183,35 @@ async def test_failed_socket_send_removes_pending_request(mock_ws):
         await engine.send("Runtime.evaluate")
 
     assert len(engine._pending) == 0
+
+
+@pytest.mark.asyncio
+async def test_exact_session_events_do_not_cross_route_identical_request_ids():
+    engine = CDPEngine()
+    seen = []
+    def root(params):
+        return seen.append(('root', params['requestId']))
+    def one(params):
+        return seen.append(('one', params['requestId']))
+    def two(params):
+        return seen.append(('two', params['requestId']))
+    engine.on('Fetch.requestPaused', root)
+    engine.on_session('one', 'Fetch.requestPaused', one)
+    engine.on_session('two', 'Fetch.requestPaused', two)
+
+    class Socket:
+        def __aiter__(self):
+            return self.messages()
+
+        async def messages(self):
+            for session in ('one', 'two', None):
+                event = {'method': 'Fetch.requestPaused', 'params': {'requestId': 'same'}}
+                if session is not None:
+                    event['sessionId'] = session
+                yield json.dumps(event)
+
+    engine._ws = Socket()
+    await engine._receive_forever()
+    assert seen == [('one', 'same'), ('two', 'same'), ('root', 'same')]
+    engine.off_session('one', 'Fetch.requestPaused', one)
+    assert ('one', 'Fetch.requestPaused') not in engine._session_listeners

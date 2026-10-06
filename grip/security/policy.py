@@ -85,21 +85,13 @@ class NavigationPolicy:
         stays the default, it just becomes an explicit, documented choice
         instead of a silent one.
 
-        Opting in costs exactly what blocking exists to prevent: a popup opens
-        a brand-new CDP target with its own independent Fetch-domain state, and
-        this policy is NOT enforced inside it — no SSRF/private-address check,
-        no scheme check, nothing. A page that can `window.open()` at all can
-        reach `http://169.254.169.254/` or `file:///etc/passwd` from inside the
-        popup regardless of how this policy is otherwise configured. Set this
-        only when you trust the target to open windows — e.g. driving an OAuth
-        provider you already trust.
-
-        ponytail: the proper long-term fix is per-target Fetch interception —
-        arm Fetch.enable on the popup's session before resuming it from its
-        paused state, so the same policy applies there too. That needs
-        session-scoped command routing and demuxing Fetch.requestPaused by
-        session, which CDPEngine does not do today (one target per websocket).
-        This flag is the stopgap until that lands.
+        Allowed popups inherit this policy's Document, XHR and Fetch checks.
+        Interception is armed on their exact CDP session before debugger resume
+        and persists across navigation and named-window reuse. Private-address
+        and file permissions remain independent for intercepted requests.
+        Non-network javascript navigation does not emit Fetch events; Chrome
+        reports an empty initial target URL, so opt-in popups can execute it.
+        DNS and WebSocket limitations above apply equally to popups.
         """
         return self._allow_popups
 

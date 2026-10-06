@@ -302,18 +302,11 @@ and the actual outgoing `User-Agent` request header, not just the former). It is
 off by default because grip is a general-purpose SDK and silently masking
 automation would surprise anyone using it for ordinary testing.
 
-The override is per-target: applied to every tab `Browser.open()` creates,
-full stop. It does not automatically extend to any other target — a popup
-opened via `window.open()` under `allow_popups=True` is a distinct CDP target
-with its own independent Network-domain state, so the opener's masked UA does
-not reach it by itself. `Page._resume_popup_target` re-applies the override to
-a popup's own session before releasing it, but this is **verified only by unit
-test against a mocked engine, not against a real popup**: on this Chrome/CDP
-version, `Target.attachedToTarget` was never observed to fire for a
-`window.open()` popup at all — a pre-existing gap, unrelated to this change,
-already documented at `tests/integration/test_capabilities.py:279`
-(`test_wait_for_popup_observes_a_real_popup`, skipped). The popup code path
-this stealth fix adds could not be exercised end to end on this build.
+The user-agent override applies to every managed tab and allowed popup before it resumes. Real Chrome tests verify both `navigator.userAgent` and the popup's outgoing HTTP `User-Agent` header.
+
+Popup permissions are independent: `allow_private=True` permits private addresses while metadata, scheme and popup checks remain active. `allow_popups=True` gives child targets the opener's Document/XHR/Fetch policy before resuming them. Persistent child guards cover redirects, nested popups and named-window reuse; browser teardown closes guarded children before detaching. A direct `Page` wrapper with a known target identity refuses existing unmanaged related windows before interaction.
+
+Allowed popups still require trusted content. Chromium exposes some nonnetwork `javascript:` popup targets with an empty initial URL and no Fetch event, so this guard cannot prevent that script execution. The guard blocks HTTP requests, not speculative TCP connections. DNS rebinding and WebSocket handshakes remain outside Fetch interception. Default popup blocking closes the child while paused.
 
 Measured 2026-08-12, per-signal, against the sannysoft table directly (57 rows;
 `benchmarks/bench_stealth_signals.py`) on Chrome for Testing 151.0.7922.34,

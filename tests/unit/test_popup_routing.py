@@ -403,3 +403,13 @@ async def test_remote_missing_target_list_cannot_prove_safe_detachment(response)
     engine.disconnect.assert_not_called()
     assert not any(call.args[0] == "Target.setAutoAttach"
                    for call in engine.send.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_private_permission_still_arms_browser_popup_routing():
+    browser = Browser(allow_private=True)
+    browser._engine = native_engine()
+    await browser._ensure_popup_routing()
+    assert browser._popup_attach_armed
+    assert browser._engine.send.call_args.args[0] == "Target.setAutoAttach"
+    await browser.close()

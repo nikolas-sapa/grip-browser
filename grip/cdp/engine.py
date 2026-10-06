@@ -26,6 +26,7 @@ class CDPEngine:
         self._id = 0
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._listeners: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
+        self._session_listeners: dict[tuple[str, str], list[Callable[[dict[str, Any]], None]]] = {}
         self._receive_task: asyncio.Task[None] | None = None
         self._closed_reason: BrowserError | None = None
         # Per-call default for send(); a caller that wants a tighter budget for
@@ -116,6 +117,22 @@ class CDPEngine:
         if callback in listeners:
             listeners.remove(callback)
 
+    def on_session(
+        self, session_id: str, event: str, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Subscribe to one flattened child session, separate from root events."""
+        self._session_listeners.setdefault((session_id, event), []).append(callback)
+
+    def off_session(
+        self, session_id: str, event: str, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        key = (session_id, event)
+        listeners = self._session_listeners.get(key, [])
+        if callback in listeners:
+            listeners.remove(callback)
+        if not listeners:
+            self._session_listeners.pop(key, None)
+
     def _handle_target_crashed(self, params: dict[str, Any]) -> None:
         reason = params.get("reason", "unknown")
         error_code = params.get("errorCode")
@@ -177,7 +194,12 @@ class CDPEngine:
                     else:
                         fut.set_result(msg.get("result", {}))
             elif "method" in msg:
-                for cb in self._listeners.get(msg["method"], []):
+                session_id = msg.get("sessionId")
+                listeners = (
+                    self._session_listeners.get((session_id, msg["method"]), [])
+                    if session_id is not None else self._listeners.get(msg["method"], [])
+                )
+                for cb in tuple(listeners):
                     try:
                         cb(msg.get("params", {}))
                     except Exception:

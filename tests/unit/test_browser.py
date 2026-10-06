@@ -323,7 +323,7 @@ def test_page_ws_url_keeps_a_non_default_remote_port():
 async def test_pages_property_and_get_page_track_open_and_closed_tabs():
     browser = Browser()
     engine = MagicMock()
-    engine.send = AsyncMock(return_value={})
+    engine.send = AsyncMock(return_value={"targetInfos": [], "success": True})
     browser._engine = engine
 
     class _Stub:
@@ -808,3 +808,187 @@ async def test_open_skips_geolocation_override_when_not_configured():
     assert not any(
         c.args[0] == "Emulation.setGeolocationOverride" for c in page_engine.send.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_owned_native_shutdown_verifies_exit_before_disconnecting():
+    order = []
+    process = MagicMock()
+    process.poll.side_effect = [None, 0]
+    process.wait.side_effect = lambda timeout: order.append("process_exit")
+    launcher = MagicMock()
+    launcher._process = process
+    launcher.aterminate = AsyncMock(side_effect=lambda: order.append("cleanup"))
+    engine = MagicMock()
+    engine.send = AsyncMock(side_effect=lambda *a, **k: order.append(a[0]))
+    engine.disconnect = AsyncMock(side_effect=lambda: order.append("disconnect"))
+    browser = Browser()
+    browser._launcher = launcher
+    browser._engine = engine
+    await browser.close()
+    assert order == ["Browser.close", "process_exit", "cleanup", "disconnect"]
+    assert browser._popup_chrome_terminated
+    assert browser._launcher is None
+
+
+@pytest.mark.asyncio
+async def test_owned_native_shutdown_timeout_falls_back_before_disconnecting():
+    import subprocess
+
+    order = []
+    process = MagicMock()
+    process.poll.side_effect = [None, 0]
+    process.wait.side_effect = subprocess.TimeoutExpired("chrome", 5)
+    launcher = MagicMock()
+    launcher._process = process
+    launcher.aterminate = AsyncMock(side_effect=lambda: order.append("terminate"))
+    engine = MagicMock()
+    engine.send = AsyncMock(side_effect=RuntimeError("native close unavailable"))
+    engine.disconnect = AsyncMock(side_effect=lambda: order.append("disconnect"))
+    browser = Browser()
+    browser._launcher = launcher
+    browser._engine = engine
+    await browser.close()
+    assert order == ["terminate", "disconnect"]
+    process.wait.assert_called_once_with(timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_owned_chrome_failed_process_death_retains_guards_and_ownership():
+    import subprocess
+
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = subprocess.TimeoutExpired("chrome", 5)
+    launcher = MagicMock()
+    launcher._process = process
+
+    async def cleanup():
+        launcher._process = None
+
+    launcher.aterminate = AsyncMock(side_effect=cleanup)
+    engine = MagicMock()
+    engine.send = AsyncMock(return_value={})
+    engine.disconnect = AsyncMock()
+    browser = Browser()
+    browser._launcher = launcher
+    browser._engine = engine
+    with pytest.raises(RuntimeError, match="remains alive"):
+        await browser.close()
+    engine.disconnect.assert_not_awaited()
+    assert browser._launcher is launcher
+    assert launcher._process is process
+    assert not browser._popup_chrome_terminated
+
+
+@pytest.mark.asyncio
+async def test_cancelled_owned_native_shutdown_retains_guard_socket():
+    started = asyncio.Event()
+    process = MagicMock()
+    process.poll.return_value = None
+    launcher = MagicMock()
+    launcher._process = process
+    launcher.aterminate = AsyncMock()
+    engine = MagicMock()
+    engine.disconnect = AsyncMock()
+
+    async def send(*args, **kwargs):
+        started.set()
+        await asyncio.Future()
+
+    engine.send = AsyncMock(side_effect=send)
+    browser = Browser()
+    browser._launcher = launcher
+    browser._engine = engine
+    closing = asyncio.create_task(browser.close())
+    await started.wait()
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    engine.disconnect.assert_not_awaited()
+    launcher.aterminate.assert_not_awaited()
+    assert browser._launcher is launcher
+
+
+@pytest.mark.asyncio
+async def test_remote_shutdown_never_sends_native_browser_close():
+    engine = MagicMock()
+    engine.send = AsyncMock(return_value={})
+    engine.disconnect = AsyncMock()
+    browser = Browser(cdp_url="ws://remote/browser")
+    browser._engine = engine
+    await browser.close()
+    engine.send.assert_not_awaited()
+    engine.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_cleanup_cannot_erase_surviving_process_proof_on_retry():
+    import subprocess
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = subprocess.TimeoutExpired("chrome", 5)
+    launcher = MagicMock()
+    launcher._process = process
+
+    async def cleanup():
+        started.set()
+        await finish.wait()
+        launcher._process = None
+
+    launcher.aterminate = AsyncMock(side_effect=cleanup)
+    engine = MagicMock()
+    engine.send = AsyncMock(return_value={})
+    engine.disconnect = AsyncMock()
+    browser = Browser()
+    browser._launcher = launcher
+    browser._engine = engine
+    closing = asyncio.create_task(browser.close())
+    await started.wait()
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert browser._owned_shutdown_process is process
+    finish.set()
+    await browser._owned_cleanup_task
+    assert launcher._process is None
+    with pytest.raises(RuntimeError, match="remains alive"):
+        await browser.close()
+    engine.disconnect.assert_not_awaited()
+    assert browser._owned_shutdown_process is process
+    assert launcher._process is process
+    assert not browser._popup_chrome_terminated
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_retains_process_proof_for_safe_retry():
+    import subprocess
+
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = subprocess.TimeoutExpired("chrome", 5)
+    launcher = MagicMock()
+    launcher._process = process
+
+    async def cleanup():
+        launcher._process = None
+        raise RuntimeError("Cleanup failed after losing launcher state")
+
+    launcher.aterminate = AsyncMock(side_effect=cleanup)
+    engine = MagicMock()
+    engine.send = AsyncMock(return_value={})
+    engine.disconnect = AsyncMock()
+    browser = Browser()
+    browser._launcher = launcher
+    browser._engine = engine
+    with pytest.raises(RuntimeError, match="Cleanup failed"):
+        await browser.close()
+    assert browser._owned_shutdown_process is process
+    launcher.aterminate.side_effect = None
+    with pytest.raises(RuntimeError, match="remains alive"):
+        await browser.close()
+    engine.disconnect.assert_not_awaited()
+    assert not browser._popup_chrome_terminated
