@@ -99,18 +99,28 @@ def test_trace_reported_usage_survives_eviction_and_unknown():
     assert trace.total_tokens == 0
 
 
-async def test_gemini_signed_response_fails_explicitly():
-    pytest.importorskip("google.genai")
+async def test_gemini_signed_response_preserves_usage_and_native_content():
+    types = pytest.importorskip("google.genai.types")
     adapter = object.__new__(GeminiAdapter)
     adapter._model = "test"
-    response = NS(
-        usage_metadata=NS(prompt_token_count=8, candidates_token_count=2, total_token_count=10),
-        candidates=[NS(content=NS(parts=[NS(thought_signature=b"signed")]))],
+    response = types.GenerateContentResponse(
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=8, candidates_token_count=2, total_token_count=10,
+        ),
+        candidates=[types.Candidate(content=types.Content(role="model", parts=[
+            types.Part(
+                function_call=types.FunctionCall(id="signed-call", name="snapshot", args={}),
+                thought_signature=b"signed",
+            ),
+        ]))],
     )
     adapter._client = NS(aio=NS(models=NS(generate_content=AsyncMock(return_value=response))))
-    with pytest.raises(ValueError, match="thought signature replay is unsupported") as caught:
-        await adapter.complete([{"role": "user", "content": "hello"}], [])
-    assert caught.value.usage == LLMUsage("gemini", 8, 2, total_tokens=10)
+    result = await adapter.complete([{"role": "user", "content": "hello"}], [])
+    assert result.usage == LLMUsage("gemini", 8, 2, total_tokens=10)
+    assert result.tool_call.id == "signed-call"
+    assert result.replay_metadata["provider"] == "gemini"
+    native = types.Content.model_validate(result.replay_metadata["content"])
+    assert native.parts[0].thought_signature == b"signed"
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini"])
