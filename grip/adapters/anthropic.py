@@ -5,13 +5,14 @@ import importlib
 import json
 from typing import Any
 
-from grip.adapters.base import LLMResponse, ToolCall
+from grip.adapters.base import LLMProtocolError, LLMResponse, LLMUsage, ToolCall, _reported_count
 
 anthropic: Any
 try:
     anthropic = importlib.import_module("anthropic")
 except ImportError:
     anthropic = None
+
 
 def _require_text(value: Any, field: str, *, nonempty: bool = False) -> str:
     if not isinstance(value, str) or (nonempty and not value):
@@ -172,18 +173,43 @@ class AnthropicAdapter:
             kwargs["tools"] = _to_anthropic_tools(tools)
             kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
         response = await self._client.messages.create(**kwargs)
+        raw_usage = getattr(response, "usage", None)
+        usage = (
+            None
+            if raw_usage is None
+            else LLMUsage(
+                provider="anthropic",
+                input_tokens=_reported_count(getattr(raw_usage, "input_tokens", None)),
+                output_tokens=_reported_count(getattr(raw_usage, "output_tokens", None)),
+                cache_read_input_tokens=_reported_count(
+                    getattr(raw_usage, "cache_read_input_tokens", None)
+                ),
+                cache_creation_input_tokens=_reported_count(
+                    getattr(raw_usage, "cache_creation_input_tokens", None)
+                ),
+            )
+        )
         calls = [block for block in response.content if block.type == "tool_use"]
         if len(calls) > 1:
-            raise ValueError("multiple tool calls are unsupported by the single-action Runner")
+            raise LLMProtocolError(
+                "multiple tool calls are unsupported by the single-action Runner", usage
+            )
         text = "".join(block.text for block in response.content if block.type == "text")
         if calls:
             call = calls[0]
+            try:
+                arguments = _parse_arguments(call.input)
+            except ValueError:
+                raise LLMProtocolError(
+                    "tool arguments must be a valid JSON object", usage
+                ) from None
             return LLMResponse(
                 content=text or None,
+                usage=usage,
                 tool_call=ToolCall(
                     name=call.name,
-                    arguments=_parse_arguments(call.input),
+                    arguments=arguments,
                     id=call.id,
                 ),
             )
-        return LLMResponse(content=text, tool_call=None)
+        return LLMResponse(content=text, tool_call=None, usage=usage)

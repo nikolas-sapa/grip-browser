@@ -4,10 +4,10 @@ import asyncio
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from grip.adapters.base import LLMAdapter
+from grip.adapters.base import LLMAdapter, LLMProtocolError, LLMUsage
 from grip.compression.summarizer import Summarizer
 from grip.errors import GripError
 from grip.page import Page
@@ -169,10 +169,14 @@ def _fence(payload: object) -> str:
 class RunResult:
     data: Any
     trace: Trace
-    tokens: int = 0
+    tokens: int | None = None
     outcome: str | None = None
     error: str | None = None
     success: bool | None = None
+    estimated_tokens: int = 0
+    model_calls: int = 0
+    usage: dict[str, int] = field(default_factory=dict)
+    usage_complete: bool = False
 
 
 class Runner:
@@ -244,11 +248,56 @@ class Runner:
             }
 
     async def run(self, goal: str) -> RunResult:
+        estimate_start = self._trace.total_tokens
+        calls: list[LLMUsage | None] = []
+
+        def total(usage: LLMUsage | None) -> int | None:
+            if usage is None:
+                return None
+            if usage.total_tokens is not None:
+                return usage.total_tokens
+            if usage.input_tokens is None or usage.output_tokens is None:
+                return None
+            if usage.provider == "gemini" and usage.thought_tokens is None:
+                return None
+            measured = usage.input_tokens + usage.output_tokens
+            if usage.provider == "anthropic":
+                if (usage.cache_read_input_tokens is None
+                        or usage.cache_creation_input_tokens is None):
+                    return None
+                measured += usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+            elif usage.provider == "gemini":
+                # Gemini candidate output excludes separately reported thoughts.
+                measured += usage.thought_tokens or 0
+            return measured
+
         def finish(
             outcome: str, data: Any = None, error: str | None = None,
             success: bool | None = False,
         ) -> RunResult:
-            return RunResult(data, self._trace, self._trace.total_tokens, outcome, error, success)
+            measured = [total(usage) for usage in calls]
+            complete = bool(calls) and all(value is not None for value in measured)
+            raw: dict[str, int] = {}
+            for usage in calls:
+                if usage is not None:
+                    for key, value in usage.to_dict().items():
+                        if type(value) is int:
+                            raw[key] = raw.get(key, 0) + value
+            return RunResult(
+                data, self._trace,
+                sum(value for value in measured if value is not None) if complete else None,
+                outcome, error, success,
+                estimated_tokens=self._trace.total_tokens - estimate_start,
+                model_calls=len(calls), usage=raw, usage_complete=complete,
+            )
+
+        def record_call(usage: LLMUsage | None, started: float) -> None:
+            calls.append(usage)
+            self._trace.add(TraceEntry(
+                timestamp=time.time(), action="model_call", input={}, output={},
+                tokens_consumed=0, duration_ms=int((time.monotonic() - started) * 1000),
+                model_usage=usage,
+            ))
 
         try:
             snapshot = await self._page.snapshot()
@@ -276,15 +325,23 @@ class Runner:
         used_call_ids: set[str] = set()
         for step in range(self._max_steps):
             t0 = time.monotonic()
+            measured_usage = None
             try:
                 # Unbounded before, inside a 20-step loop: one stalled provider
                 # call hung the agent forever with no way out.
                 async with asyncio.timeout(self._llm_timeout):
                     response = await self._llm.complete(messages=messages, tools=_TOOLS)
+                measured_usage = response.usage
             except TimeoutError:
+                record_call(None, t0)
                 return finish("llm_timeout", error="Model request timed out")
             except Exception as exc:
+                record_call(exc.usage if isinstance(exc, LLMProtocolError) else None, t0)
                 return finish("action_error", error=f"Model request failed ({type(exc).__name__})")
+            except asyncio.CancelledError:
+                record_call(None, t0)
+                raise
+            record_call(measured_usage, t0)
             duration_ms = int((time.monotonic() - t0) * 1000)
 
             if response.tool_call is None:
@@ -305,6 +362,7 @@ class Runner:
             # suggested recovery — inside the region the system prompt tells it to
             # never follow.
             errored = False
+            dispatch_started = time.monotonic()
             try:
                 tool_result = await self._dispatch(tc.name, tc.arguments)
             except GripError as e:
@@ -318,6 +376,7 @@ class Runner:
                     f"(suggested recovery: {recovery})"
                 )
             except _AmbiguousAction as exc:
+                duration_ms = int((time.monotonic() - dispatch_started) * 1000)
                 message = str(exc)
                 self._trace.add(TraceEntry(
                     timestamp=time.time(), action=tc.name, input=tc.arguments,
@@ -328,6 +387,7 @@ class Runner:
             except Exception as exc:
                 return finish("action_error", error=f"Tool failed ({type(exc).__name__})")
             last_error = str(tool_result) if errored else None
+            duration_ms = int((time.monotonic() - dispatch_started) * 1000)
 
             self._trace.add(TraceEntry(
                 timestamp=time.time(),
