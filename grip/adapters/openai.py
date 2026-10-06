@@ -39,6 +39,7 @@ class OpenAIAdapter:
         kwargs: dict[str, Any] = {"model": self._model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
+            kwargs["parallel_tool_calls"] = False
         response = await self._client.chat.completions.create(**kwargs)
         raw_usage = getattr(response, "usage", None)
         usage = (

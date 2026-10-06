@@ -18,24 +18,36 @@ except ImportError:
 
 
 def _parse_args(raw: Any) -> dict[str, Any]:
-    """runner.py writes tool_call arguments back into message history as
-    `str(dict)` (Python repr, single-quoted), not JSON — see runner.py's
-    assistant-message replay. json.loads fails on that shape, so fall back
-    to literal_eval, and to {} if neither parses.
-    """
-    if isinstance(raw, dict):
-        return raw
-    if not isinstance(raw, str):
-        return {}
+    """Accept JSON objects and transitional Python-repr history, fail closed."""
+    parsed = raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, RecursionError):
+            try:
+                parsed = ast.literal_eval(raw)
+            except (ValueError, SyntaxError, RecursionError) as exc:
+                raise ValueError("invalid Gemini tool arguments") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Gemini tool arguments must be an object")
+    def validate(value: Any) -> None:
+        if isinstance(value, dict):
+            if not all(isinstance(key, str) for key in value):
+                raise ValueError("Gemini tool argument keys must be strings")
+            for child in value.values():
+                validate(child)
+        elif isinstance(value, list):
+            for child in value:
+                validate(child)
+        elif value is not None and not isinstance(value, (str, bool, int, float)):
+            raise ValueError("Gemini tool arguments must contain JSON values")
+
     try:
-        return dict(json.loads(raw))
-    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
-        pass
-    try:
-        parsed = ast.literal_eval(raw)
-        return dict(parsed) if isinstance(parsed, dict) else {}
-    except (ValueError, SyntaxError, RecursionError):
-        return {}
+        validate(parsed)
+        json.dumps(parsed, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("invalid Gemini tool arguments") from exc
+    return parsed
 
 
 def _to_contents(
@@ -51,6 +63,7 @@ def _to_contents(
     # into a FunctionResponse naming the function it answers (Gemini has no
     # bare tool_call_id concept).
     call_names: dict[str, str] = {}
+    wire_call_ids: dict[str, str | None] = {}
 
     for msg in messages:
         role = msg.get("role")
@@ -65,11 +78,35 @@ def _to_contents(
             )
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
+            metadata = msg.get("replay_metadata")
+            if metadata is not None:
+                if not isinstance(metadata, dict) or metadata.get("provider") != "gemini":
+                    raise ValueError("invalid Gemini replay metadata")
+                try:
+                    native = genai_types.Content.model_validate(metadata.get("content"))
+                except (ValueError, TypeError):
+                    raise ValueError("invalid Gemini replay content") from None
+                native_calls = [p.function_call for p in native.parts or [] if p.function_call]
+                if native.role != "model" or len(native_calls) != len(tool_calls or []):
+                    raise ValueError("Gemini replay content does not match tool history")
+                for call, tc in zip(native_calls, tool_calls or [], strict=True):
+                    fn = tc["function"]
+                    if call.name != fn["name"] or call.args != _parse_args(fn.get("arguments")):
+                        raise ValueError("Gemini replay content does not match tool history")
+                    if call.id is not None and call.id != tc.get("id"):
+                        raise ValueError("Gemini replay call ID does not match tool history")
+                    call_names[tc.get("id", "")] = fn["name"]
+                    wire_call_ids[tc.get("id", "")] = call.id
+                contents.append(native)
+                continue
             if tool_calls:
                 parts = []
+                if msg.get("content"):
+                    parts.append(genai_types.Part.from_text(text=msg["content"]))
                 for tc in tool_calls:
                     fn = tc["function"]
                     call_names[tc.get("id", "")] = fn["name"]
+                    wire_call_ids[tc.get("id", "")] = tc.get("id")
                     part = genai_types.Part.from_function_call(
                         name=fn["name"], args=_parse_args(fn.get("arguments"))
                     )
@@ -90,7 +127,8 @@ def _to_contents(
             part = genai_types.Part.from_function_response(
                 name=name, response={"result": msg.get("content")}
             )
-            call_id = msg.get("tool_call_id")
+            history_id = msg.get("tool_call_id", "")
+            call_id = wire_call_ids.get(history_id)
             if isinstance(call_id, str) and call_id:
                 if isinstance(part, dict):
                     part["function_response"]["id"] = call_id
@@ -149,18 +187,24 @@ class GeminiAdapter:
                 thought_tokens=_reported_count(getattr(raw_usage, "thoughts_token_count", None)),
             )
         )
-        for candidate in getattr(response, "candidates", None) or []:
-            for part in getattr(getattr(candidate, "content", None), "parts", None) or []:
-                if getattr(part, "thought_signature", None):
-                    raise LLMProtocolError("Gemini thought signature replay is unsupported", usage)
         function_calls = response.function_calls
         if function_calls:
             if len(function_calls) > 1:
                 raise LLMProtocolError("multiple tool calls are unsupported", usage)
             fc = function_calls[0]
+            candidates = getattr(response, "candidates", None) or []
+            candidates = candidates if isinstance(candidates, list) else []
+            native = getattr(candidates[0], "content", None) if candidates else None
+            metadata = None
+            if native is not None:
+                metadata = {
+                    "provider": "gemini",
+                    "content": native.model_dump(mode="json", exclude_none=True),
+                }
             return LLMResponse(
                 content=None,
                 usage=usage,
                 tool_call=ToolCall(name=fc.name or "", arguments=fc.args or {}, id=fc.id),
+                replay_metadata=metadata,
             )
         return LLMResponse(content=response.text, tool_call=None, usage=usage)

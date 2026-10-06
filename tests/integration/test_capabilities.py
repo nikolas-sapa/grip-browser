@@ -276,32 +276,30 @@ POPUP_HTML = """
 """
 
 
-@pytest.mark.skip(
-    reason=(
-        "Pre-existing gap, not introduced by this change: verified against "
-        "real headless Chrome that Target.attachedToTarget is never "
-        "delivered to a page-level session (Target.setAutoAttach with "
-        "flatten=True) for a window.open() popup, even a trusted-gesture "
-        "one — Target.getTargets confirms the popup target really opens "
-        "(openerId set), but neither the pre-existing popup-BLOCKING path "
-        "(default policy: popups_blocked stays 0, the target is never "
-        "closed) nor this change's adoption path ever sees the attach "
-        "event in this Chrome/CDP version. wait_for_popup()'s own logic is "
-        "covered in tests/unit/test_capabilities.py against a mocked "
-        "engine, which is what actually exercises the code this change "
-        "added; this real-Chrome gap sits one layer below it, in "
-        "_ensure_popup_blocking's shared attach mechanism, out of this "
-        "task's scope."
-    )
-)
 @pytest.mark.asyncio
 async def test_wait_for_popup_observes_a_real_popup():
     async with Browser(headless=True, allow_popups=True) as browser:
         page = await open_with_html(browser, POPUP_HTML)
-        await page.click("Open popup")
-        info = await page.wait_for_popup(timeout=5.0)
+        await page._engine.send("Runtime.evaluate", {
+            "expression": "document.querySelector('button').click()",
+            "userGesture": True,
+        })
+        info = await page.wait_for_popup(timeout=2.0)
         assert info.target_id
         assert page.popups_blocked == 0
+        targets = await browser._engine.send("Target.getTargets")
+        assert any(t["targetId"] == info.target_id for t in targets["targetInfos"])
+        from grip.cdp.engine import CDPEngine
+
+        child = CDPEngine()
+        await child.connect(browser._page_ws_url(info.target_id))
+        try:
+            value = await child.send("Runtime.evaluate", {
+                "expression": "document.body.textContent", "returnByValue": True,
+            })
+            assert value["result"]["value"] == ""
+        finally:
+            await child.disconnect()
 
 
 # ── RawElement/Element field wiring: canvas, combobox, closed shadow ─────────

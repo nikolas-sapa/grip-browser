@@ -48,6 +48,7 @@ class LLMResponse:
     content: str | None
     tool_call: ToolCall | None
     usage: LLMUsage | None = None
+    replay_metadata: dict[str, Any] | None = None
 
 
 @runtime_checkable

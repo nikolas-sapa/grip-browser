@@ -406,13 +406,16 @@ class Runner:
                 while call_id in used_call_ids:
                     call_id += "_"
             used_call_ids.add(call_id)
-            messages.append({
+            assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": response.content,
                 "tool_calls": [{"id": call_id, "type": "function", "function": {
                     "name": tc.name, "arguments": serialized_arguments,
                 }}],
-            })
+            }
+            if response.replay_metadata is not None:
+                assistant_message["replay_metadata"] = response.replay_metadata
+            messages.append(assistant_message)
             messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,

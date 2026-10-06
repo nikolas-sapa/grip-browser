@@ -425,6 +425,8 @@ async with Browser(llm=llm, headless=True) as browser:
 
 grip handles the snapshot → decide → act loop automatically. You just provide the goal.
 
+Each response may request one tool call. OpenAI and Anthropic are configured for single calls; responses containing multiple calls fail explicitly. Gemini preserves native thought signatures across tool turns. `result.tokens` is reported provider usage, or `None` when measurement is incomplete; `result.estimated_tokens` is a separate page estimate.
+
 ### Snapshot delta
 
 Inside the run loop, grip sends the model a full snapshot on the first turn and a
