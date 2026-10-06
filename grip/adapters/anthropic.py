@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 from typing import Any
 
-try:
-    import anthropic  # optional dependency, guarded below
-except ImportError:
-    anthropic = None  # type: ignore[assignment]
-
 from grip.adapters.base import LLMResponse, ToolCall
 
+anthropic: Any
+try:
+    anthropic = importlib.import_module("anthropic")
+except ImportError:
+    anthropic = None
 
 def _require_text(value: Any, field: str, *, nonempty: bool = False) -> str:
     if not isinstance(value, str) or (nonempty and not value):

@@ -55,4 +55,9 @@ resolved; other providers remain outside this change. Python and security review
 approve. No live provider compatibility, full integration suite or Python version
 matrix claimed. No paid API call, merge, release or production deployment.
 
+Optional-SDK completion check: Anthropic module strict typing passes with both
+installed and absent SDK environments. Dynamic optional import retains the runtime
+missing-extra guard without conditional stale type-ignore comments. The 33 native
+transport/adapter tests still pass.
+
 Contract reference: https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls
