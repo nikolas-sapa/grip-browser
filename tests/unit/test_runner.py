@@ -458,3 +458,48 @@ async def test_fallback_id_does_not_collide_with_prior_provider_id():
     await runner.run("click twice")
     ids = [m["tool_calls"][0]["id"] for m in runner._messages if m.get("tool_calls")]
     assert ids[0] == "grip_call_1" and len(set(ids)) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", [
+    {"nested": {"text": "Ω 日本語"}},
+    {"nested": {"text": 'He said "hello", then \\ left'}},
+    {"nested": {"enabled": True, "disabled": False}},
+    {"nested": {"missing": None}},
+    {"nested": {"items": [1, "two", {"three": [False, None]}]}},
+    {},
+])
+async def test_tool_history_arguments_roundtrip_as_json(arguments):
+    import json
+
+    runner = Runner(
+        llm=make_llm([
+            LLMResponse(content=None, tool_call=ToolCall("click", arguments)),
+            LLMResponse(content="done", tool_call=None),
+        ]), page=FakePage(["First"]), trace=Trace(),
+    )
+    runner._dispatch = AsyncMock(return_value="clicked")
+    await runner.run("click once")
+    replay = next(m for m in runner._messages if m.get("tool_calls"))
+    serialized = replay["tool_calls"][0]["function"]["arguments"]
+    assert isinstance(serialized, str)
+    assert json.loads(serialized) == arguments
+    runner._dispatch.assert_awaited_once_with("click", arguments)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", [
+    {"nested": {"bad": float("nan")}}, {"bad": object()},
+    {"nested": {1: "coerced key"}}, {"nested": ("coerced", "tuple")},
+    {"nested": {"set value"}}, ["root must be object"],
+])
+async def test_non_json_tool_arguments_fail_before_dispatch(arguments):
+    runner = Runner(
+        llm=make_llm([LLMResponse(content=None, tool_call=ToolCall("click", arguments))]),
+        page=FakePage(["First"]), trace=Trace(),
+    )
+    runner._dispatch = AsyncMock(return_value="clicked")
+    with pytest.raises(ValueError, match="JSON"):
+        await runner.run("click once")
+    runner._dispatch.assert_not_awaited()
+    assert not any(m.get("tool_calls") for m in runner._messages)

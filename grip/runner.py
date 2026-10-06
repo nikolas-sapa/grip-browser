@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -103,6 +104,30 @@ _TOOLS = [
 _FENCE_TAG = re.compile(r"</?\s*page_state\s*>", re.IGNORECASE)
 _FENCE_OPEN = "<page_state>\n"
 _FENCE_CLOSE = "\n</page_state>"
+
+
+def _serialize_tool_arguments(arguments: dict[str, Any]) -> str:
+    """Serialize without JSON's implicit key or tuple coercions."""
+    if not isinstance(arguments, dict):
+        raise ValueError("tool arguments must be a JSON object")
+
+    def validate(value: Any) -> None:
+        if isinstance(value, dict):
+            if not all(isinstance(key, str) for key in value):
+                raise ValueError("tool arguments must have JSON string keys")
+            for child in value.values():
+                validate(child)
+        elif isinstance(value, list):
+            for child in value:
+                validate(child)
+        elif value is not None and not isinstance(value, (str, bool, int, float)):
+            raise ValueError("tool arguments must contain JSON values")
+
+    try:
+        validate(arguments)
+        return json.dumps(arguments, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("tool arguments must be valid JSON") from exc
 
 
 def _fence(payload: object) -> str:
@@ -223,6 +248,9 @@ class Runner:
                 break
 
             tc = response.tool_call
+            # Validate replay before acting: a successful browser action must
+            # always have arguments the provider can reconstruct next turn.
+            serialized_arguments = _serialize_tool_arguments(tc.arguments)
             # An error message is written by the runner, not by the page. Fencing
             # it would put the one instruction the model is meant to act on — the
             # suggested recovery — inside the region the system prompt tells it to
@@ -269,7 +297,7 @@ class Runner:
                 "role": "assistant",
                 "content": response.content,
                 "tool_calls": [{"id": call_id, "type": "function", "function": {
-                    "name": tc.name, "arguments": str(tc.arguments),
+                    "name": tc.name, "arguments": serialized_arguments,
                 }}],
             })
             messages.append({
