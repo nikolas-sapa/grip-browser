@@ -323,7 +323,7 @@ def test_page_ws_url_keeps_a_non_default_remote_port():
 async def test_pages_property_and_get_page_track_open_and_closed_tabs():
     browser = Browser()
     engine = MagicMock()
-    engine.send = AsyncMock(return_value={})
+    engine.send = AsyncMock(return_value={"targetInfos": [], "success": True})
     browser._engine = engine
 
     class _Stub:

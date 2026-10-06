@@ -15,7 +15,8 @@ async def open_popup(page, url="about:blank"):
 
 
 @pytest.mark.asyncio
-async def test_default_popup_is_closed_before_first_network_request():
+@pytest.mark.parametrize("allow_private", [False, True])
+async def test_default_popup_is_closed_before_first_network_request(allow_private):
     requests = []
 
     async def receive(reader, writer):
@@ -26,7 +27,7 @@ async def test_default_popup_is_closed_before_first_network_request():
     server = await asyncio.start_server(receive, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     try:
-        async with Browser(headless=True) as browser:
+        async with Browser(headless=True, allow_private=allow_private) as browser:
             page = await browser.open("about:blank")
             url = json.dumps(f"http://127.0.0.1:{port}/private")
             await page._engine.send("Runtime.evaluate", {
@@ -256,6 +257,41 @@ async def test_isolated_popup_closer_ignores_forged_main_world_globals(monkeypat
             assert resumed == []
             assert not page._unclosed_popup_targets
             assert not page._engine._pending
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_opt_in_popup_inherits_real_stealth_user_agent():
+    received = asyncio.Event()
+    requests = []
+
+    async def receive(reader, writer):
+        requests.append(await reader.read(4096))
+        received.set()
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(receive, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with Browser(headless=True, stealth=True, allow_popups=True,
+                           allow_private=True) as browser:
+            page = await browser.open("about:blank")
+            await open_popup(page, f"http://127.0.0.1:{port}/user-agent")
+            child = await page.wait_for_popup(timeout=2)
+            await asyncio.wait_for(received.wait(), timeout=2)
+            result = await browser._engine.send("Runtime.evaluate", {
+                "expression": "navigator.userAgent", "returnByValue": True,
+            }, session_id=child.session_id, timeout=2)
+            assert result["result"]["value"] == browser._stealth_ua
+            header = next(line for line in requests[0].split(b"\r\n")
+                          if line.lower().startswith(b"user-agent:"))
+            assert header.split(b":", 1)[1].strip().decode() == browser._stealth_ua
+            assert "HeadlessChrome" not in result["result"]["value"]
     finally:
         server.close()
         await server.wait_closed()

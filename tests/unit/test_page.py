@@ -735,16 +735,20 @@ def _fetch_engine():
     def fake_on(event, cb):
         listeners.setdefault(event, []).append(cb)
 
-    async def fake_send(method, params=None, session_id=None):
+    async def fake_send(method, params=None, session_id=None, timeout=None):
         sent.append((method, params or {}))
         if session_id is not None:
             session_sent.append((method, session_id))
         if method == "Runtime.evaluate":
             return {"result": {"value": None}}
+        if method == "Target.getTargets":
+            return {"targetInfos": []}
         return {}
 
     engine.on = fake_on
     engine.off = lambda *a: None
+    engine.on_session = lambda session, event, cb: fake_on((session, event), cb)
+    engine.off_session = lambda *a: None
     engine.send = fake_send
     return engine, listeners, sent, session_sent
 
@@ -905,8 +909,8 @@ async def test_fetch_enable_is_scoped_to_document_xhr_fetch(monkeypatch):
 @pytest.mark.asyncio
 async def test_goto_allows_private_target_and_its_redirect_when_opted_in(monkeypatch):
     """allow_private=True permits both a direct private-IP target and a
-    redirect leg landing on one — and skips Fetch interception entirely,
-    since a permissive policy has nothing left for it to enforce."""
+    redirect leg landing on one, while retaining other policy checks,
+    since metadata/scheme/popup restrictions still apply."""
     engine, listeners, sent, _session_sent = _fetch_engine()
     page = Page(engine=engine, trace=Trace(), policy=NavigationPolicy(allow_private=True))
 
@@ -931,12 +935,8 @@ async def test_goto_allows_private_target_and_its_redirect_when_opted_in(monkeyp
         await page.goto("http://127.0.0.1:8080/", timeout=0.05)
     assert exc.value.error.type is ErrorType.NETWORK_TIMEOUT
 
-    assert not any(m == "Fetch.enable" for m, _ in sent), (
-        "allow_private=True should not pay for interception it can't use"
-    )
-    assert not any(m == "Target.setAutoAttach" for m, _ in sent), (
-        "allow_private=True has nothing left for popup blocking to enforce either"
-    )
+    assert any(m == "Fetch.enable" for m, _ in sent)
+    assert any(m == "Target.setAutoAttach" for m, _ in sent)
 
 
 @pytest.mark.asyncio
@@ -1030,10 +1030,10 @@ async def test_popups_allowed_when_opted_in(monkeypatch):
 
     orig_send = engine.send
 
-    async def fake_send(method, params=None, session_id=None):
+    async def fake_send(method, params=None, session_id=None, timeout=None):
         if method == "Page.navigate":
             await navigate_side_effect()
-        return await orig_send(method, params, session_id)
+        return await orig_send(method, params, session_id, timeout)
 
     monkeypatch.setattr(engine, "send", fake_send)
 
@@ -1078,10 +1078,10 @@ async def test_stealth_ua_applied_to_popup_session_before_resume(monkeypatch):
 
     orig_send = engine.send
 
-    async def fake_send(method, params=None, session_id=None):
+    async def fake_send(method, params=None, session_id=None, timeout=None):
         if method == "Page.navigate":
             await navigate_side_effect()
-        return await orig_send(method, params, session_id)
+        return await orig_send(method, params, session_id, timeout)
 
     monkeypatch.setattr(engine, "send", fake_send)
 
@@ -1148,10 +1148,10 @@ async def test_non_popup_attached_target_is_resumed_not_closed(monkeypatch):
 
     orig_send = engine.send
 
-    async def fake_send(method, params=None, session_id=None):
+    async def fake_send(method, params=None, session_id=None, timeout=None):
         if method == "Page.navigate":
             await navigate_side_effect()
-        return await orig_send(method, params, session_id)
+        return await orig_send(method, params, session_id, timeout)
 
     monkeypatch.setattr(engine, "send", fake_send)
 

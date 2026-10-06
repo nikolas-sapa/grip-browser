@@ -334,8 +334,6 @@ class Browser:
         return page
 
     async def _ensure_popup_routing(self) -> None:
-        if self._policy.allow_private:
-            return
         async with self._popup_attach_lock:
             if self._popup_attach_armed:
                 return
@@ -358,6 +356,8 @@ class Browser:
         # after its Page closes still belongs to that Page's popup policy.
         opener = self._popup_owners.get(info.get("openerId", ""))
         if opener is not None:
+            if info.get("targetId"):
+                self._popup_owners[info["targetId"]] = opener
             before = set(opener._bg_tasks)
             opener._on_target_attached(params, popup_engine=self._engine)
             for task in opener._bg_tasks - before:
@@ -420,8 +420,26 @@ class Browser:
         return f"ws://localhost:{self._port}/devtools/page/{target_id}"
 
     async def _close_target(self, target_id: str) -> None:
-        if self._engine:
-            await self._engine.send("Target.closeTarget", {"targetId": target_id})
+        if not self._popup_chrome_terminated:
+            if self._engine is None:
+                raise RuntimeError("Cannot verify target closure without browser connection.")
+            # A retry may find that a cancelled previous closer already closed
+            # the target. Inventory still proves absence in that case.
+            async with asyncio.timeout(2.0):
+                with contextlib.suppress(Exception):
+                    await self._engine.send("Target.closeTarget", {"targetId": target_id})
+                while True:
+                    inventory = await self._engine.send("Target.getTargets")
+                    targets = inventory.get("targetInfos")
+                    if not isinstance(targets, list) or any(
+                        not isinstance(info, dict)
+                        or not isinstance(info.get("targetId"), str)
+                        or not info["targetId"] for info in targets
+                    ):
+                        raise RuntimeError("Cannot verify managed target absence.")
+                    if not any(info["targetId"] == target_id for info in targets):
+                        break
+                    await asyncio.sleep(0.01)
         self._pages = [p for p in self._pages if p._target_id != target_id]
 
     @property
@@ -462,9 +480,19 @@ class Browser:
                     page._unclosed_popup_targets.clear()
             else:
                 assert self._engine is not None
-                for page in unresolved:
+                for page in set(unresolved):
+                    if any(
+                        target in page._popup_frame_targets
+                        and page._popup_guard_engines.get(target) is page._engine
+                        for target in page._unclosed_popup_targets
+                    ):
+                        # Main-frame child sessions belong to the Page socket.
+                        # Closing its verified owner destroys every such frame
+                        # while that socket's Fetch guard remains connected.
+                        await page.close()
                     for target_id, session_id in tuple(page._unclosed_popup_targets.items()):
-                        await page._close_popup_target(target_id, self._engine, session_id)
+                        origin = page._popup_guard_engines.get(target_id, self._engine)
+                        await page._close_popup_target(target_id, origin, session_id)
                 if any(p._unclosed_popup_targets for p in unresolved):
                     raise RuntimeError("Cannot detach: blocked popup closure is unverified.")
 
@@ -473,8 +501,11 @@ class Browser:
         # their debugger pause. Guarded closures also keep the opener alive.
         if self._popup_tasks:
             await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
+        if self._engine:
+            for page in set(self._popup_owners.values()):
+                await asyncio.shield(page._close_guarded_popups(self._engine))
         await self._resolve_unclosed_popups()
-        for page in list(self._pages):
+        for page in dict.fromkeys([*self._pages, *self._popup_owners.values()]):
             try:
                 await page.close()
             except Exception:
@@ -504,7 +535,6 @@ class Browser:
                 info.get("targetId") in self._popup_owners
                 or (
                     info.get("openerId") in self._popup_owners
-                    and not self._popup_owners[info["openerId"]]._policy.allow_popups
                 )
                 for info in target_infos or []
             ):

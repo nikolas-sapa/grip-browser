@@ -475,18 +475,9 @@ class PopupInfo:
     Page.wait_for_popup().
 
     Deliberately not a full child Page. CDPEngine (grip/cdp/engine.py)
-    dispatches every event by method name only (see its _receive_forever),
-    with no session-scoped routing — a Page layered on this page's shared
-    connection would have its listener-based features (goto()'s load wait,
-    dialog handling, download tracking, same-document nav invalidation) fed
-    events from BOTH targets indiscriminately. A real child Page needs
-    either its own websocket (which needs connection details — host, port,
-    cdp_url — that only Browser holds) or session-scoped event demuxing in
-    CDPEngine; this file owns neither. target_id/url/session_id is the
-    addressable half: enough for code that does hold a Browser to open a
-    genuinely independent Page onto the popup (e.g. `browser.open(info.url)`
-    for a same-origin OAuth redirect), without this object pretending to
-    already be one.
+    can route exact-session events, but this value is not a complete Page
+    wrapper. Listener-driven Page features need their own target connection.
+    The browser-level session keeps inherited navigation interception active.
     """
     target_id: str
     url: str
@@ -575,6 +566,8 @@ class Page:
         # lifetime, from goto()'s gather — same "once, not per-navigation"
         # reasoning as _fetch_enabled above.
         self._popup_block_armed = False
+        self._popup_setup_lock = asyncio.Lock()
+        self._fetch_setup_lock = asyncio.Lock()
         # Programmatic visibility into blocking a caller can't otherwise see —
         # see popups_blocked and _on_target_attached below.
         self._popups_blocked = 0
@@ -590,6 +583,13 @@ class Page:
         self._popup_close_tasks: set[asyncio.Task[None]] = set()
         self._popup_targets_seen: set[str] = set()
         self._unclosed_popup_targets: dict[str, str] = {}
+        self._guarded_popup_targets: dict[str, str] = {}
+        self._popup_fetch_callbacks: dict[str, Callable[[dict[str, Any]], None]] = {}
+        self._popup_detach_callbacks: dict[str, Callable[[dict[str, Any]], None]] = {}
+        self._popup_attach_callbacks: dict[str, Callable[[dict[str, Any]], None]] = {}
+        self._popup_session_parents: dict[str, str | None] = {}
+        self._popup_frame_targets: dict[str, str] = {}
+        self._popup_guard_engines: dict[str, CDPEngine] = {}
         self._pending_mutations: set[
             asyncio.Future[tuple[BrowserError, asyncio.Task[None]]]
         ] = set()
@@ -684,6 +684,10 @@ class Page:
         )
 
     async def _ensure_fetch_interception(self) -> None:
+        async with self._fetch_setup_lock:
+            await self._arm_fetch_interception()
+
+    async def _arm_fetch_interception(self) -> None:
         """Pause every request the browser is about to send, so a refused one
         never leaves — as opposed to the old Network.requestWillBeSent
         observer, which only ever saw a request Chrome had already issued
@@ -701,15 +705,20 @@ class Page:
         with its own independent Fetch-domain state, and Fetch.enable on this
         target does nothing for it. See _ensure_popup_blocking() for that gap.
 
-        Gated on the policy actually being able to refuse anything: a
-        Fetch-domain round trip per request is a real cost, and an
-        allow_private=True caller has already opted out of restriction, so
-        there is nothing for interception to buy them.
+        Private-address permission leaves metadata and scheme restrictions
+        intact, so interception applies under every NavigationPolicy.
         """
-        if self._fetch_enabled or self._policy.allow_private:
+        if self._fetch_enabled:
             return
-        self._fetch_enabled = True
         self._engine.on("Fetch.requestPaused", self._on_fetch_paused)
+        try:
+            await self._enable_fetch_interception()
+        except BaseException:
+            self._engine.off("Fetch.requestPaused", self._on_fetch_paused)
+            raise
+        self._fetch_enabled = True
+
+    async def _enable_fetch_interception(self) -> None:
         await self._engine.send(
             "Fetch.enable",
             # Scoped to the resource types the policy actually needs to see.
@@ -744,6 +753,9 @@ class Page:
         return task
 
     async def _send_mutating(self, method: str, params: dict[str, Any]) -> Any:
+        if self._closer is None and self._target_id:
+            await self._ensure_popup_blocking()
+            await self._ensure_fetch_interception()
         refusal: asyncio.Future[tuple[BrowserError, asyncio.Task[None]]] = (
             asyncio.get_running_loop().create_future()
         )
@@ -773,7 +785,7 @@ class Page:
             if not refusal.done():
                 refusal.set_result((BrowserError(
                     type=ErrorType.NAVIGATION_REFUSED,
-                    message="Popup blocked by NavigationPolicy.allow_popups=False.",
+                    message="Popup refused by its navigation policy or guard setup.",
                     confidence=1.0, recovery=[],
                 ), closure))
 
@@ -978,45 +990,53 @@ class Page:
         await self._settle()
 
     async def _ensure_popup_blocking(self) -> None:
+        async with self._popup_setup_lock:
+            await self._arm_popup_blocking()
+
+    async def _arm_popup_blocking(self) -> None:
         """window.open() (and an <a target="_blank"> click) creates a brand-new
         CDP target with its own Fetch-domain state; Fetch.enable above never
         touches it, so page JS could otherwise pop
         `window.open('http://169.254.169.254/latest/meta-data/')` into a new
         tab with zero policy enforcement.
 
-        Chosen fix: block the popup outright rather than arm interception on
-        it. Arming interception on a second target properly would mean
-        session-scoped command routing plus demuxing Fetch.requestPaused by
-        session — real work CDPEngine has never had to do, since every Page
-        has owned exactly one target/one websocket. Page never follows a
-        popup anyway (nothing here reads `Target.createTarget`'s result for
-        anything but the tab this Page already is), so a popup that never
-        opens costs nothing this class provides today.
-
         Browser routes popup attaches from its browser-level connection.
-        This page-level auto-attach still handles workers and OOPIFs, which
-        need to be resumed for the opener to render normally. Direct Page
-        constructions retain their existing attach handler.
-
-        Gated the same as Fetch interception: nothing to enforce once the
-        caller has opted into allow_private. Still armed under
-        `NavigationPolicy(allow_popups=True)` — unlike before, when auto-attach
-        was never armed at all under that flag and a popup went completely
-        unobserved. It is now paused just long enough to record its
-        target_id/url/session_id (see _on_target_attached, PopupInfo) and
-        immediately resumed — a transparent pause-and-go, not a hold — so
-        `wait_for_popup()` has something to return. Fetch-domain enforcement
-        inside the popup is still not armed either way; see that flag's
-        docstring for what accepting it costs.
+        Default policy closes the DOM window while debugger-paused. Opt-in
+        children receive exact-session Fetch interception before resume; the
+        same policy persists for their lifetime, including named-window reuse.
+        This page-level auto-attach handles workers and OOPIFs needed by the
+        opener. Private-address permission does not authorize popups.
         """
-        if self._popup_block_armed or self._policy.allow_private:
+        if self._popup_block_armed:
             return
-        self._popup_block_armed = True
+        if self._closer is None and self._target_id:
+            inventory = await self._engine.send("Target.getTargets")
+            targets = inventory.get("targetInfos")
+            if not isinstance(targets, list) or any(
+                not isinstance(info, dict) or not isinstance(info.get("targetId"), str)
+                for info in targets
+            ):
+                raise GripError(BrowserError(
+                    type=ErrorType.NAVIGATION_REFUSED,
+                    message="Direct Page popup ownership is unverified.",
+                    confidence=1.0, recovery=[],
+                ))
+            if any(info.get("openerId") == self._target_id for info in targets):
+                raise GripError(BrowserError(
+                    type=ErrorType.NAVIGATION_REFUSED,
+                    message="Direct Page has an existing child without inherited popup guards.",
+                    confidence=1.0, recovery=[],
+                ))
         self._engine.on("Target.attachedToTarget", self._on_target_attached)
-        await self._engine.send(
-            "Target.setAutoAttach",
-            {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
-        )
+        try:
+            await self._engine.send(
+                "Target.setAutoAttach",
+                {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
+            )
+        except BaseException:
+            self._engine.off("Target.attachedToTarget", self._on_target_attached)
+            raise
+        self._popup_block_armed = True
 
     def _on_target_attached(
         self, params: dict[str, Any], *, popup_engine: CDPEngine | None = None,
@@ -1038,7 +1058,7 @@ class Page:
             if target_id:
                 self._popup_targets_seen.add(target_id)
             popup_url = target_info.get("url", "")
-            if not self._policy.allow_popups:
+            if not self._policy.allow_popups or self._closed:
                 # A blocked popup is otherwise silent: the target is closed
                 # before it runs any JS, and the caller who clicked "Login"
                 # just sees nothing happen. Make it legible — a log line to
@@ -1048,8 +1068,7 @@ class Page:
                 logger.warning(
                     "popup blocked: window.open()/target=_blank to %r was "
                     "refused (NavigationPolicy.allow_popups=False, the "
-                    "default) — pass allow_popups=True to permit popups, at "
-                    "the cost of Fetch interception inside them",
+                    "default) — pass allow_popups=True to permit guarded popups",
                     popup_url,
                 )
                 self._trace.add(TraceEntry(
@@ -1065,6 +1084,7 @@ class Page:
                         # Register before scheduling, even teardown cancellation
                         # cannot erase evidence of a debugger-paused survivor.
                         self._unclosed_popup_targets[target_id] = session_id
+                        self._popup_guard_engines[target_id] = popup_engine
                     closure = self._spawn_bg(
                         self._close_popup_target(target_id, popup_engine, session_id)
                     )
@@ -1074,23 +1094,134 @@ class Page:
                     # guard work, so a later command cannot inherit this refusal.
                     self._refuse_pending_mutations(closure)
                 return
-            # allow_popups=True: record it for wait_for_popup() (see
-            # PopupInfo for what this can and cannot give the caller) and
-            # resume it — same as any other attached target below.
-            self._trace.add(TraceEntry(
-                timestamp=time.time(),
-                action="popup_opened",
-                input={},
-                output={"url": popup_url, "target_id": target_id},
-                tokens_consumed=0,
-                duration_ms=0,
+            # Register before setup starts, so teardown sees every paused child.
+            self._guarded_popup_targets[target_id] = session_id
+            self._spawn_bg(self._guard_popup_target(
+                target_id, popup_url, session_id, popup_engine or self._engine,
             ))
-            self._popup_queue.put_nowait(
-                PopupInfo(target_id=target_id, url=popup_url, session_id=session_id)
-            )
-            self._spawn_bg(self._resume_popup_target(session_id, popup_engine))
+            return
+        if target_info.get("type") == "iframe":
+            target_id = target_info.get("targetId", "")
+            self._popup_frame_targets[target_id] = session_id
+            self._popup_guard_engines[target_id] = popup_engine or self._engine
+            self._spawn_bg(self._guard_popup_target(
+                target_id, target_info.get("url", ""), session_id,
+                popup_engine or self._engine, is_popup=False,
+            ))
             return
         self._spawn_bg(self._resume_attached_target(session_id))
+
+    async def _guard_popup_target(
+        self, target_id: str, url: str, session_id: str, engine: CDPEngine,
+        *, is_popup: bool = True, parent_session: str | None = None,
+    ) -> None:
+        self._popup_guard_engines[target_id] = engine
+        if url and self._policy.check(url) is not None:
+            await self._close_popup_target(target_id, engine, session_id)
+            return
+
+        def on_fetch(params: dict[str, Any]) -> None:
+            self._spawn_bg(self._handle_popup_fetch(engine, session_id, params))
+
+        def on_attached(params: dict[str, Any]) -> None:
+            info = params.get("targetInfo", {})
+            child_session = params.get("sessionId", "")
+            child_target = info.get("targetId", "")
+            if info.get("type") != "iframe":
+                return
+            self._popup_frame_targets[child_target] = child_session
+            self._popup_guard_engines[child_target] = engine
+            self._spawn_bg(self._guard_popup_target(
+                child_target, info.get("url", ""), child_session, engine,
+                is_popup=False, parent_session=session_id,
+            ))
+
+        def on_detached(params: dict[str, Any]) -> None:
+            if params.get("sessionId") == session_id or params.get("targetId") == target_id:
+                self._forget_popup_guard(engine, target_id, session_id)
+
+        self._popup_fetch_callbacks[session_id] = on_fetch
+        self._popup_detach_callbacks[session_id] = on_detached
+        self._popup_attach_callbacks[session_id] = on_attached
+        self._popup_session_parents[session_id] = parent_session
+        if parent_session is None:
+            engine.on("Target.detachedFromTarget", on_detached)
+        else:
+            engine.on_session(parent_session, "Target.detachedFromTarget", on_detached)
+        engine.on_session(session_id, "Fetch.requestPaused", on_fetch)
+        engine.on_session(session_id, "Target.attachedToTarget", on_attached)
+        try:
+            await engine.send("Fetch.enable", {"patterns": [
+                {"urlPattern": "*", "resourceType": rt, "requestStage": "Request"}
+                for rt in _INTERCEPTED_RESOURCE_TYPES
+            ]}, session_id=session_id, timeout=2.0)
+            await engine.send("Target.setAutoAttach", {
+                "autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True,
+                "filter": [{"type": "iframe", "exclude": False}],
+            }, session_id=session_id, timeout=2.0)
+            await self._resume_popup_target(session_id, engine)
+        except BaseException as exc:
+            # Failed setup must never release the debugger pause.
+            closure = self._spawn_bg(self._close_popup_target(target_id, engine, session_id))
+            self._popup_close_tasks.add(closure)
+            closure.add_done_callback(self._popup_close_tasks.discard)
+            self._refuse_pending_mutations(closure)
+            await asyncio.shield(closure)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            if isinstance(exc, Exception):
+                self._record_popup_block_failure(exc)
+            return
+        if not is_popup:
+            return
+        self._trace.add(TraceEntry(
+            timestamp=time.time(), action="popup_opened", input={},
+            output={"url": url, "target_id": target_id},
+            tokens_consumed=0, duration_ms=0,
+        ))
+        self._popup_queue.put_nowait(PopupInfo(
+            target_id=target_id, url=url, session_id=session_id,
+        ))
+
+    def _forget_popup_guard(self, engine: CDPEngine, target_id: str, session_id: str) -> None:
+        # Parent detachment proves all of its child sessions are gone too.
+        for child_session, parent in tuple(self._popup_session_parents.items()):
+            if parent == session_id:
+                child_target = next((target for target, session in self._popup_frame_targets.items()
+                                     if session == child_session), "")
+                self._forget_popup_guard(engine, child_target, child_session)
+        parent = self._popup_session_parents.pop(session_id, None)
+        self._guarded_popup_targets.pop(target_id, None)
+        self._popup_frame_targets.pop(target_id, None)
+        self._popup_guard_engines.pop(target_id, None)
+        self._unclosed_popup_targets.pop(target_id, None)
+        fetch = self._popup_fetch_callbacks.pop(session_id, None)
+        if fetch is not None:
+            engine.off_session(session_id, "Fetch.requestPaused", fetch)
+        attached = self._popup_attach_callbacks.pop(session_id, None)
+        if attached is not None:
+            engine.off_session(session_id, "Target.attachedToTarget", attached)
+        detached = self._popup_detach_callbacks.pop(session_id, None)
+        if detached is not None:
+            if parent is None:
+                engine.off("Target.detachedFromTarget", detached)
+            else:
+                engine.off_session(parent, "Target.detachedFromTarget", detached)
+
+    async def _handle_popup_fetch(
+        self, engine: CDPEngine, session_id: str, params: dict[str, Any],
+    ) -> None:
+        allowed = self._policy.check(params.get("request", {}).get("url", "")) is None
+        command = "Fetch.continueRequest" if allowed else "Fetch.failRequest"
+        request: dict[str, Any] = {"requestId": params.get("requestId", "")}
+        if not allowed:
+            request["errorReason"] = "AccessDenied"
+        with contextlib.suppress(Exception):
+            await engine.send(command, request, session_id=session_id)
+
+    async def _close_guarded_popups(self, engine: CDPEngine) -> None:
+        for target_id, session_id in tuple(self._guarded_popup_targets.items()):
+            await self._close_popup_target(target_id, engine, session_id)
 
     async def wait_for_popup(self, timeout: float = 10.0) -> PopupInfo:
         """Wait for the next popup this page opens under
@@ -1130,6 +1261,7 @@ class Page:
                 self._record_popup_block_failure(exc)
 
         if engine is not None:
+            self._popup_guard_engines[target_id] = engine
             self._unclosed_popup_targets[target_id] = session_id
             detached = asyncio.Event()
 
@@ -1159,6 +1291,10 @@ class Page:
                     raise RuntimeError("Popup DOM window did not acknowledge closure")
                 await asyncio.wait_for(detached.wait(), timeout=2.0)
                 self._unclosed_popup_targets.pop(target_id, None)
+                self._guarded_popup_targets.pop(target_id, None)
+                callback = self._popup_fetch_callbacks.pop(session_id, None)
+                if callback is not None:
+                    engine.off_session(session_id, "Fetch.requestPaused", callback)
             except Exception as exc:
                 self._record_popup_block_failure(exc)
                 await close_target()
@@ -1204,8 +1340,7 @@ class Page:
                     {"userAgent": self._stealth_ua},
                     session_id=session_id,
                 )
-        with contextlib.suppress(Exception):
-            await engine.send("Runtime.runIfWaitingForDebugger", {}, session_id=session_id)
+        await engine.send("Runtime.runIfWaitingForDebugger", {}, session_id=session_id)
 
     async def goto(self, url: str, timeout: float = 30.0) -> None:
         """Navigate this tab and wait for the load event.
@@ -1400,7 +1535,7 @@ class Page:
         return _same_document(str(state.get("url", "")), url)
 
     async def close(self) -> None:
-        """Close this tab and drop its CDP connection. Idempotent."""
+        """Close this tab while its security guards remain connected. Idempotent."""
         if self._closed:
             return
         self._closed = True
@@ -1409,20 +1544,22 @@ class Page:
                 await asyncio.shield(asyncio.gather(
                     *self._popup_close_tasks, return_exceptions=True,
                 ))
+            if self._closer and self._target_id:
+                # Browser's closer verifies target absence before the websocket
+                # and its per-session interception can be detached.
+                await self._closer(self._target_id)
+                for target_id, session_id in tuple(self._popup_frame_targets.items()):
+                    if self._popup_guard_engines.get(target_id) is self._engine:
+                        self._forget_popup_guard(self._engine, target_id, session_id)
         except BaseException:
             self._closed = False
             raise
-        try:
-            for task in tuple(self._bg_tasks):
-                task.cancel()
-            if self._bg_tasks:
-                await asyncio.gather(*self._bg_tasks, return_exceptions=True)
-            self._bg_tasks.clear()
-            await self._engine.disconnect()
-        finally:
-            # The tab outlives its websocket, including cancelled teardown.
-            if self._closer and self._target_id:
-                await self._closer(self._target_id)
+        for task in tuple(self._bg_tasks):
+            task.cancel()
+        if self._bg_tasks:
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+        self._bg_tasks.clear()
+        await self._engine.disconnect()
 
     async def snapshot(self) -> PageSnapshot:
         await self._ensure_initialized()
