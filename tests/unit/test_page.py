@@ -1695,3 +1695,15 @@ async def test_fetch_interception_refuses_download_navigation_to_private_target(
     continue_calls = [p for m, p in sent if m == "Fetch.continueRequest"]
     assert any(c.get("requestId") == "r-download" for c in fail_calls)
     assert not any(c.get("requestId") == "r-download" for c in continue_calls)
+
+
+def test_full_document_navigation_retires_reused_handles_but_hash_keeps_refs():
+    page = Page(engine=make_cdp_mock(), trace=Trace(), target_id="T1")
+    old = page._refs.assign("h1")
+    page._on_navigated_within_document({"frameId": "T1"})
+    assert page._refs.assign("h1") == old
+    page._on_frame_navigated({"frame": {"id": "child", "parentId": "T1"}})
+    assert page._refs.assign("h1") == old
+    page._on_frame_navigated({"frame": {"id": "T1", "url": "https://x.test"}})
+    assert page._refs.assign("h1") != old
+    assert page._refs.is_stale(old)

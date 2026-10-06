@@ -222,15 +222,24 @@ async def test_unverified_owned_popup_terminates_chrome_before_detach():
     browser._engine = engine
     browser._popup_attach_armed = True
     launcher = MagicMock()
-    launcher.aterminate = AsyncMock(side_effect=lambda: order.append("terminate"))
+    process = MagicMock()
+    process.poll.return_value = None
+    launcher._process = process
+
+    def terminate():
+        order.append("terminate")
+        process.poll.return_value = 0
+
+    launcher.aterminate = AsyncMock(side_effect=terminate)
     browser._launcher = launcher
     page = Page(engine=MagicMock(), trace=browser.trace)
     page._unclosed_popup_targets["child"] = "session"
     browser._popup_owners["root"] = page
     await browser.close()
     assert order[0] == "terminate"
-    assert (order.index("terminate") < order.index("Target.setAutoAttach")
-            < order.index("disconnect"))
+    assert process.poll() == 0
+    assert order.index("terminate") < order.index("disconnect")
+    assert "Target.setAutoAttach" not in order
 
 
 @pytest.mark.parametrize("owned", [False, True])
@@ -331,7 +340,15 @@ async def test_attachment_during_autoattach_disable_never_cancels_guard(owned):
     browser._popup_owners["root"] = page
     if owned:
         browser._launcher = MagicMock()
-        browser._launcher.aterminate = AsyncMock(side_effect=lambda: order.append("terminate"))
+        process = MagicMock()
+        process.poll.return_value = None
+        browser._launcher._process = process
+
+        def terminate():
+            order.append("terminate")
+            process.poll.return_value = 0
+
+        browser._launcher.aterminate = AsyncMock(side_effect=terminate)
 
     async def send(method, params=None, **kwargs):
         if method == "Target.setAutoAttach" and params.get("autoAttach") is False:
@@ -345,7 +362,8 @@ async def test_attachment_during_autoattach_disable_never_cancels_guard(owned):
     engine.send.side_effect = send
     if owned:
         await browser.close()
-        assert order == ["terminate", "disable", "disconnect"]
+        assert order == ["terminate", "disconnect"]
+        assert process.poll() == 0
         assert not page._unclosed_popup_targets
     else:
         with pytest.raises(RuntimeError, match="closure is unverified"):

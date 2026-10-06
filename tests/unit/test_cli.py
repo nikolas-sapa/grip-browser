@@ -2,11 +2,14 @@
 command mocks Browser so this suite passes offline in CI."""
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from grip.cli import EXIT_OK, EXIT_RUNTIME_ERROR, EXIT_USAGE_ERROR, _build_parser, main
+from grip.runner import RunResult
+from grip.trace import Trace
 
 
 def test_no_command_is_a_usage_error():
@@ -132,7 +135,7 @@ def test_run_fails_fast_without_an_api_key(monkeypatch, capsys):
 
 def test_run_uses_anthropic_when_key_present(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    result = MagicMock(data="done")
+    result = RunResult(data="done", trace=Trace(), outcome="done", success=True)
     page = MagicMock()
     browser = _mock_browser(page)
     browser.run = AsyncMock(return_value=result)
@@ -143,6 +146,44 @@ def test_run_uses_anthropic_when_key_present(monkeypatch):
     assert code == EXIT_OK
     adapter_cls.assert_called_once()
     browser.run.assert_awaited_once_with("buy milk", "https://example.com")
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize(
+    "outcome", ["step_limit", "llm_timeout", "action_error", "ambiguous_action"]
+)
+def test_run_reports_unsuccessful_outcome(outcome, as_json, capsys):
+    result = RunResult(data="partial result", trace=Trace(), outcome=outcome, success=False)
+    browser = _mock_browser(MagicMock())
+    browser.run = AsyncMock(return_value=result)
+    args = (["--json"] if as_json else []) + ["run", "finish task", "--url", "about:blank"]
+    with patch("grip.cli.Browser", return_value=browser), patch(
+        "grip.cli._llm_adapter_or_exit", return_value=MagicMock()
+    ):
+        code = main(args)
+    output = capsys.readouterr()
+    assert code == EXIT_RUNTIME_ERROR
+    assert output.err == f"grip: run ended with {outcome}\n"
+    assert (json.loads(output.out) if as_json else output.out.rstrip("\n")) == result.data
+    browser.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("outcome,success", [("done", True), ("model_text", None)])
+def test_run_retains_success_and_unverified_text_output(outcome, success, as_json, capsys):
+    result = RunResult(data="response", trace=Trace(), outcome=outcome, success=success)
+    browser = _mock_browser(MagicMock())
+    browser.run = AsyncMock(return_value=result)
+    args = (["--json"] if as_json else []) + ["run", "finish task", "--url", "about:blank"]
+    with patch("grip.cli.Browser", return_value=browser), patch(
+        "grip.cli._llm_adapter_or_exit", return_value=MagicMock()
+    ):
+        code = main(args)
+    output = capsys.readouterr()
+    assert code == EXIT_OK
+    assert output.err == ""
+    assert (json.loads(output.out) if as_json else output.out.rstrip("\n")) == result.data
+    browser.__aexit__.assert_awaited_once()
 
 
 def test_doctor_reports_python_and_chrome(monkeypatch, capsys):
