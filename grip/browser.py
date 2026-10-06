@@ -157,6 +157,11 @@ class Browser:
         # this, N first-callers each see _engine as None and each launch their own
         # Chrome — N-1 of which nothing owns and nothing terminates.
         self._connect_lock = asyncio.Lock()
+        self._popup_attach_lock = asyncio.Lock()
+        self._popup_attach_armed = False
+        self._popup_chrome_terminated = False
+        self._popup_tasks: set[asyncio.Task[None]] = set()
+        self._popup_owners: dict[str, Page] = {}
         self.trace = Trace()
 
     async def __aenter__(self) -> Self:
@@ -209,6 +214,7 @@ class Browser:
                 launcher.terminate()
                 raise
             self._launcher = launcher
+            self._popup_chrome_terminated = False
             self._engine = engine
 
     async def _resolve_stealth_ua(self, engine: CDPEngine) -> None:
@@ -279,6 +285,8 @@ class Browser:
 
         enforce_navigation(self._policy, url)
 
+        await self._ensure_popup_routing()
+
         result = await self._engine.send("Target.createTarget", {"url": "about:blank"})
         target_id = result["targetId"]
 
@@ -310,6 +318,7 @@ class Browser:
             stealth_ua=self._stealth_ua,
         )
         self._pages.append(page)
+        self._popup_owners[target_id] = page
         try:
             await page.goto(url)
         except BaseException:
@@ -323,6 +332,48 @@ class Browser:
                 await asyncio.shield(asyncio.ensure_future(page.close()))
             raise
         return page
+
+    async def _ensure_popup_routing(self) -> None:
+        if self._policy.allow_private:
+            return
+        async with self._popup_attach_lock:
+            if self._popup_attach_armed:
+                return
+            assert self._engine is not None
+            self._engine.on("Target.attachedToTarget", self._on_page_target_attached)
+            try:
+                await self._engine.send("Target.setAutoAttach", {
+                    "autoAttach": True, "waitForDebuggerOnStart": True,
+                    "flatten": True, "filter": [{"type": "page", "exclude": False}],
+                })
+            except BaseException:
+                self._engine.off("Target.attachedToTarget", self._on_page_target_attached)
+                raise
+            self._popup_attach_armed = True
+
+    def _on_page_target_attached(self, params: dict[str, Any]) -> None:
+        assert self._engine is not None
+        info = params.get("targetInfo", {})
+        # Retain opener ownership until Browser teardown: an attach queued just
+        # after its Page closes still belongs to that Page's popup policy.
+        opener = self._popup_owners.get(info.get("openerId", ""))
+        if opener is not None:
+            before = set(opener._bg_tasks)
+            opener._on_target_attached(params, popup_engine=self._engine)
+            for task in opener._bg_tasks - before:
+                self._popup_tasks.add(task)
+                task.add_done_callback(self._popup_tasks.discard)
+            return
+        # Browser-created blank tabs and unrelated remote tabs are not popups
+        # owned by a managed Page. Never leave them waiting for a debugger.
+        task = asyncio.create_task(self._resume_unmanaged_target(params.get("sessionId", "")))
+        self._popup_tasks.add(task)
+        task.add_done_callback(self._popup_tasks.discard)
+
+    async def _resume_unmanaged_target(self, session_id: str) -> None:
+        assert self._engine is not None
+        with contextlib.suppress(Exception):
+            await self._engine.send("Runtime.runIfWaitingForDebugger", {}, session_id=session_id)
 
     async def _apply_viewport(self, engine: CDPEngine) -> None:
         """Deterministic size/DPR on every tab, plus touch and a matching UA when
@@ -394,13 +445,91 @@ class Browser:
         runner = Runner(llm=self._llm, page=page, trace=self.trace)
         return await runner.run(goal)
 
+    async def _resolve_unclosed_popups(self) -> None:
+        if self._popup_chrome_terminated:
+            for page in self._popup_owners.values():
+                page._unclosed_popup_targets.clear()
+            return
+        unresolved = [p for p in self._popup_owners.values() if p._unclosed_popup_targets]
+        if unresolved:
+            if self._launcher is not None:
+                # Detaching would release a surviving child's debugger pause.
+                # Our Chrome must be gone before any socket is disconnected.
+                await self._launcher.aterminate()
+                self._launcher = None
+                self._popup_chrome_terminated = True
+                for page in unresolved:
+                    page._unclosed_popup_targets.clear()
+            else:
+                assert self._engine is not None
+                for page in unresolved:
+                    for target_id, session_id in tuple(page._unclosed_popup_targets.items()):
+                        await page._close_popup_target(target_id, self._engine, session_id)
+                if any(p._unclosed_popup_targets for p in unresolved):
+                    raise RuntimeError("Cannot detach: blocked popup closure is unverified.")
+
     async def close(self) -> None:
+        # Popup closures must finish before disabling auto-attach can release
+        # their debugger pause. Guarded closures also keep the opener alive.
+        if self._popup_tasks:
+            await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
+        await self._resolve_unclosed_popups()
         for page in list(self._pages):
             try:
                 await page.close()
             except Exception:
                 logger.debug("Failed to close tab %s", page._target_id, exc_info=True)
         self._pages.clear()
+        # An attach delivered while an opener closes retains its owner and
+        # must complete its guarded closure before any session is detached.
+        while self._popup_tasks:
+            await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
+        # Flush queued attachment events before the final closure check.
+        if self._engine and self._popup_attach_armed and not self._popup_chrome_terminated:
+            targets = await self._engine.send("Target.getTargets", {})
+            while self._popup_tasks:
+                await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
+            target_infos = targets.get("targetInfos")
+            if self._launcher is None and (
+                not isinstance(target_infos, list)
+                or any(
+                    not isinstance(info, dict)
+                    or not isinstance(info.get("targetId"), str)
+                    or not info["targetId"]
+                    for info in target_infos
+                )
+            ):
+                raise RuntimeError("Cannot detach: managed target absence is unverified.")
+            if self._launcher is None and any(
+                info.get("targetId") in self._popup_owners
+                or (
+                    info.get("openerId") in self._popup_owners
+                    and not self._popup_owners[info["openerId"]]._policy.allow_popups
+                )
+                for info in target_infos or []
+            ):
+                raise RuntimeError("Cannot detach: managed popup opener or child still exists.")
+        await self._resolve_unclosed_popups()
+        if self._popup_attach_armed and self._launcher is not None:
+            # End the owned process before releasing debugger pauses. A remote
+            # browser instead requires all owned openers/blocked children gone.
+            await self._launcher.aterminate()
+            self._launcher = None
+            self._popup_chrome_terminated = True
+        if self._engine and self._popup_attach_armed:
+            with contextlib.suppress(Exception):
+                await self._engine.send("Target.setAutoAttach", {
+                    "autoAttach": False, "waitForDebuggerOnStart": False, "flatten": True,
+                })
+            while self._popup_tasks:
+                await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
+            await self._resolve_unclosed_popups()
+            self._engine.off("Target.attachedToTarget", self._on_page_target_attached)
+            self._popup_attach_armed = False
+        if self._popup_tasks:
+            await asyncio.shield(asyncio.gather(*self._popup_tasks, return_exceptions=True))
+        self._popup_tasks.clear()
+        self._popup_owners.clear()
         try:
             if self._engine:
                 await self._engine.disconnect()

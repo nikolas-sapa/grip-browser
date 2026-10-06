@@ -9,6 +9,7 @@ import math
 import random
 import re
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -586,6 +587,12 @@ class Page:
         # runIfWaitingForDebugger call and hanging the request/target it was
         # meant to resolve.
         self._bg_tasks: set[asyncio.Task[None]] = set()
+        self._popup_close_tasks: set[asyncio.Task[None]] = set()
+        self._popup_targets_seen: set[str] = set()
+        self._unclosed_popup_targets: dict[str, str] = {}
+        self._pending_mutations: set[
+            asyncio.Future[tuple[BrowserError, asyncio.Task[None]]]
+        ] = set()
         # Download tracking (see enable_downloads()/wait_for_download()).
         # armed once per page lifetime, same reasoning as _fetch_enabled above
         # — a second enable_downloads() call (a new directory) just updates
@@ -723,7 +730,7 @@ class Page:
             ]},
         )
 
-    def _spawn_bg(self, coro: Coroutine[Any, Any, None]) -> None:
+    def _spawn_bg(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         """Schedule `coro` and keep a strong reference until it finishes.
 
         Used from synchronous CDP event handlers, which cannot await. A bare
@@ -734,6 +741,41 @@ class Page:
         task = asyncio.ensure_future(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
+        return task
+
+    async def _send_mutating(self, method: str, params: dict[str, Any]) -> Any:
+        refusal: asyncio.Future[tuple[BrowserError, asyncio.Task[None]]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._pending_mutations.add(refusal)
+        command = asyncio.create_task(self._engine.send(method, params))
+        try:
+            done, _ = await asyncio.wait((command, refusal), return_when=asyncio.FIRST_COMPLETED)
+            if refusal in done:
+                command.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await command
+                error, closure = refusal.result()
+                # Cancellation of the caller cannot cancel the security closure.
+                await asyncio.shield(closure)
+                raise GripError(error)
+            return await command
+        finally:
+            self._pending_mutations.discard(refusal)
+            refusal.cancel()
+            if not command.done():
+                command.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await command
+
+    def _refuse_pending_mutations(self, closure: asyncio.Task[None]) -> None:
+        for refusal in tuple(self._pending_mutations):
+            if not refusal.done():
+                refusal.set_result((BrowserError(
+                    type=ErrorType.NAVIGATION_REFUSED,
+                    message="Popup blocked by NavigationPolicy.allow_popups=False.",
+                    confidence=1.0, recovery=[],
+                ), closure))
 
     def _on_fetch_paused(self, params: dict[str, Any]) -> None:
         """Fetch.requestPaused handler: the request is already suspended in
@@ -951,13 +993,10 @@ class Page:
         anything but the tab this Page already is), so a popup that never
         opens costs nothing this class provides today.
 
-        Target.setAutoAttach, sent on this target's own connection, scopes
-        the attach to targets *this* target opens — popups and OOPIF
-        (out-of-process) iframes both arrive this way. waitForDebuggerOnStart
-        is what makes the block airtight: Chrome pauses the new target before
-        it runs any JS or issues its initial navigation, and it stays paused
-        until something calls Runtime.runIfWaitingForDebugger — closing it
-        instead means the popup never gets far enough to request anything.
+        Browser routes popup attaches from its browser-level connection.
+        This page-level auto-attach still handles workers and OOPIFs, which
+        need to be resumed for the opener to render normally. Direct Page
+        constructions retain their existing attach handler.
 
         Gated the same as Fetch interception: nothing to enforce once the
         caller has opted into allow_private. Still armed under
@@ -979,7 +1018,9 @@ class Page:
             {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
         )
 
-    def _on_target_attached(self, params: dict[str, Any]) -> None:
+    def _on_target_attached(
+        self, params: dict[str, Any], *, popup_engine: CDPEngine | None = None,
+    ) -> None:
         """Every child target this page's target opens arrives here, paused.
 
         Only `type == "page"` is a popup — a real new tab/window from
@@ -992,6 +1033,10 @@ class Page:
         session_id = params.get("sessionId", "")
         if target_info.get("type") == "page":
             target_id = target_info.get("targetId", "")
+            if target_id and target_id in self._popup_targets_seen:
+                return
+            if target_id:
+                self._popup_targets_seen.add(target_id)
             popup_url = target_info.get("url", "")
             if not self._policy.allow_popups:
                 # A blocked popup is otherwise silent: the target is closed
@@ -1016,7 +1061,18 @@ class Page:
                     duration_ms=0,
                 ))
                 if target_id:
-                    self._spawn_bg(self._close_popup_target(target_id))
+                    if popup_engine is not None:
+                        # Register before scheduling, even teardown cancellation
+                        # cannot erase evidence of a debugger-paused survivor.
+                        self._unclosed_popup_targets[target_id] = session_id
+                    closure = self._spawn_bg(
+                        self._close_popup_target(target_id, popup_engine, session_id)
+                    )
+                    self._popup_close_tasks.add(closure)
+                    closure.add_done_callback(self._popup_close_tasks.discard)
+                    # Identify the interrupted commands before any asynchronous
+                    # guard work, so a later command cannot inherit this refusal.
+                    self._refuse_pending_mutations(closure)
                 return
             # allow_popups=True: record it for wait_for_popup() (see
             # PopupInfo for what this can and cannot give the caller) and
@@ -1032,7 +1088,7 @@ class Page:
             self._popup_queue.put_nowait(
                 PopupInfo(target_id=target_id, url=popup_url, session_id=session_id)
             )
-            self._spawn_bg(self._resume_popup_target(session_id))
+            self._spawn_bg(self._resume_popup_target(session_id, popup_engine))
             return
         self._spawn_bg(self._resume_attached_target(session_id))
 
@@ -1060,11 +1116,64 @@ class Page:
                 recovery=[RecoveryAction.RETRY],
             )) from e
 
-    async def _close_popup_target(self, target_id: str) -> None:
-        # Deliberately never Runtime.runIfWaitingForDebugger first — resuming
-        # it, even briefly, is exactly the race this exists to avoid.
-        with contextlib.suppress(Exception):
-            await self._engine.send("Target.closeTarget", {"targetId": target_id})
+    async def _close_popup_target(
+        self, target_id: str, engine: CDPEngine | None = None, session_id: str = "",
+    ) -> None:
+        async def close_target() -> None:
+            try:
+                result = await (engine or self._engine).send(
+                    "Target.closeTarget", {"targetId": target_id}
+                )
+                if result.get("success") is False:
+                    raise RuntimeError("Target.closeTarget refused closure")
+            except Exception as exc:
+                self._record_popup_block_failure(exc)
+
+        if engine is not None:
+            self._unclosed_popup_targets[target_id] = session_id
+            detached = asyncio.Event()
+
+            def on_detached(params: dict[str, Any]) -> None:
+                if params.get("sessionId") == session_id or params.get("targetId") == target_id:
+                    detached.set()
+
+            engine.on("Target.detachedFromTarget", on_detached)
+            try:
+                # Closing only the browser target leaves an opener WindowProxy
+                # alive briefly. Close its DOM window while still paused instead.
+                await engine.send("Emulation.setScriptExecutionDisabled", {"value": True},
+                                  session_id=session_id, timeout=2.0)
+                tree = await engine.send("Page.getFrameTree", {},
+                                         session_id=session_id, timeout=2.0)
+                world = await engine.send("Page.createIsolatedWorld", {
+                    "frameId": tree["frameTree"]["frame"]["id"],
+                    "worldName": f"grip-popup-close-{uuid.uuid4().hex}",
+                    "grantUniveralAccess": False,
+                }, session_id=session_id, timeout=2.0)
+                result = await engine.send("Runtime.evaluate", {
+                    "expression": "window.close(); window.closed", "returnByValue": True,
+                    "contextId": world["executionContextId"],
+                }, session_id=session_id, timeout=2.0)
+                if (result.get("exceptionDetails")
+                        or result.get("result", {}).get("value") is not True):
+                    raise RuntimeError("Popup DOM window did not acknowledge closure")
+                await asyncio.wait_for(detached.wait(), timeout=2.0)
+                self._unclosed_popup_targets.pop(target_id, None)
+            except Exception as exc:
+                self._record_popup_block_failure(exc)
+                await close_target()
+                return
+            finally:
+                engine.off("Target.detachedFromTarget", on_detached)
+            return
+        await close_target()
+
+    def _record_popup_block_failure(self, exc: Exception) -> None:
+        self._trace.add(TraceEntry(
+            timestamp=time.time(), action="popup_block_failed", input={},
+            output={"error": type(exc).__name__}, tokens_consumed=0, duration_ms=0,
+        ))
+        logger.warning("Popup block failed: %s", type(exc).__name__)
 
     async def _resume_attached_target(self, session_id: str) -> None:
         with contextlib.suppress(Exception):
@@ -1072,7 +1181,7 @@ class Page:
                 "Runtime.runIfWaitingForDebugger", {}, session_id=session_id
             )
 
-    async def _resume_popup_target(self, session_id: str) -> None:
+    async def _resume_popup_target(self, session_id: str, engine: CDPEngine | None = None) -> None:
         """Same resume as _resume_attached_target, but for a popup: applies
         this Page's stealth UA to the popup's own session first, so a masked
         opener never spawns an unmasked child.
@@ -1087,14 +1196,16 @@ class Page:
         popup target that closed between attach and here should not block
         resuming whatever attached targets remain.
         """
+        engine = engine or self._engine
         if self._stealth_ua:
             with contextlib.suppress(Exception):
-                await self._engine.send(
+                await engine.send(
                     "Network.setUserAgentOverride",
                     {"userAgent": self._stealth_ua},
                     session_id=session_id,
                 )
-        await self._resume_attached_target(session_id)
+        with contextlib.suppress(Exception):
+            await engine.send("Runtime.runIfWaitingForDebugger", {}, session_id=session_id)
 
     async def goto(self, url: str, timeout: float = 30.0) -> None:
         """Navigate this tab and wait for the load event.
@@ -1294,10 +1405,22 @@ class Page:
             return
         self._closed = True
         try:
+            if self._popup_close_tasks:
+                await asyncio.shield(asyncio.gather(
+                    *self._popup_close_tasks, return_exceptions=True,
+                ))
+        except BaseException:
+            self._closed = False
+            raise
+        try:
+            for task in tuple(self._bg_tasks):
+                task.cancel()
+            if self._bg_tasks:
+                await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+            self._bg_tasks.clear()
             await self._engine.disconnect()
         finally:
-            # The tab outlives its websocket. Skipping this on a failed disconnect
-            # leaks the target for the lifetime of the Browser.
+            # The tab outlives its websocket, including cancelled teardown.
             if self._closer and self._target_id:
                 await self._closer(self._target_id)
 
@@ -1572,13 +1695,13 @@ class Page:
     async def _reveal_step(self) -> bool:
         """One interaction: click a matching reveal control, or scroll to the
         bottom if none is found (covers infinite-scroll pages with no button)."""
-        result = await self._engine.send(
+        result = await self._send_mutating(
             "Runtime.evaluate",
             {"expression": CLICK_REVEAL_JS, "returnByValue": True},
         )
         clicked = bool(result.get("result", {}).get("value", False))
         if not clicked:
-            await self._engine.send(
+            await self._send_mutating(
                 "Runtime.evaluate",
                 {"expression": SCROLL_BOTTOM_JS, "returnByValue": True},
             )
@@ -1701,7 +1824,7 @@ class Page:
             f"({CLICK_ELEMENT_JS})"
             f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
         )
-        result = await self._engine.send(
+        result = await self._send_mutating(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
         outcome = result.get("result", {}).get("value") or {}
@@ -1713,7 +1836,7 @@ class Page:
                 f"({CLICK_ELEMENT_JS})"
                 f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(el.text)})"
             )
-            result = await self._engine.send(
+            result = await self._send_mutating(
                 "Runtime.evaluate", {"expression": js, "returnByValue": True}
             )
             outcome = result.get("result", {}).get("value") or {}
@@ -1749,7 +1872,7 @@ class Page:
             f"({json.dumps(el.handle)}, {json.dumps(text)}, "
             f"{json.dumps(el.tag)}, {json.dumps(el.text)})"
         )
-        result = await self._engine.send(
+        result = await self._send_mutating(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
         outcome = result.get("result", {}).get("value") or {}
@@ -1762,7 +1885,7 @@ class Page:
                 f"({json.dumps(el.handle)}, {json.dumps(text)}, "
                 f"{json.dumps(el.tag)}, {json.dumps(el.text)})"
             )
-            result = await self._engine.send(
+            result = await self._send_mutating(
                 "Runtime.evaluate", {"expression": js, "returnByValue": True}
             )
             outcome = result.get("result", {}).get("value") or {}
@@ -1825,7 +1948,7 @@ class Page:
             f"({_SELECT_OPTION_JS})"
             f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(value)})"
         )
-        result = await self._engine.send(
+        result = await self._send_mutating(
             "Runtime.evaluate", {"expression": js, "returnByValue": True}
         )
         outcome = result.get("result", {}).get("value") or {}
@@ -1837,7 +1960,7 @@ class Page:
                 f"({_SELECT_OPTION_JS})"
                 f"({json.dumps(el.handle)}, {json.dumps(el.tag)}, {json.dumps(value)})"
             )
-            result = await self._engine.send(
+            result = await self._send_mutating(
                 "Runtime.evaluate", {"expression": js, "returnByValue": True}
             )
             outcome = result.get("result", {}).get("value") or {}
@@ -2385,22 +2508,22 @@ class Page:
                 "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
                 "modifiers": bits,
             }
-            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyDown"})
-            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
+            await self._send_mutating("Input.dispatchKeyEvent", {**base, "type": "keyDown"})
+            await self._send_mutating("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
             return
         if len(key) == 1:
             vk = ord(key.upper()) if key.isalnum() else 0
             base = {"key": key, "windowsVirtualKeyCode": vk, "modifiers": bits}
-            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyDown"})
-            await self._engine.send(
+            await self._send_mutating("Input.dispatchKeyEvent", {**base, "type": "keyDown"})
+            await self._send_mutating(
                 "Input.dispatchKeyEvent", {**base, "type": "char", "text": key}
             )
-            await self._engine.send("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
+            await self._send_mutating("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
             return
-        await self._engine.send(
+        await self._send_mutating(
             "Input.dispatchKeyEvent", {"type": "keyDown", "key": key, "modifiers": bits}
         )
-        await self._engine.send(
+        await self._send_mutating(
             "Input.dispatchKeyEvent", {"type": "keyUp", "key": key, "modifiers": bits}
         )
 
@@ -2561,7 +2684,7 @@ class Page:
         params: dict[str, Any] = {"type": event_type, "x": x, "y": y, "button": button}
         if click_count:
             params["clickCount"] = click_count
-        await self._engine.send("Input.dispatchMouseEvent", params)
+        await self._send_mutating("Input.dispatchMouseEvent", params)
 
     async def detect_challenge(self) -> ChallengeStage:
         """Classify any bot challenge on the page. Read-only, no network calls."""
