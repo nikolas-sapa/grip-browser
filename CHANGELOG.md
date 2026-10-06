@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Private-address permission retains metadata, scheme and popup policy enforcement.
 - Allowed popups inherit navigation policy before resuming; guarded child requests remain enforced across named-window reuse.
 - Guarded popup descendants close before browser teardown releases their sessions.
+- Owned Chrome receives graceful shutdown for profile persistence; guards remain attached until process exit is verified.
 - Direct Page wrappers with known identity reject existing unmanaged related windows before interaction.
 - Popup user-agent masking is verified against real Chrome DOM and HTTP headers.
 

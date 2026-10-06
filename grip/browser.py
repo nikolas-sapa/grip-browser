@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import subprocess
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -150,6 +151,8 @@ class Browser:
         # None entirely when stealth=False.
         self._stealth_ua: str | None = None
         self._launcher: ChromeLauncher | None = None
+        self._owned_shutdown_process: subprocess.Popen[bytes] | None = None
+        self._owned_cleanup_task: asyncio.Task[None] | None = None
         self._engine: CDPEngine | None = None
         self._port: int = 0
         self._pages: list[Page] = []
@@ -473,9 +476,7 @@ class Browser:
             if self._launcher is not None:
                 # Detaching would release a surviving child's debugger pause.
                 # Our Chrome must be gone before any socket is disconnected.
-                await self._launcher.aterminate()
-                self._launcher = None
-                self._popup_chrome_terminated = True
+                await self._shutdown_owned_chrome(graceful=False)
                 for page in unresolved:
                     page._unclosed_popup_targets.clear()
             else:
@@ -495,6 +496,51 @@ class Browser:
                         await page._close_popup_target(target_id, origin, session_id)
                 if any(p._unclosed_popup_targets for p in unresolved):
                     raise RuntimeError("Cannot detach: blocked popup closure is unverified.")
+
+    async def _shutdown_owned_chrome(self, *, graceful: bool = True) -> None:
+        launcher = self._launcher
+        if launcher is None:
+            return
+        process = self._owned_shutdown_process or getattr(launcher, "_process", None)
+        # Launcher cleanup mutates its process property, even after a cancelled
+        # caller stops awaiting its worker thread. Retain independent evidence.
+        self._owned_shutdown_process = process
+        if self._owned_cleanup_task is not None:
+            cleanup = self._owned_cleanup_task
+            try:
+                await asyncio.shield(cleanup)
+            finally:
+                if cleanup.done():
+                    self._owned_cleanup_task = None
+        if process is not None and getattr(launcher, "_process", None) is None:
+            launcher._process = process
+        if (
+            graceful and self._engine is not None and process is not None
+            and process.poll() is None
+        ):
+            # Native shutdown flushes persistent profile stores. Keep guards
+            # attached while Chrome closes its targets and exits.
+            with contextlib.suppress(Exception):
+                await self._engine.send("Browser.close", timeout=2.0)
+            try:
+                await asyncio.to_thread(process.wait, timeout=5.0)
+            except subprocess.TimeoutExpired:
+                logger.debug("Native Chrome shutdown timed out; terminating owned process")
+        cleanup = asyncio.create_task(launcher.aterminate())
+        self._owned_cleanup_task = cleanup
+        try:
+            await asyncio.shield(cleanup)
+        finally:
+            if cleanup.done():
+                self._owned_cleanup_task = None
+        if process is not None and process.poll() is None:
+            # The launcher cleanup normally reaps the process. Do not release
+            # guards if termination failed, and retain ownership for a retry.
+            launcher._process = process
+            raise RuntimeError("Owned Chrome remains alive; security guards retained.")
+        self._launcher = None
+        self._owned_shutdown_process = None
+        self._popup_chrome_terminated = True
 
     async def close(self) -> None:
         # Popup closures must finish before disabling auto-attach can release
@@ -540,12 +586,10 @@ class Browser:
             ):
                 raise RuntimeError("Cannot detach: managed popup opener or child still exists.")
         await self._resolve_unclosed_popups()
-        if self._popup_attach_armed and self._launcher is not None:
+        if self._launcher is not None:
             # End the owned process before releasing debugger pauses. A remote
             # browser instead requires all owned openers/blocked children gone.
-            await self._launcher.aterminate()
-            self._launcher = None
-            self._popup_chrome_terminated = True
+            await self._shutdown_owned_chrome()
         if self._engine and self._popup_attach_armed:
             with contextlib.suppress(Exception):
                 await self._engine.send("Target.setAutoAttach", {

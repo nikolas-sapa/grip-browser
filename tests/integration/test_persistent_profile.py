@@ -40,16 +40,23 @@ async def test_local_storage_survives_a_restart(tmp_path, base_url):
 
     async with Browser(user_data_dir=profile, allow_private=True) as browser:
         page = await browser.open(base_url)
-        await page._engine.send("Runtime.evaluate", {
-            "expression": "localStorage.setItem('grip_test', 'kept')"
+        written = await page._engine.send("Runtime.evaluate", {
+            "expression": "localStorage.setItem('grip_test', 'kept');"
+                          "({value: localStorage.getItem('grip_test'), origin: location.origin})",
+            "returnByValue": True,
         })
+        assert "exceptionDetails" not in written
+        expected = {"value": "kept", "origin": base_url.rstrip("/")}
+        assert written["result"]["value"] == expected
 
     async with Browser(user_data_dir=profile, allow_private=True) as browser:
         page = await browser.open(base_url)
         result = await page._engine.send("Runtime.evaluate", {
-            "expression": "localStorage.getItem('grip_test')", "returnByValue": True
+            "expression": "({value: localStorage.getItem('grip_test'), origin: location.origin})",
+            "returnByValue": True,
         })
-        assert result["result"]["value"] == "kept"
+        assert "exceptionDetails" not in result
+        assert result["result"]["value"] == expected
 
 
 @pytest.mark.asyncio

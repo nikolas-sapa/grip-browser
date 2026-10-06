@@ -38,3 +38,20 @@ for a successfully acknowledged `Fetch.failRequest` before asserting 0 nonempty
 HTTP receipts. The permitted localhost control must observe >=1 real GET.
 Verify 10 consecutive real Chrome initial iframe runs and the full popup policy
 suite with 0 failures. Production interception and CI retry policy stay unchanged.
+
+## Persistent profile shutdown regression (before test implementation)
+
+Python 3.12 CI lost the `grip_test` localStorage value after an immediate restart
+using the same profile and origin. Strengthen the write precondition: 0 evaluation
+exceptions and an immediate readback of exactly `kept` before shutdown. After
+normal Browser context exit, one fresh Browser using the same profile and origin
+must read exactly `kept`, with 0 explicit storage flushes or sleeps. Verify 10
+consecutive write/close/restart runs and both persistent-profile tests with 0
+failures. A failed restart remains a product regression; no retry bypass is added.
+
+## Persistent profile shutdown acceptance (before implementation)
+
+1. Ten consecutive real Chrome profile reopen cycles preserve the immediately written/read-back localStorage value exactly (10/10, no flush sleep).
+2. Owned Chrome receives native Browser.close with active root guard connection, and process exit is verified before 0→1 root disconnects.
+3. A native close failure or 5-second exit timeout falls back to existing termination; verified process exit still precedes disconnect. A process remaining alive produces 0 disconnects.
+4. Remote browsers receive 0 Browser.close calls; cancellation during owned graceful shutdown leaves guards/ownership intact for retry.
