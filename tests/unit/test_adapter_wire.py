@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 
-import httpx
 import pytest
 
 from grip.adapters.anthropic import AnthropicAdapter
 
 anthropic = pytest.importorskip("anthropic")
+httpx = pytest.importorskip("httpx")
 
 
 TOOLS = [

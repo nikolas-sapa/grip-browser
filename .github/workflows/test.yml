@@ -24,7 +24,7 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,openai,anthropic,gemini]"
 
       # Unit tests alone measure 83%; the higher figure quoted elsewhere includes
       # the integration run below, which this step deliberately excludes so the
