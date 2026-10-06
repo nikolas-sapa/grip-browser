@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 
 import pytest
 
@@ -11,7 +12,9 @@ from grip.runner import Runner
 from grip.trace import Trace
 
 openai = pytest.importorskip("openai")
-httpx = pytest.importorskip("httpx")
+httpx = importlib.import_module(
+    openai.DefaultAsyncHttpxClient.__mro__[1].__module__.split(".")[0]
+)
 
 
 class _Page:

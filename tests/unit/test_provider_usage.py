@@ -1,5 +1,7 @@
 """Provider counts use SDK response shapes; no paid calls."""
 
+import importlib
+
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
@@ -116,6 +118,9 @@ async def test_native_sdk_intercepted_transport(provider):
     httpx = pytest.importorskip("httpx")
     if provider == "openai":
         sdk = pytest.importorskip("openai")
+        httpx = importlib.import_module(
+            sdk.DefaultAsyncHttpxClient.__mro__[1].__module__.split(".")[0]
+        )
         payload = {
             "id": "chatcmpl-test",
             "object": "chat.completion",
@@ -149,6 +154,9 @@ async def test_native_sdk_intercepted_transport(provider):
         adapter = object.__new__(OpenAIAdapter)
     elif provider == "anthropic":
         sdk = pytest.importorskip("anthropic")
+        httpx = importlib.import_module(
+            sdk.DefaultAsyncHttpxClient.__mro__[1].__module__.split(".")[0]
+        )
         payload = {
             "id": "msg-test",
             "type": "message",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 from contextlib import asynccontextmanager
 
 import pytest
@@ -10,7 +11,9 @@ import pytest
 from grip.adapters.anthropic import AnthropicAdapter
 
 anthropic = pytest.importorskip("anthropic")
-httpx = pytest.importorskip("httpx")
+httpx = importlib.import_module(
+    anthropic.DefaultAsyncHttpxClient.__mro__[1].__module__.split(".")[0]
+)
 
 
 TOOLS = [
