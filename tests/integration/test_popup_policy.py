@@ -14,6 +14,11 @@ async def receiver():
 
     async def handle(reader, writer):
         request = await reader.read(4096)
+        if not request:
+            # Chrome can open and abandon a TCP preconnect without sending HTTP.
+            writer.close()
+            await writer.wait_closed()
+            return
         requests.append(request)
         received.set()
         if b'GET /frame ' in request:
@@ -113,7 +118,7 @@ async def test_allowed_localhost_popup_has_real_http_receipt():
         page = await browser.open('about:blank')
         await popup(browser, page, url + '/allowed')
         await asyncio.wait_for(received.wait(), timeout=2)
-        assert len(requests) >= 1
+        assert any(b'GET /allowed ' in request for request in requests)
 
 
 @pytest.mark.asyncio
@@ -134,12 +139,22 @@ async def test_named_popup_reuse_keeps_inherited_interception():
 
 
 @pytest.mark.asyncio
-async def test_opener_written_initial_popup_iframe_is_intercepted():
+async def test_opener_written_initial_popup_iframe_is_intercepted(monkeypatch):
     async with (
         receiver() as (url, requests, _),
         Browser(headless=True, allow_popups=True) as browser,
     ):
         page = await browser.open('about:blank')
+        denied = asyncio.Event()
+        original_send = browser._engine.send
+
+        async def observe_send(method, params=None, session_id=None, timeout=None):
+            result = await original_send(method, params, session_id, timeout)
+            if method == 'Fetch.failRequest':
+                denied.set()
+            return result
+
+        monkeypatch.setattr(browser._engine, 'send', observe_send)
         markup = json.dumps(f'<iframe src="{url}/initial"></iframe>')
         await page._engine.send('Runtime.evaluate', {
             'expression': (f'let w=window.open("about:blank","_blank");'
@@ -147,7 +162,7 @@ async def test_opener_written_initial_popup_iframe_is_intercepted():
             'userGesture': True,
         }, timeout=3)
         await page.wait_for_popup(timeout=2)
-        await asyncio.sleep(0.3)
+        await asyncio.wait_for(denied.wait(), timeout=2)
         assert requests == []
 
 

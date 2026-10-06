@@ -26,3 +26,15 @@ Real Chrome tests cover initial opener-written iframe, nested popup, Document/XH
 1. Managed main target closure and validated target inventory establish absence within 2 seconds before its Page engine disconnects.
 2. A closer failure or cancelled closer produces 0 disconnects, preserves guard callbacks and permits retry.
 3. A failed main OOPIF guard records its originating Page engine, never sends that session through the browser connection, and teardown either terminates owned Chrome or verifies main target/frame absence on remote Chrome before disconnect.
+
+## HTTP receiver acceptance correction (before test implementation)
+
+Python 3.11 CI recorded one empty TCP EOF (`b''`) in the initial iframe test;
+Python 3.14 passed all 177 browser/search tests. The receiver treated an empty
+preconnect as an HTTP receipt and the initial iframe test used a fixed sleep.
+Keep the HTTP boundary explicit: an empty connection produces 0 HTTP receipts,
+0 receive-event signals and 0 HTTP responses. The initial iframe test must wait
+for a successfully acknowledged `Fetch.failRequest` before asserting 0 nonempty
+HTTP receipts. The permitted localhost control must observe >=1 real GET.
+Verify 10 consecutive real Chrome initial iframe runs and the full popup policy
+suite with 0 failures. Production interception and CI retry policy stay unchanged.

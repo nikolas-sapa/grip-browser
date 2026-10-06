@@ -306,7 +306,7 @@ The user-agent override applies to every managed tab and allowed popup before it
 
 Popup permissions are independent: `allow_private=True` permits private addresses while metadata, scheme and popup checks remain active. `allow_popups=True` gives child targets the opener's Document/XHR/Fetch policy before resuming them. Persistent child guards cover redirects, nested popups and named-window reuse; browser teardown closes guarded children before detaching. A direct `Page` wrapper with a known target identity refuses existing unmanaged related windows before interaction.
 
-Allowed popups still require trusted content. Chromium exposes some nonnetwork `javascript:` popup targets with an empty initial URL and no Fetch event, so this guard cannot prevent that script execution. DNS rebinding and WebSocket handshakes remain outside Fetch interception. Default popup blocking closes the child while paused.
+Allowed popups still require trusted content. Chromium exposes some nonnetwork `javascript:` popup targets with an empty initial URL and no Fetch event, so this guard cannot prevent that script execution. The guard blocks HTTP requests, not speculative TCP connections. DNS rebinding and WebSocket handshakes remain outside Fetch interception. Default popup blocking closes the child while paused.
 
 Measured 2026-08-12, per-signal, against the sannysoft table directly (57 rows;
 `benchmarks/bench_stealth_signals.py`) on Chrome for Testing 151.0.7922.34,
