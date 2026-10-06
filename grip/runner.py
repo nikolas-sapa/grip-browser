@@ -17,7 +17,7 @@ from grip.trace import Trace, TraceEntry
 # read() result sitting in the transcript stays cheaper than re-snapshotting.
 _READ_MAX_CHARS = 12000
 
-_TOOLS = [
+_TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
         "name": "snapshot",
         "description": "Take a fresh snapshot of the current page state.",
@@ -130,6 +130,33 @@ def _serialize_tool_arguments(arguments: dict[str, Any]) -> str:
         raise ValueError("tool arguments must be valid JSON") from exc
 
 
+def _validate_tool_call(name: str, arguments: dict[str, Any]) -> None:
+    tool = next((tool for tool in _TOOLS if tool["function"]["name"] == name), None)
+    if tool is None:
+        raise ValueError("unknown tool")
+    schema = tool["function"]["parameters"]
+    for required in schema.get("required", []):
+        if required not in arguments:
+            raise ValueError(f"missing required argument: {required}")
+    for key, value in arguments.items():
+        field = schema["properties"].get(key)
+        if field is None:
+            continue
+        if field["type"] == "string" and not isinstance(value, str):
+            raise ValueError(f"argument {key} must be text")
+        if field["type"] == "number" and (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+        ):
+            raise ValueError(f"argument {key} must be a positive number")
+    conditions = sum(bool(arguments.get(key)) for key in ("text", "ref", "selector"))
+    if name == "wait_for" and conditions != 1:
+        raise ValueError("wait_for requires exactly one nonempty condition")
+
+
+class _AmbiguousAction(Exception):
+    pass
+
+
 def _fence(payload: object) -> str:
     # A page that emits the literal closing tag would otherwise walk out of the
     # fence and have the rest of its text read as instructions — the same forgery
@@ -143,6 +170,9 @@ class RunResult:
     data: Any
     trace: Trace
     tokens: int = 0
+    outcome: str | None = None
+    error: str | None = None
+    success: bool | None = None
 
 
 class Runner:
@@ -214,8 +244,19 @@ class Runner:
             }
 
     async def run(self, goal: str) -> RunResult:
-        snapshot = await self._page.snapshot()
-        page_state = self._summarizer.format(snapshot)
+        def finish(
+            outcome: str, data: Any = None, error: str | None = None,
+            success: bool | None = False,
+        ) -> RunResult:
+            return RunResult(data, self._trace, self._trace.total_tokens, outcome, error, success)
+
+        try:
+            snapshot = await self._page.snapshot()
+            page_state = self._summarizer.format(snapshot)
+        except Exception as exc:
+            return finish(
+                "action_error", error=f"Initial observation failed ({type(exc).__name__})"
+            )
         self._last_sent_version = snapshot.version
         messages = self._messages
         messages[:] = [
@@ -231,7 +272,7 @@ class Runner:
             {"role": "user", "content": f"Goal: {goal}\n\n{_fence(page_state)}"},
         ]
 
-        final_result = None
+        last_error: str | None = None
         used_call_ids: set[str] = set()
         for step in range(self._max_steps):
             t0 = time.monotonic()
@@ -241,16 +282,24 @@ class Runner:
                 async with asyncio.timeout(self._llm_timeout):
                     response = await self._llm.complete(messages=messages, tools=_TOOLS)
             except TimeoutError:
-                break
+                return finish("llm_timeout", error="Model request timed out")
+            except Exception as exc:
+                return finish("action_error", error=f"Model request failed ({type(exc).__name__})")
             duration_ms = int((time.monotonic() - t0) * 1000)
 
             if response.tool_call is None:
-                break
+                if response.content and response.content.strip():
+                    return finish("model_text", data=response.content, success=None)
+                return finish("action_error", error="Model returned no text or tool call")
 
             tc = response.tool_call
             # Validate replay before acting: a successful browser action must
             # always have arguments the provider can reconstruct next turn.
             serialized_arguments = _serialize_tool_arguments(tc.arguments)
+            try:
+                _validate_tool_call(tc.name, tc.arguments)
+            except ValueError as exc:
+                return finish("action_error", error=str(exc))
             # An error message is written by the runner, not by the page. Fencing
             # it would put the one instruction the model is meant to act on — the
             # suggested recovery — inside the region the system prompt tells it to
@@ -268,12 +317,17 @@ class Runner:
                     f"ERROR {e.error.type.name}: {e.error.message} "
                     f"(suggested recovery: {recovery})"
                 )
-            except KeyError as e:
-                errored = True
-                # ponytail: a KeyError raised deeper than argument lookup is
-                # reported as a missing argument too. Mis-attributed, but a wrong
-                # label the model can retry past beats ending the run.
-                tool_result = f"ERROR: tool call {tc.name!r} is missing argument {e}"
+            except _AmbiguousAction as exc:
+                message = str(exc)
+                self._trace.add(TraceEntry(
+                    timestamp=time.time(), action=tc.name, input=tc.arguments,
+                    output={"outcome": "ambiguous_action", "error": message},
+                    tokens_consumed=0, duration_ms=duration_ms,
+                ))
+                return finish("ambiguous_action", error=message)
+            except Exception as exc:
+                return finish("action_error", error=f"Tool failed ({type(exc).__name__})")
+            last_error = str(tool_result) if errored else None
 
             self._trace.add(TraceEntry(
                 timestamp=time.time(),
@@ -285,8 +339,7 @@ class Runner:
             ))
 
             if tc.name == "done":
-                final_result = tc.arguments.get("result")
-                break
+                return finish("done", data=tc.arguments["result"], success=True)
 
             call_id = tc.id or f"grip_call_{step}"
             if tc.id is None:
@@ -307,24 +360,36 @@ class Runner:
             })
             self._prune_superseded()
 
-        return RunResult(data=final_result, trace=self._trace, tokens=self._trace.total_tokens)
+        if last_error is not None:
+            return finish("action_error", error="Safe action recovery exhausted step limit")
+        return finish("step_limit", error="Maximum model steps reached")
 
     async def _dispatch(self, name: str, args: dict[str, Any]) -> Any:
         if name == "snapshot":
             await self._page.snapshot()
             return self._page_payload()
-        if name == "click":
-            await self._page.click(args["target"])
-            await self._page.snapshot()
-            return self._page_payload()
-        if name == "type":
-            await self._page.type(args["target"], args["text"])
-            await self._page.snapshot()
-            return self._page_payload()
-        if name == "select":
-            await self._page.select(args["target"], args["value"])
-            await self._page.snapshot()
-            return self._page_payload()
+        if name in {"click", "type", "select"}:
+            try:
+                if name == "click":
+                    await self._page.click(args["target"])
+                elif name == "type":
+                    await self._page.type(args["target"], args["text"])
+                else:
+                    await self._page.select(args["target"], args["value"])
+            except Exception as exc:
+                # Page method exceptions do not prove that events were absent:
+                # type() can emit input/change then report ELEMENT_STALE, and
+                # custom select() can open its trigger before option resolution.
+                raise _AmbiguousAction(
+                    "Action outcome uncertain; do not repeat action"
+                ) from exc
+            try:
+                await self._page.snapshot()
+                return self._page_payload()
+            except Exception as exc:
+                raise _AmbiguousAction(
+                    "Action completed but observation failed; do not repeat action"
+                ) from exc
         if name == "hover":
             await self._page.hover(args["target"])
             await self._page.snapshot()
