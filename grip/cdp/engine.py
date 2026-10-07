@@ -29,6 +29,7 @@ class CDPEngine:
         self._session_listeners: dict[tuple[str, str], list[Callable[[dict[str, Any]], None]]] = {}
         self._receive_task: asyncio.Task[None] | None = None
         self._closed_reason: BrowserError | None = None
+        self._disconnecting = False
         # Per-call default for send(); a caller that wants a tighter budget for
         # one command still passes send(..., timeout=...) without touching this.
         self.default_timeout = default_timeout
@@ -48,6 +49,7 @@ class CDPEngine:
 
     async def connect(self, url: str) -> None:
         self._ws = await websockets.connect(url, max_size=50 * 1024 * 1024)
+        self._disconnecting = False
         self._receive_task = asyncio.create_task(self._receive_loop())
         self.on("Inspector.targetCrashed", self._handle_target_crashed)
         # Inspector.targetCrashed is not delivered until the domain is enabled.
@@ -59,6 +61,11 @@ class CDPEngine:
             logger.debug("Inspector.enable failed; crash events will not surface", exc_info=True)
 
     async def disconnect(self) -> None:
+        self._disconnecting = True
+        for future in list(self._pending.values()):
+            if not future.done():
+                future.set_exception(RuntimeError("CDP connection disconnected"))
+        self._pending.clear()
         if self._receive_task:
             self._receive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -90,6 +97,8 @@ class CDPEngine:
             raise RuntimeError("CDPEngine is not connected. Call connect() first.")
         if self._closed_reason is not None:
             raise GripError(self._closed_reason)
+        if self._disconnecting:
+            raise RuntimeError("CDP connection is disconnecting")
         msg_id = self._next_id()
         fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[msg_id] = fut
@@ -108,6 +117,10 @@ class CDPEngine:
             self._pending.pop(msg_id, None)
             if not fut.done():
                 fut.cancel()
+            elif not fut.cancelled():
+                # send() may be cancelled or fail in websocket.send() before
+                # awaiting a future already failed by disconnect/crash.
+                fut.exception()
 
     def on(self, event: str, callback: Callable[[dict[str, Any]], None]) -> None:
         self._listeners.setdefault(event, []).append(callback)
