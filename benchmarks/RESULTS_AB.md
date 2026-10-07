@@ -11,6 +11,8 @@ One command, no fixtures, no cached state, no arguments. It launches headless Ch
 drives four scenarios against live public sites through grip's own `page.goto` /
 `page.click` / `page.type`, and prints every table below. Takes 60–80 seconds.
 
+> Historical observation benchmark, Grip 0.5.0. No model ran; counts are constructed transcript estimates, not provider-reported usage or current competitor results. Defect descriptions below reflect the tested version. Current payload selection checks the delivered baseline and falls back to a full snapshot when a delta costs more.
+
 ## Method
 
 Each scenario is 6 agent turns. Every turn is a real navigation, click or keystroke —

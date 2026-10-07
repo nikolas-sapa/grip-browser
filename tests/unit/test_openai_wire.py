@@ -36,7 +36,8 @@ class _Page:
 
 
 @pytest.mark.asyncio
-async def test_runner_json_history_reaches_native_openai_second_request():
+@pytest.mark.parametrize("assistant_text", [None, "Checking before clicking."])
+async def test_runner_json_history_reaches_native_openai_second_request(assistant_text):
     arguments = {"target": 'Buy "Ω"', "nested": {"enabled": True, "missing": None,
                  "items": [1, "two", {"off": False}]}}
     captured = []
@@ -44,7 +45,7 @@ async def test_runner_json_history_reaches_native_openai_second_request():
     def intercept(request):
         captured.append(json.loads(request.content))
         if len(captured) == 1:
-            message = {"role": "assistant", "content": None, "tool_calls": [{
+            message = {"role": "assistant", "content": assistant_text, "tool_calls": [{
                 "id": "call_native", "type": "function", "function": {
                     "name": "click", "arguments": json.dumps(arguments),
                 },
@@ -57,6 +58,7 @@ async def test_runner_json_history_reaches_native_openai_second_request():
             "id": "chatcmpl_probe", "object": "chat.completion", "created": 0,
             "model": "probe", "choices": [{"index": 0, "message": message,
                                              "finish_reason": finish}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
         })
 
     adapter = OpenAIAdapter(api_key="local-test", model="probe")
@@ -67,11 +69,14 @@ async def test_runner_json_history_reaches_native_openai_second_request():
     )
     page = _Page()
     try:
-        await Runner(llm=adapter, page=page, trace=Trace()).run("click Buy")
+        run_result = await Runner(llm=adapter, page=page, trace=Trace()).run("click Buy")
     finally:
         await adapter._client.close()
     assert len(captured) == 2 and page.clicks == [arguments["target"]]
+    assert run_result.model_calls == 2 and run_result.tokens == 20
+    assert run_result.usage_complete
     assert all(body["parallel_tool_calls"] is False for body in captured)
+    assert captured[1]["messages"][-2]["content"] == assistant_text
     replay = captured[1]["messages"][-2]["tool_calls"][0]
     result = captured[1]["messages"][-1]
     assert json.loads(replay["function"]["arguments"]) == arguments

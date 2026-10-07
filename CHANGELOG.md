@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.9] - 2026-10-07
+
+### Fixed
+
+- Metadata-address denial covers IPv4-mapped IPv6 and DNS root-dot aliases; localhost root-dot names require private-address opt-in.
+- Runner stops after uncertain hover dispatch or observation failures, preventing repeated pointer actions.
+- OpenAI tool-call history preserves assistant text returned alongside native calls.
+- Remote connection setup and target creation retain cleanup ownership through cancellation.
+- Documentation distinguishes historical observation estimates from measured provider usage and prepares a controlled workflow comparison protocol.
+
 ## [0.8.8] - 2026-10-07
 
 ### Fixed

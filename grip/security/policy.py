@@ -70,10 +70,11 @@ class NavigationPolicy:
 
     @property
     def allow_private(self) -> bool:
-        """Whether this policy has anything left to enforce against private/
-        loopback/link-local targets. Callers that gate expensive enforcement
-        machinery (e.g. Page's Fetch-domain interception) on "is this policy
-        actually restrictive" read this instead of reaching into `_allow_private`."""
+        """Whether private/loopback/link-local targets are permitted.
+
+        Metadata, scheme and popup restrictions still apply; this permission
+        must not disable request interception or other policy enforcement.
+        """
         return self._allow_private
 
     @property
@@ -112,7 +113,8 @@ class NavigationPolicy:
             if parsed.scheme == "file" and self._allow_file:
                 return None
             return f"scheme {parsed.scheme!r} is not allowed (http/https only)"
-        host = parsed.hostname or ""
+        # Chrome accepts DNS root-dot aliases; classify the equivalent host.
+        host = (parsed.hostname or "").removesuffix(".")
         # Canonicalize before any check below: 2130706433, 0177.0.0.1,
         # 0x7f000001 and 127.1 are all loopback to Chrome (inet_aton
         # semantics) but ipaddress.ip_address rejects every one of them,
@@ -129,6 +131,10 @@ class NavigationPolicy:
         except ValueError:
             # A DNS name — see the class docstring for why this is a pass.
             return None
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+            if str(addr) in _METADATA_HOSTS:
+                return f"{host} is a cloud metadata endpoint"
         if (addr.is_private or addr.is_loopback or addr.is_link_local) and not self._allow_private:
             return f"{host} is a private or internal address"
         return None
