@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.8] - 2026-10-07
+
+### Fixed
+
+- Explicit CDP disconnect fails pending root and child-session commands immediately, allowing guarded popup cleanup to finish within the existing shutdown bound.
+- Commands are rejected while CDP disconnect is in progress; cancelled websocket writes consume failed futures without unhandled exception warnings.
+- Popup HTTP test receivers ignore empty TCP preconnects while preserving evidence of nonempty requests and validating complete positive controls.
+
 ## [0.8.7] - 2026-10-06
 
 ### Fixed

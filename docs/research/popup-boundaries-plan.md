@@ -55,3 +55,31 @@ failures. A failed restart remains a product regression; no retry bypass is adde
 2. Owned Chrome receives native Browser.close with active root guard connection, and process exit is verified before 0→1 root disconnects.
 3. A native close failure or 5-second exit timeout falls back to existing termination; verified process exit still precedes disconnect. A process remaining alive produces 0 disconnects.
 4. Remote browsers receive 0 Browser.close calls; cancellation during owned graceful shutdown leaves guards/ownership intact for retry.
+
+## Popup routing receiver EOF correction (before test implementation)
+
+1. Deterministic TCP receiver control: one empty EOF yields exactly 0 HTTP receipts,
+   0 receive-event signals and 0 response bytes. Two GETs for `/image` alone yield
+   0 completion signals; adding one complete GET `/frame` yields exactly one
+   completed event with both required GET paths recorded. Fragmented request-line
+   delivery yields one complete receipt, never a partial request line. One partial
+   GET `/frame` produces 0 completion signals and cannot satisfy path coverage.
+2. Audit all five routing receivers: empty TCP EOF cannot enter any HTTP receipt
+   list, signal an event or receive an HTTP response. User-agent receipt retains
+   complete headers. Negative controls record nonempty partial traffic before
+   sender EOF and still require exactly 0 receipts.
+3. Real Chrome positive control passes 10 consecutive invocations with both
+   GET `/image` and GET `/frame` observed and child script marker exactly 1.
+4. Full popup integration suite passes with 0 failures and changed Python file
+   has 0 Ruff findings. No retries or extra sleeps bypass failures.
+
+Implementation: share receiver handling within this test file. Negative controls
+record nonempty raw bytes immediately. Positive controls validate complete request
+lines and headers before acknowledgement; retain incomplete or malformed bytes as
+evidence without counting them toward GET path coverage. Complete the popup control
+only when both required GET paths arrive. Close empty preconnects without HTTP
+response. Preserve user-agent headers and existing popup block assertions.
+
+Non-goals: production interception, TCP connection/ACK blocking guarantees,
+version/tag changes, CI retry changes or popup policy weakening. HTTP receipts,
+not empty TCP connections, remain the measured boundary.
