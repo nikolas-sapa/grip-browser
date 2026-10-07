@@ -143,7 +143,7 @@ async def test_valid_native_serialization_fixture(messages, tools, system):
             "description": "Click",
             "input_schema": TOOLS[0]["function"]["parameters"],
         }
-        assert body["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+        assert body["tool_choice"] == {"type": "auto"}
     if any(m["role"] == "tool" for m in messages):
         use = body["messages"][-2]["content"][-1]
         reply = body["messages"][-1]["content"][0]
@@ -186,12 +186,13 @@ async def test_native_two_request_tool_id_and_mixed_text_roundtrip():
 
 
 @pytest.mark.asyncio
-async def test_multiple_native_tool_calls_fail_explicitly():
+async def test_multiple_native_tool_calls_are_preserved():
     blocks = [
         {"type": "tool_use", "id": f"toolu_{i}", "name": "click", "input": {"target": "Buy"}}
         for i in range(2)
     ]
     async with adapter_wire([response(blocks, "tool_use")]) as (adapter, captured):
-        with pytest.raises(ValueError, match="multiple"):
-            await adapter.complete([USER], TOOLS)
+        reply = await adapter.complete([USER], TOOLS)
+        assert [call.id for call in reply.tool_calls] == ["toolu_0", "toolu_1"]
+        assert all(call.arguments == {"target": "Buy"} for call in reply.tool_calls)
         assert len(captured) == 1

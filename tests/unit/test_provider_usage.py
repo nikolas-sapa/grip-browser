@@ -279,8 +279,7 @@ def test_trace_native_total_stays_exact_without_subdivision_double_count():
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini"])
-async def test_multiple_calls_rejected_with_reported_usage(provider):
-    from grip.adapters.base import LLMProtocolError
+async def test_multiple_calls_preserve_reported_usage(provider):
 
     cls = {"openai": OpenAIAdapter, "anthropic": AnthropicAdapter, "gemini": GeminiAdapter}[
         provider
@@ -308,9 +307,10 @@ async def test_multiple_calls_rejected_with_reported_usage(provider):
             text=None,
         )
         adapter._client = NS(aio=NS(models=NS(generate_content=AsyncMock(return_value=response))))
-    with pytest.raises(LLMProtocolError, match="multiple tool calls") as caught:
-        await adapter.complete([{"role": "user", "content": "hello"}], [])
-    assert caught.value.usage == LLMUsage(
+    response = await adapter.complete([{"role": "user", "content": "hello"}], [])
+    assert len(response.tool_calls) == 2
+    assert [call.id for call in response.tool_calls] == ["c0", "c1"]
+    assert response.usage == LLMUsage(
         provider, 8, 2, total_tokens=10 if provider != "anthropic" else None
     )
 

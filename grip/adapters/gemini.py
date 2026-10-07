@@ -5,7 +5,10 @@ import importlib
 import json
 from typing import Any
 
-from grip.adapters.base import LLMProtocolError, LLMResponse, LLMUsage, ToolCall, _reported_count
+from grip.adapters.base import (
+    LLMProtocolError, LLMResponse, LLMUsage, ToolCall, _reported_count,
+    _validate_calls, validate_replay_metadata,
+)
 
 genai: Any
 genai_types: Any
@@ -64,9 +67,13 @@ def _to_contents(
     # bare tool_call_id concept).
     call_names: dict[str, str] = {}
     wire_call_ids: dict[str, str | None] = {}
+    pending: list[str] = []
+    result_parts: list[Any] = []
 
     for msg in messages:
         role = msg.get("role")
+        if pending and role != "tool":
+            raise ValueError("tool calls must be followed immediately by their results")
         if role == "system":
             system_instruction = msg.get("content")
             continue
@@ -79,6 +86,13 @@ def _to_contents(
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
             metadata = msg.get("replay_metadata")
+            for tc in tool_calls or []:
+                history_id = tc.get("id")
+                if not isinstance(history_id, str) or not history_id:
+                    raise ValueError("tool call ID must be nonempty text")
+                if history_id in call_names or history_id in pending:
+                    raise ValueError("duplicate tool call ID")
+                pending.append(history_id)
             if metadata is not None:
                 if not isinstance(metadata, dict) or metadata.get("provider") != "gemini":
                     raise ValueError("invalid Gemini replay metadata")
@@ -91,7 +105,8 @@ def _to_contents(
                     raise ValueError("Gemini replay content does not match tool history")
                 for call, tc in zip(native_calls, tool_calls or [], strict=True):
                     fn = tc["function"]
-                    if call.name != fn["name"] or call.args != _parse_args(fn.get("arguments")):
+                    if (call.name != fn["name"]
+                            or (call.args or {}) != _parse_args(fn.get("arguments"))):
                         raise ValueError("Gemini replay content does not match tool history")
                     if call.id is not None and call.id != tc.get("id"):
                         raise ValueError("Gemini replay call ID does not match tool history")
@@ -123,7 +138,11 @@ def _to_contents(
                     part = genai_types.Part.from_text(text=content)
                     contents.append(genai_types.Content(role="model", parts=[part]))
         elif role == "tool":
-            name = call_names.get(msg.get("tool_call_id", ""), "")
+            history_id = msg.get("tool_call_id", "")
+            if not pending or history_id != pending[0]:
+                raise ValueError("tool result has no matching tool call ID")
+            pending.pop(0)
+            name = call_names[history_id]
             part = genai_types.Part.from_function_response(
                 name=name, response={"result": msg.get("content")}
             )
@@ -134,8 +153,15 @@ def _to_contents(
                     part["function_response"]["id"] = call_id
                 else:
                     part.function_response.id = call_id
-            contents.append(genai_types.Content(role="user", parts=[part]))
+            result_parts.append(part)
+            if not pending:
+                contents.append(genai_types.Content(role="user", parts=result_parts))
+                result_parts = []
+        else:
+            raise ValueError("unsupported Gemini message role")
 
+    if pending:
+        raise ValueError("tool call is missing its result")
     return system_instruction, contents
 
 
@@ -189,28 +215,31 @@ class GeminiAdapter:
         )
         function_calls = response.function_calls
         if function_calls:
-            if len(function_calls) > 1:
-                raise LLMProtocolError("multiple tool calls are unsupported", usage)
-            fc = function_calls[0]
             try:
-                arguments = _parse_args(fc.args if fc.args is not None else {})
+                calls = tuple(ToolCall(fc.name or "", _parse_args(
+                    fc.args if fc.args is not None else {}), fc.id) for fc in function_calls)
             except ValueError:
                 raise LLMProtocolError(
                     "tool arguments must be a valid JSON object", usage
                 ) from None
+            _validate_calls(calls, usage)
             candidates = getattr(response, "candidates", None) or []
             candidates = candidates if isinstance(candidates, list) else []
             native = getattr(candidates[0], "content", None) if candidates else None
             metadata = None
+            text = None
             if native is not None:
                 metadata = {
                     "provider": "gemini",
                     "content": native.model_dump(mode="json", exclude_none=True),
                 }
-            return LLMResponse(
-                content=None,
-                usage=usage,
-                tool_call=ToolCall(name=fc.name or "", arguments=arguments, id=fc.id),
-                replay_metadata=metadata,
-            )
+                try:
+                    genai_types.Content.model_validate(metadata["content"])
+                except (ValueError, TypeError):
+                    raise LLMProtocolError("invalid Gemini response content", usage) from None
+                text = "".join(part.text or "" for part in native.parts or []
+                               if not part.thought and part.text) or None
+            reply = LLMResponse(text, calls[0], usage, metadata, calls)
+            validate_replay_metadata(reply)
+            return reply
         return LLMResponse(content=response.text, tool_call=None, usage=usage)

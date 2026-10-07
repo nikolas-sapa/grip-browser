@@ -5,7 +5,10 @@ import importlib
 import json
 from typing import Any
 
-from grip.adapters.base import LLMProtocolError, LLMResponse, LLMUsage, ToolCall, _reported_count
+from grip.adapters.base import (
+    LLMProtocolError, LLMResponse, LLMUsage, ToolCall, _reported_count,
+    _validate_calls, validate_replay_metadata,
+)
 
 anthropic: Any
 try:
@@ -63,7 +66,8 @@ def _to_anthropic_messages(
     system: list[str] = []
     converted: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    pending: str | None = None
+    pending: list[str] = []
+    pending_results: list[dict[str, Any]] = []
     for msg in messages:
         role = msg.get("role")
         if role == "system":
@@ -71,7 +75,7 @@ def _to_anthropic_messages(
                 raise ValueError("system messages must precede conversation messages")
             system.append(_require_text(msg.get("content"), "system content"))
             continue
-        if pending is not None and role != "tool":
+        if pending and role != "tool":
             raise ValueError("tool call must be followed immediately by its result")
         if role == "user":
             converted.append(
@@ -85,47 +89,51 @@ def _to_anthropic_messages(
                     {"role": "assistant", "content": _require_text(text, "assistant content")}
                 )
                 continue
-            if not isinstance(calls, list) or len(calls) != 1:
-                raise ValueError("only one assistant tool call is supported")
-            tc = calls[0]
-            if not isinstance(tc, dict) or tc.get("type") != "function":
-                raise ValueError("assistant tool call must be a function")
-            call_id = _require_text(tc.get("id"), "tool call id", nonempty=True)
-            if call_id in seen_ids:
-                raise ValueError("duplicate tool call id")
-            seen_ids.add(call_id)
-            fn = tc.get("function")
-            if not isinstance(fn, dict):
-                raise ValueError("tool call function must be an object")
-            name = _require_text(fn.get("name"), "function name", nonempty=True)
-            args = _parse_arguments(fn.get("arguments"))
+            if not isinstance(calls, list):
+                raise ValueError("assistant tool calls must be a list")
             parts: list[dict[str, Any]] = []
+            normalized = []
             if text is not None:
                 text = _require_text(text, "assistant content")
                 if text:
                     parts.append({"type": "text", "text": text})
-            parts.append({"type": "tool_use", "id": call_id, "name": name, "input": args})
+            for tc in calls:
+                if not isinstance(tc, dict) or tc.get("type") != "function":
+                    raise ValueError("assistant tool call must be a function")
+                call_id = _require_text(tc.get("id"), "tool call id", nonempty=True)
+                if call_id in seen_ids:
+                    raise ValueError("duplicate tool call id")
+                seen_ids.add(call_id)
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    raise ValueError("tool call function must be an object")
+                name = _require_text(fn.get("name"), "function name", nonempty=True)
+                args = _parse_arguments(fn.get("arguments"))
+                normalized.append(ToolCall(name, args, call_id))
+                parts.append({"type": "tool_use", "id": call_id, "name": name, "input": args})
+                pending.append(call_id)
+            metadata = msg.get("replay_metadata")
+            if metadata is not None:
+                replay = LLMResponse(text, normalized[0], replay_metadata=metadata,
+                                     tool_calls=tuple(normalized))
+                validate_replay_metadata(replay)
+                if metadata.get("provider") != "anthropic":
+                    raise ValueError("invalid Anthropic replay provider")
+                parts = metadata["content"]
             converted.append({"role": "assistant", "content": parts})
-            pending = call_id
         elif role == "tool":
-            if pending is None or msg.get("tool_call_id") != pending:
+            if not pending or msg.get("tool_call_id") != pending[0]:
                 raise ValueError("tool result has no matching tool call id")
-            converted.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": pending,
-                            "content": _require_text(msg.get("content"), "tool result content"),
-                        }
-                    ],
-                }
-            )
-            pending = None
+            pending_results.append({
+                "type": "tool_result", "tool_use_id": pending.pop(0),
+                "content": _require_text(msg.get("content"), "tool result content"),
+            })
+            if not pending:
+                converted.append({"role": "user", "content": pending_results})
+                pending_results = []
         else:
             raise ValueError(f"unsupported message role: {role!r}")
-    if pending is not None:
+    if pending:
         raise ValueError("tool call is missing its result")
     if not converted:
         raise ValueError("at least one conversation message is required")
@@ -171,7 +179,7 @@ class AnthropicAdapter:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = _to_anthropic_tools(tools)
-            kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+            kwargs["tool_choice"] = {"type": "auto"}
         response = await self._client.messages.create(**kwargs)
         raw_usage = getattr(response, "usage", None)
         usage = (
@@ -189,27 +197,31 @@ class AnthropicAdapter:
                 ),
             )
         )
-        calls = [block for block in response.content if block.type == "tool_use"]
-        if len(calls) > 1:
-            raise LLMProtocolError(
-                "multiple tool calls are unsupported by the single-action Runner", usage
-            )
-        text = "".join(block.text for block in response.content if block.type == "text")
-        if calls:
-            call = calls[0]
+        metadata = None
+        try:
+            if all(callable(getattr(block, "model_dump", None))
+                   and callable(getattr(type(block), "model_validate", None))
+                   for block in response.content):
+                native_parts = []
+                for block in response.content:
+                    part = block.model_dump(mode="json", exclude_none=True)
+                    type(block).model_validate(part)
+                    native_parts.append(part)
+                metadata = {"provider": "anthropic", "content": native_parts}
+            native_calls = [block for block in response.content if block.type == "tool_use"]
+            text = "".join(block.text for block in response.content if block.type == "text")
+        except (AttributeError, TypeError, ValueError):
+            raise LLMProtocolError("invalid Anthropic response content", usage) from None
+        if native_calls:
             try:
-                arguments = _parse_arguments(call.input)
+                calls = tuple(ToolCall(call.name, _parse_arguments(call.input), call.id)
+                              for call in native_calls)
             except ValueError:
                 raise LLMProtocolError(
                     "tool arguments must be a valid JSON object", usage
                 ) from None
-            return LLMResponse(
-                content=text or None,
-                usage=usage,
-                tool_call=ToolCall(
-                    name=call.name,
-                    arguments=arguments,
-                    id=call.id,
-                ),
-            )
+            _validate_calls(calls, usage, require_ids=True)
+            reply = LLMResponse(text or None, calls[0], usage, metadata, calls)
+            validate_replay_metadata(reply)
+            return reply
         return LLMResponse(content=text, tool_call=None, usage=usage)

@@ -2,12 +2,12 @@
 
 Test plan before build/publication:
 
-1. Local build yields exactly 1 wheel and 1 sdist for 0.8.9; twine reports 0 metadata errors.
-2. Runtime, pyproject, newest changelog and tag versions all equal 0.8.9.
-3. Distribution files contain 0 gripsearch, web or test package files; installed wheel imports without optional provider SDKs; CLI prints grip-browser 0.8.9 and exits 0.
+1. Local build yields exactly 1 wheel and 1 sdist for 0.9.0; twine reports 0 metadata errors.
+2. Runtime, pyproject, newest changelog and tag versions all equal 0.9.0.
+3. Distribution files contain 0 gripsearch, web or test package files; installed wheel imports without optional provider SDKs; CLI prints grip-browser 0.9.0 and exits 0.
 4. Unit coverage >=80%; all offline browser/gripsearch tests and Python 3.11-3.14 CI pass; independent Python/security review have 0 blockers.
 5. Merge retains reviewed tree. Production deployment is Ready on exact merge commit; canonical URL returns HTTP 200.
-6. Existing tag-triggered trusted-publisher workflow completes every job; PyPI reports 0.8.9 and downloadable wheel imports with runtime version 0.8.9. Published wheel Python source matches release commit.
+6. Existing tag-triggered trusted-publisher workflow completes every job; PyPI reports 0.9.0 and downloadable wheel imports with runtime version 0.9.0. Published wheel Python source matches release commit.
 
 Implementation: bounded patch release through existing workflow after verified fixes; no new publisher, credentials or workflow architecture. Keep all artifacts in session scratch, publish only the reviewed merge commit.
 

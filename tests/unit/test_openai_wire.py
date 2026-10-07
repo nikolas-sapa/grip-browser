@@ -7,7 +7,7 @@ import importlib
 import pytest
 
 from grip.adapters.openai import OpenAIAdapter
-from grip.adapters.base import LLMProtocolError, LLMUsage
+from grip.adapters.base import LLMUsage
 from grip.compression.summarizer import PageSnapshot
 from grip.runner import Runner
 from grip.trace import Trace
@@ -75,7 +75,7 @@ async def test_runner_json_history_reaches_native_openai_second_request(assistan
     assert len(captured) == 2 and page.clicks == [arguments["target"]]
     assert run_result.model_calls == 2 and run_result.tokens == 20
     assert run_result.usage_complete
-    assert all(body["parallel_tool_calls"] is False for body in captured)
+    assert all("parallel_tool_calls" not in body for body in captured)
     assert captured[1]["messages"][-2]["content"] == assistant_text
     replay = captured[1]["messages"][-2]["tool_calls"][0]
     result = captured[1]["messages"][-1]
@@ -115,9 +115,9 @@ async def test_native_openai_without_tools_omits_parallel_flag(multiple_calls):
     )
     try:
         if multiple_calls:
-            with pytest.raises(LLMProtocolError, match="multiple tool calls") as caught:
-                await adapter.complete([{"role": "user", "content": "hello"}], [])
-            assert caught.value.usage == LLMUsage("openai", 8, 2, total_tokens=10)
+            response = await adapter.complete([{"role": "user", "content": "hello"}], [])
+            assert len(response.tool_calls) == 2
+            assert response.usage == LLMUsage("openai", 8, 2, total_tokens=10)
         else:
             response = await adapter.complete([{"role": "user", "content": "hello"}], [])
             assert response.content == "finished" and response.tool_call is None
