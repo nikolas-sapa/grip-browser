@@ -7,6 +7,145 @@ from grip.browser import Browser
 from grip.errors.types import ErrorType, GripError
 
 
+async def receive_http_request(reader, writer, requests, received=None, required_paths=()):
+    try:
+        if received is None:
+            # Negative controls retain any bytes immediately, even without a newline.
+            request = await reader.read(4096)
+            if request:
+                requests.append(request)
+            return
+        request_line = await reader.readline()
+        parts = request_line.split()
+        if (not request_line.endswith(b"\r\n") or len(parts) != 3
+                or parts[2] not in (b"HTTP/1.0", b"HTTP/1.1")):
+            # Empty preconnects are not HTTP; retain any nonempty traffic as evidence.
+            if request_line:
+                requests.append(request_line)
+            return
+        request = request_line
+        while True:
+            header = await reader.readline()
+            if not header.endswith(b"\r\n"):
+                requests.append(request + header)
+                return
+            request += header
+            if header == b"\r\n":
+                break
+        requests.append(request)
+        if received is not None:
+            get_paths = {line.split()[1] for line in requests
+                         if line.startswith(b"GET ") and line.endswith(b"\r\n\r\n")}
+            if parts[0] == b"GET" and get_paths >= set(required_paths):
+                received.set()
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required_paths", [(), (b"/image", b"/frame")])
+async def test_http_receiver_empty_eof_and_complete_get_controls(required_paths):
+    requests = []
+    received = asyncio.Event()
+
+    async def receive(reader, writer):
+        await receive_http_request(reader, writer, requests, received, required_paths)
+
+    server = await asyncio.start_server(receive, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with asyncio.timeout(2):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write_eof()
+            assert await reader.read() == b""
+            writer.close()
+            await writer.wait_closed()
+            assert requests == []
+            assert not received.is_set()
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET /frame")
+            await writer.drain()
+            writer.write_eof()
+            assert await reader.read() == b""
+            writer.close()
+            await writer.wait_closed()
+            assert requests == [b"GET /frame"]
+            assert not received.is_set()
+
+            for path in (b"/image", b"/image", b"/frame"):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                # Split the request line across writes; receipt must retain it whole.
+                writer.write(b"GET " + path[:3])
+                await writer.drain()
+                writer.write(path[3:] + b" HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                await writer.drain()
+                assert (await reader.read()).startswith(b"HTTP/1.1 200 OK\r\n")
+                writer.close()
+                await writer.wait_closed()
+                assert received.is_set() == (not required_paths or path == b"/frame")
+            assert len(requests) == 4
+            assert [request.split(b"\r\n", 1)[0] for request in requests[1:]] == [
+                b"GET /image HTTP/1.1", b"GET /image HTTP/1.1", b"GET /frame HTTP/1.1",
+            ]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [b"GET /truncated", b"malformed\r\n", b"GET / HTTP/1.1\r\n"])
+async def test_http_receiver_retains_nonempty_incomplete_or_malformed_traffic(payload):
+    requests = []
+    received = asyncio.Event()
+
+    async def receive(reader, writer):
+        await receive_http_request(reader, writer, requests, received)
+
+    server = await asyncio.start_server(receive, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with asyncio.timeout(2):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(payload)
+            await writer.drain()
+            writer.write_eof()
+            assert await reader.read() == b""
+            writer.close()
+            await writer.wait_closed()
+        assert requests == [payload]
+        assert not received.is_set()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_negative_http_receiver_records_nonempty_traffic_before_sender_eof():
+    requests = []
+
+    async def receive(reader, writer):
+        await receive_http_request(reader, writer, requests)
+
+    server = await asyncio.start_server(receive, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with asyncio.timeout(2):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET /truncated")
+            await writer.drain()
+            assert await reader.read() == b""
+            assert requests == [b"GET /truncated"]
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 async def open_popup(page, url="about:blank"):
     await page._engine.send("Runtime.evaluate", {
         "expression": f"window.open({json.dumps(url)}, '_blank')",
@@ -20,9 +159,7 @@ async def test_default_popup_is_closed_before_first_network_request(allow_privat
     requests = []
 
     async def receive(reader, writer):
-        requests.append(await reader.read(1024))
-        writer.close()
-        await writer.wait_closed()
+        await receive_http_request(reader, writer, requests)
 
     server = await asyncio.start_server(receive, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -116,9 +253,7 @@ async def test_blank_popup_document_write_cannot_execute_or_request():
     requests = []
 
     async def receive(reader, writer):
-        requests.append(await reader.read(1024))
-        writer.close()
-        await writer.wait_closed()
+        await receive_http_request(reader, writer, requests)
 
     server = await asyncio.start_server(receive, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -158,13 +293,7 @@ async def test_popup_receiver_and_child_script_positive_control():
     received = asyncio.Event()
 
     async def receive(reader, writer):
-        requests.append((await reader.read(1024)).split(b"\r\n", 1)[0])
-        if len(requests) >= 2:
-            received.set()
-        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
+        await receive_http_request(reader, writer, requests, received, (b"/image", b"/frame"))
 
     server = await asyncio.start_server(receive, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -174,6 +303,14 @@ async def test_popup_receiver_and_child_script_positive_control():
         f"<iframe src='http://127.0.0.1:{port}/frame'></iframe>"
     )
     try:
+        async with asyncio.timeout(2):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write_eof()
+            assert await reader.read() == b""
+            writer.close()
+            await writer.wait_closed()
+        assert requests == []
+        assert not received.is_set()
         async with Browser(headless=True, allow_popups=True, allow_private=True) as browser:
             page = await browser.open("about:blank")
             marker = await page._engine.send("Runtime.evaluate", {
@@ -185,6 +322,7 @@ async def test_popup_receiver_and_child_script_positive_control():
             assert marker["result"]["value"] == 1
             async with asyncio.timeout(2):
                 await received.wait()
+            assert {line.split()[0] for line in requests} == {b"GET"}
             assert {line.split()[1] for line in requests} >= {b"/image", b"/frame"}
     finally:
         server.close()
@@ -196,9 +334,7 @@ async def test_isolated_popup_closer_ignores_forged_main_world_globals(monkeypat
     requests = []
 
     async def receive(reader, writer):
-        requests.append(await reader.read(1024))
-        writer.close()
-        await writer.wait_closed()
+        await receive_http_request(reader, writer, requests)
 
     server = await asyncio.start_server(receive, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -268,12 +404,7 @@ async def test_opt_in_popup_inherits_real_stealth_user_agent():
     requests = []
 
     async def receive(reader, writer):
-        requests.append(await reader.read(4096))
-        received.set()
-        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
+        await receive_http_request(reader, writer, requests, received)
 
     server = await asyncio.start_server(receive, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
