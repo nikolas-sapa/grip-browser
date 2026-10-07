@@ -1,3 +1,4 @@
+import base64
 from unittest.mock import AsyncMock
 
 from grip.adapters.base import LLMResponse, ToolCall
@@ -7,8 +8,11 @@ from tests.unit.test_runner import FakePage
 
 
 async def test_runner_preserves_native_metadata_without_tracing_signature(tmp_path):
+    signature = base64.b64encode(b"opaque-signature").decode()
     metadata = {"provider": "gemini", "content": {
-        "role": "model", "parts": [{"thought_signature": "opaque-signature"}],
+        "role": "model", "parts": [{"thought_signature": signature,
+                                  "function_call": {"name": "snapshot", "args": {},
+                                                    "id": "native-call"}}],
     }}
     seen = []
 
@@ -28,6 +32,7 @@ async def test_runner_preserves_native_metadata_without_tracing_signature(tmp_pa
     assert len([entry for entry in trace.actions if entry.action == "snapshot"]) == 1
     path = tmp_path / "trace.jsonl"
     trace.to_jsonl(str(path))
+    assert signature not in path.read_text()
     assert "opaque-signature" not in path.read_text()
 
 

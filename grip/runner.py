@@ -7,7 +7,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from grip.adapters.base import LLMAdapter, LLMProtocolError, LLMUsage
+from grip.adapters.base import (
+    LLMAdapter, LLMProtocolError, LLMUsage, ToolCall, validate_replay_metadata,
+)
 from grip.compression.summarizer import Summarizer
 from grip.errors import GripError
 from grip.page import Page
@@ -325,7 +327,21 @@ class Runner:
 
         last_error: str | None = None
         used_call_ids: set[str] = set()
+        def append_result(call_id: str, value: object, errored: bool = False) -> None:
+            messages.append({
+                "role": "tool", "tool_call_id": call_id,
+                "content": str(value) if errored else _fence(value),
+            })
+
+        def skip_tail(ids: list[str], index: int) -> None:
+            for call_id in ids[index + 1:]:
+                append_result(call_id, "ERROR NOT_EXECUTED: Earlier batch action failed "
+                              "or was cancelled; this action did not run", True)
+
+        dispatches = 0
         for step in range(self._max_steps):
+            if dispatches >= self._max_steps:
+                break
             t0 = time.monotonic()
             measured_usage = None
             try:
@@ -346,87 +362,107 @@ class Runner:
             record_call(measured_usage, t0)
             duration_ms = int((time.monotonic() - t0) * 1000)
 
-            if response.tool_call is None:
+            assistant_content: Any = response.content
+            if assistant_content is not None and not isinstance(assistant_content, str):
+                return finish("action_error", error="Model content must be text or absent")
+            batch = response.tool_calls
+            if not isinstance(batch, tuple) or any(not isinstance(tc, ToolCall) for tc in batch):
+                return finish("action_error", error="Invalid tool call batch")
+            if response.tool_call != (batch[0] if batch else None):
+                return finish("action_error", error="Conflicting tool call representations")
+            if not batch:
                 if response.content and response.content.strip():
                     return finish("model_text", data=response.content, success=None)
                 return finish("action_error", error="Model returned no text or tool call")
 
-            tc = response.tool_call
-            if tc.id is not None and (not isinstance(tc.id, str) or not tc.id):
-                return finish("action_error", error="Tool call ID must be nonempty text")
-            if tc.id is not None and tc.id in used_call_ids:
-                return finish("action_error", error="Tool call ID was already used")
-            call_id = tc.id if tc.id is not None else f"grip_call_{step}"
-            if tc.id is None:
-                while call_id in used_call_ids:
-                    call_id += "_"
-            # Validate replay before acting: a successful browser action must
-            # always have arguments the provider can reconstruct next turn.
-            serialized_arguments = _serialize_tool_arguments(tc.arguments)
+            native_ids: set[str] = set()
+            for tc in batch:
+                if tc.id is not None and (not isinstance(tc.id, str) or not tc.id):
+                    return finish("action_error", error="Tool call ID must be nonempty text")
+                if tc.id is not None:
+                    if tc.id in used_call_ids or tc.id in native_ids:
+                        return finish("action_error", error="Tool call ID was already used")
+                    native_ids.add(tc.id)
+            # Preserve the strict-JSON exception contract, validating every call
+            # before any action can run or any history envelope is published.
+            serialized = [_serialize_tool_arguments(tc.arguments) for tc in batch]
             try:
-                _validate_tool_call(tc.name, tc.arguments)
+                for index, tc in enumerate(batch):
+                    _validate_tool_call(tc.name, tc.arguments)
+                    if tc.name == "done" and index != len(batch) - 1:
+                        raise ValueError("done must be the final batch call")
+                validate_replay_metadata(response)
             except ValueError as exc:
                 return finish("action_error", error=str(exc))
-            used_call_ids.add(call_id)
-            # An error message is written by the runner, not by the page. Fencing
-            # it would put the one instruction the model is meant to act on — the
-            # suggested recovery — inside the region the system prompt tells it to
-            # never follow.
-            errored = False
-            dispatch_started = time.monotonic()
-            try:
-                tool_result = await self._dispatch(tc.name, tc.arguments)
-            except GripError as e:
-                errored = True
-                # The error taxonomy exists so the model can recover — a stale
-                # element means "re-snapshot and try again", not "give up". Raising
-                # here ended the whole run on the first miss.
-                recovery = ", ".join(a.name for a in e.error.recovery) or "none"
-                tool_result = (
-                    f"ERROR {e.error.type.name}: {e.error.message} "
-                    f"(suggested recovery: {recovery})"
-                )
-            except _AmbiguousAction as exc:
+            if len(batch) > self._max_steps - dispatches:
+                return finish("step_limit", error="Tool batch exceeds remaining action budget")
+
+            batch_ids: list[str] = []
+            reserved = used_call_ids | native_ids
+            for index, tc in enumerate(batch):
+                call_id = tc.id
+                if call_id is None:
+                    call_id = (f"grip_call_{step}" if len(batch) == 1
+                               else f"grip_call_{step}_{index}")
+                    while call_id in reserved:
+                        call_id += "_"
+                batch_ids.append(call_id)
+                reserved.add(call_id)
+            used_call_ids.update(batch_ids)
+            legacy_done = len(batch) == 1 and batch[0].name == "done"
+            if not legacy_done:
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant", "content": response.content,
+                    "tool_calls": [{"id": call_id, "type": "function", "function": {
+                        "name": tc.name, "arguments": arguments,
+                    }} for tc, call_id, arguments in zip(
+                        batch, batch_ids, serialized, strict=True
+                    )],
+                }
+                if response.replay_metadata is not None:
+                    assistant_message["replay_metadata"] = response.replay_metadata
+                messages.append(assistant_message)
+
+            for index, tc in enumerate(batch):
+                dispatches += 1
+                dispatch_started = time.monotonic()
+                errored = False
+                terminal: str | None = None
+                try:
+                    tool_result = await self._dispatch(tc.name, tc.arguments)
+                except GripError as exc:
+                    errored = True
+                    recovery = ", ".join(a.name for a in exc.error.recovery) or "none"
+                    tool_result = (f"ERROR {exc.error.type.name}: {exc.error.message} "
+                                   f"(suggested recovery: {recovery})")
+                except _AmbiguousAction as exc:
+                    errored, terminal = True, "ambiguous_action"
+                    tool_result = str(exc)
+                except asyncio.CancelledError:
+                    append_result(batch_ids[index],
+                                  "ERROR CANCELLED: Action outcome uncertain", True)
+                    skip_tail(batch_ids, index)
+                    raise
+                except Exception as exc:
+                    errored, terminal = True, "action_error"
+                    tool_result = f"Tool failed ({type(exc).__name__})"
+                last_error = str(tool_result) if errored else None
                 duration_ms = int((time.monotonic() - dispatch_started) * 1000)
-                message = str(exc)
                 self._trace.add(TraceEntry(
                     timestamp=time.time(), action=tc.name, input=tc.arguments,
-                    output={"outcome": "ambiguous_action", "error": message},
+                    output=({"outcome": terminal, "error": str(tool_result)}
+                            if terminal else {"result": str(tool_result)[:500]}),
                     tokens_consumed=0, duration_ms=duration_ms,
                 ))
-                return finish("ambiguous_action", error=message)
-            except Exception as exc:
-                return finish("action_error", error=f"Tool failed ({type(exc).__name__})")
-            last_error = str(tool_result) if errored else None
-            duration_ms = int((time.monotonic() - dispatch_started) * 1000)
-
-            self._trace.add(TraceEntry(
-                timestamp=time.time(),
-                action=tc.name,
-                input=tc.arguments,
-                output={"result": str(tool_result)[:500]},
-                tokens_consumed=0,
-                duration_ms=duration_ms,
-            ))
-
-            if tc.name == "done":
-                return finish("done", data=tc.arguments["result"], success=True)
-
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": response.content,
-                "tool_calls": [{"id": call_id, "type": "function", "function": {
-                    "name": tc.name, "arguments": serialized_arguments,
-                }}],
-            }
-            if response.replay_metadata is not None:
-                assistant_message["replay_metadata"] = response.replay_metadata
-            messages.append(assistant_message)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": str(tool_result) if errored else _fence(tool_result),
-            })
+                if not legacy_done:
+                    append_result(batch_ids[index], tool_result, errored)
+                if errored:
+                    skip_tail(batch_ids, index)
+                    if terminal is not None:
+                        return finish(terminal, error=str(tool_result))
+                    break
+                if tc.name == "done":
+                    return finish("done", data=tc.arguments["result"], success=True)
             self._prune_superseded()
 
         if last_error is not None:

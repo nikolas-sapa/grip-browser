@@ -292,7 +292,8 @@ async def test_mutation_semantic_error_does_not_justify_retry():
     assert result.outcome == "ambiguous_action" and result.success is False
     assert calls == ["A"]
     assert "do not repeat" in result.error
-    assert not any(m.get("role") == "tool" for m in runner._messages)
+    failures = [m for m in runner._messages if m.get("role") == "tool"]
+    assert len(failures) == 1 and "do not repeat" in failures[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -423,10 +424,7 @@ async def test_replayed_legacy_calls_get_distinct_matching_ids():
 
 @pytest.mark.asyncio
 async def test_replayed_provider_call_retains_id_and_assistant_text():
-    call = MagicMock(name="provider_call")
-    call.name = "click"
-    call.arguments = {"target": "First"}
-    call.id = "toolu_provider_123"
+    call = ToolCall("click", {"target": "First"}, "toolu_provider_123")
     runner = Runner(
         llm=make_llm([
             LLMResponse(content="Clicking now", tool_call=call),
@@ -444,8 +442,7 @@ async def test_replayed_provider_call_retains_id_and_assistant_text():
 
 @pytest.mark.asyncio
 async def test_fallback_id_does_not_collide_with_prior_provider_id():
-    call = MagicMock(name="provider_call")
-    call.name, call.arguments, call.id = "click", {"target": "First"}, "grip_call_1"
+    call = ToolCall("click", {"target": "First"}, "grip_call_1")
     runner = Runner(
         llm=make_llm([
             LLMResponse(content=None, tool_call=call),

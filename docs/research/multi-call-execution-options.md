@@ -1,6 +1,6 @@
 # Multiple-call execution decision
 
-Current behavior: providers request one call; multiple returned calls fail explicitly. Choice requested before changing Runner/provider replay architecture.
+Decision: sequential batches, following explicit owner delegation on 2026-10-07. The frozen implementation contract is [multi-call-execution-spec.md](multi-call-execution-spec.md). Options below preserve the decision record.
 
 ## Acceptance tests for sequential execution (before implementation)
 
@@ -18,4 +18,4 @@ Current behavior: providers request one call; multiple returned calls fail expli
 
 ## Non-goals
 
-No concurrent dispatch, rollback, automatic mutation retries, dependency inference, reference rewriting, new tools, model/dependency changes or paid provider calls. Implementation awaits execution-policy choice.
+No concurrent dispatch, rollback, automatic mutation retries, dependency inference, reference rewriting, new tools, model/dependency changes or paid provider calls. Sequential implementation follows the frozen spec; no concurrent dispatch.

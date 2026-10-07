@@ -65,7 +65,8 @@ def test_two_histories_keep_native_parts_isolated():
         response = LLMResponse(None, ToolCall("snapshot", {}, f"call-{index}"),
             replay_metadata={"provider": "gemini", "content": native.model_dump(
                 mode="json", exclude_none=True)})
-        histories.append([history_item(response)])
+        histories.append([history_item(response), {"role": "tool",
+            "tool_call_id": response.tool_call.id, "content": "result"}])
     for index, signature in enumerate((b"one", b"two")):
         _, replay = _to_contents(histories[index])
         assert replay[0].parts[0].thought_signature == signature
@@ -99,7 +100,8 @@ def test_invalid_unsigned_arguments_fail_closed(arguments):
 
 def test_unsigned_history_retains_text_and_transitional_arguments():
     _, replay = _to_contents([{"role": "assistant", "content": "Checking", "tool_calls": [
-        {"id": "one", "function": {"name": "click", "arguments": "{'target': 'Buy'}"}}]}])
+        {"id": "one", "function": {"name": "click", "arguments": "{'target': 'Buy'}"}}]},
+        {"role": "tool", "tool_call_id": "one", "content": "result"}])
     assert replay[0].parts[0].text == "Checking"
     assert replay[0].parts[1].function_call.args == {"target": "Buy"}
 

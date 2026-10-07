@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] - 2026-10-07
+
+### Added
+
+- Sequential model-returned tool batches with whole-batch validation, independent action/request budgets and explicit skipped results.
+- Complete OpenAI, Anthropic and Gemini batch replay preserving text, native call identity, thought signatures and once-per-response usage.
+- A local real-Chrome form workflow pilot with independent submission verification and injected lost-observation checks.
+
+### Changed
+
+- Providers may return multiple calls; Runner executes them in order and stops the batch on any error. Uncertain mutations still terminate without retries.
+
 ## [0.8.9] - 2026-10-07
 
 ### Fixed

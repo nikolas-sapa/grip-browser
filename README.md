@@ -418,7 +418,21 @@ async with Browser(llm=llm, headless=True) as browser:
 
 grip handles the snapshot → decide → act loop automatically. You just provide the goal.
 
-Each response may request one tool call. OpenAI and Anthropic are configured for single calls; responses containing multiple calls fail explicitly. Gemini preserves native thought signatures across tool turns. `result.tokens` is reported provider usage, or `None` when measurement is incomplete; `result.estimated_tokens` is a separate page estimate.
+Responses may request several tool calls. Runner validates the whole batch before
+acting, executes returned order, and stops remaining calls after any error. An
+uncertain mutation ends the run without retries. `done` must be last. `max_steps`
+caps both model requests and attempted tool calls; an oversized batch executes
+zero calls. Later actions must still use valid references after earlier changes.
+
+OpenAI, Anthropic and Gemini preserve all calls and matching results; Gemini
+retains native thought signatures. `LLMResponse.tool_calls` is an ordered tuple;
+legacy `tool_call` remains its first-call compatibility view. Callers orchestrating
+adapters directly must iterate `tool_calls` to handle every returned call. Custom
+adapters may continue returning one call. Usage is recorded once per response: `result.tokens`
+is measured provider usage or `None` when incomplete; `result.estimated_tokens`
+remains a separate page estimate. Native replay supports text, tool calls and
+thought/signature metadata; unsupported Gemini multimedia/server parts fail
+before browser actions.
 
 ### Snapshot delta
 
@@ -712,6 +726,21 @@ Contributions are welcome. See [CONTRIBUTING.md](https://github.com/nikolas-sapa
 setup, running tests, and lint/type-check commands. Please also read the
 [Code of Conduct](https://github.com/nikolas-sapa/grip-browser/blob/main/CODE_OF_CONDUCT.md). Found a security issue? See
 [SECURITY.md](https://github.com/nikolas-sapa/grip-browser/blob/main/SECURITY.md) instead of opening a public issue.
+
+
+### Local workflow pilot
+
+The source checkout includes `evaluation.workflow_pilot`, a deterministic adapter
+with real Chrome and a local form server. It tests ordered batch execution,
+checks exact submitted fields and confirmation IDs against an independent server
+ledger, and injects a lost observation after submission. Its JSON report preserves
+every attempt; duplicate submissions or incorrect outcomes fail the run.
+
+This validates local execution without paid model calls. It does not measure
+external adoption, model reasoning or current competitor performance. See
+[the pilot plan](docs/research/workflow-pilot-plan.md) and
+[the comparison protocol](docs/research/workflow-comparison-protocol.md).
+
 
 ---
 
