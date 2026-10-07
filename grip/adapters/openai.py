@@ -82,7 +82,7 @@ class OpenAIAdapter:
                     "tool arguments must be a valid JSON object", usage
                 ) from None
             return LLMResponse(
-                content=None,
+                content=msg.content,
                 usage=usage,
                 tool_call=ToolCall(
                     name=tc.function.name,

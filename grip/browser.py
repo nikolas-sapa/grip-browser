@@ -154,6 +154,7 @@ class Browser:
         self._owned_shutdown_process: subprocess.Popen[bytes] | None = None
         self._owned_cleanup_task: asyncio.Task[None] | None = None
         self._engine: CDPEngine | None = None
+        self._remote_setup_incomplete = False
         self._port: int = 0
         self._pages: list[Page] = []
         # open() is documented for concurrent use (asyncio.gather over URLs). Without
@@ -175,18 +176,36 @@ class Browser:
         await self.close()
 
     async def _connect(self) -> None:
-        if self._engine:
+        if self._engine and not self._remote_setup_incomplete:
             return
         async with self._connect_lock:
             if self._engine:
+                if self._remote_setup_incomplete:
+                    raise RuntimeError("Remote connection setup failed. Close before reconnecting.")
                 return
             if self._cdp_url:
                 # Attaching to a Chrome someone else launched — or a remote CDP
                 # engine entirely. No profile, no process, nothing to terminate.
                 engine = CDPEngine()
-                await engine.connect(self._cdp_url)
-                await self._apply_permissions(engine)
-                await self._resolve_stealth_ua(engine)
+                try:
+                    await engine.connect(self._cdp_url)
+                    await self._apply_permissions(engine)
+                    await self._resolve_stealth_ua(engine)
+                except BaseException:
+                    # __aenter__ failure never reaches __aexit__. Release our
+                    # socket now; if release fails, retain explicit retry ownership.
+                    self._engine = engine
+                    self._remote_setup_incomplete = True
+                    cleanup = asyncio.create_task(engine.disconnect())
+                    while not cleanup.done():
+                        try:
+                            await asyncio.wait({cleanup})
+                        except asyncio.CancelledError:
+                            continue
+                    if not cleanup.cancelled() and cleanup.exception() is None:
+                        self._engine = None
+                        self._remote_setup_incomplete = False
+                    raise
                 self._engine = engine
                 return
             launcher = ChromeLauncher(
@@ -290,7 +309,26 @@ class Browser:
 
         await self._ensure_popup_routing()
 
-        result = await self._engine.send("Target.createTarget", {"url": "about:blank"})
+        # Cancellation must not discard the only authoritative identity of a
+        # tab Chrome has created. Finish this one command, then register and
+        # close its exact target before propagating caller cancellation.
+        creation = asyncio.create_task(self._engine.send(
+            "Target.createTarget", {"url": "about:blank"},
+        ))
+        creation_cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.wait({creation})
+                result = creation.result()
+                break
+            except asyncio.CancelledError as exc:
+                if creation.cancelled():
+                    raise
+                creation_cancelled = exc
+            except Exception as exc:
+                if creation_cancelled is not None:
+                    raise creation_cancelled from exc
+                raise
         target_id = result["targetId"]
 
         page_engine = CDPEngine()
@@ -310,6 +348,8 @@ class Browser:
         self._pages.append(page)
         self._popup_owners[target_id] = page
         try:
+            if creation_cancelled is not None:
+                raise creation_cancelled
             await page_engine.connect(self._page_ws_url(target_id))
             # Before goto(), not after: emulation set post-navigation is too late for a
             # page that branches its layout/UA off these on the very first paint.
@@ -548,6 +588,13 @@ class Browser:
         self._popup_chrome_terminated = True
 
     async def close(self) -> None:
+        if self._remote_setup_incomplete and self._engine is not None:
+            # No targets were created during incomplete setup. A failed retry
+            # must keep ownership, rather than the normal teardown's best effort.
+            await self._engine.disconnect()
+            self._engine = None
+            self._remote_setup_incomplete = False
+            return
         # Popup closures must finish before disabling auto-attach can release
         # their debugger pause. Guarded closures also keep the opener alive.
         if self._popup_tasks:
@@ -630,6 +677,7 @@ class Browser:
             logger.debug("Failed to disconnect the browser engine", exc_info=True)
         finally:
             self._engine = None
+            self._remote_setup_incomplete = False
             # Whatever the websocket did, the OS process and its temp profile are
             # ours to reclaim. Skipping this is how orphaned Chromes accumulate.
             if self._launcher:

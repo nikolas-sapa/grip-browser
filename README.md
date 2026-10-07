@@ -425,21 +425,21 @@ Each response may request one tool call. OpenAI and Anthropic are configured for
 Inside the run loop, grip sends the model a full snapshot on the first turn and a
 delta after that — only the elements and content that changed.
 
-Measured end to end, an agent driving grip spends **~18x fewer prompt tokens over
-a 6-turn run than the same agent dumping `outerHTML`** (16.9x–18.4x across repeat
-runs; 17.8x on the reported run, ranging 4.6x–41.8x across the four scenarios).
-That figure is the median of the per-scenario ratios over four real sites, six
-real turns each, counted with tiktoken `cl100k_base`.
+A historical observation benchmark (Grip 0.5.0, 2026-08-10) estimated **~18x fewer
+prompt tokens in constructed six-turn transcripts than a raw `outerHTML` baseline**
+(16.9x–18.4x across repeat runs). Real browser actions supplied page states; no
+model ran. Counts used tiktoken `cl100k_base`, not provider-reported usage. This
+measures observation representation, not current competitor cost or task success.
 
 **Most of that win is compression, not the delta,** and it is worth being clear
 about which mechanism does what:
 
 | | median | per-scenario range |
 |---|---|---|
-| compression — grip snapshot vs raw HTML, per turn | **11.3x** | 2.9x – 22.0x |
+| compression — grip snapshot vs raw HTML, per turn | **11.3x** | 2.9x – 20.1x |
 | delta — vs sending a full snapshot every turn, per turn | **1.0x** | 1.0x – 8.8x |
-| pruning — superseded page states dropped, cumulative | **1.4x** | 1.0x – 2.2x |
-| **end to end** — raw HTML vs grip delta + pruning, cumulative | **17.8x** | 4.6x – 41.8x |
+| pruning — superseded page states dropped, cumulative | **1.5x** | 1.0x – 1.9x |
+| constructed transcript — raw HTML vs grip delta + pruning, cumulative | **17.6x** | 4.6x – 29.2x |
 
 The 11.3x compression figure is the large term, and any serious
 accessibility-tree tool gets some version of it.
@@ -449,15 +449,16 @@ a URL change: on a navigation turn grip sends a full snapshot by design, and a
 realistic agent run is mostly navigation. Three of the four scenarios had 0–2
 same-document turns out of 6. **Where it pays is when an agent works within one
 page** — filling a form, driving an SPA. On the 8 turns across all scenarios
-where a delta could fire, repeat observations cost a median **9.1x** less, range
-**0.5x–175.0x**. The 0.5x is a real defect the benchmark surfaced: on a
-click-driven navigation where the reported URL lagged the document, grip diffed
-two unrelated pages and emitted a delta *larger* than the snapshot it replaced.
-It is documented, not smoothed away.
+where a delta could fire, historical repeat observations were a median **9.1x**
+smaller, ranging **0.004x–175.0x** in the reported run. The worst case was a
+transient empty Wikipedia snapshot whose removal delta cost more than the full
+snapshot. Current payload selection checks the delivered baseline and falls back
+to the full snapshot when a delta costs more; these historical numbers remain
+unchanged and do not measure the current release.
 
 Pruning is a separate mechanism from the delta and is what carries
-navigation-heavy runs: superseded page states are not re-sent, so cumulative
-prompt cost grows with the number of turns rather than with their square.
+navigation-heavy runs: superseded page states are not re-sent. Total provider usage still depends on
+the full retained history, model and number of requests.
 
 Full method, per-scenario tables, stability across 20 runs and the things this
 does **not** measure (task success, latency, model quality) are in
@@ -550,7 +551,8 @@ shadow_elements = [el for el in snapshot.elements if el.in_shadow_dom]
 
 ## Trace
 
-Every action is recorded with timing and token cost:
+Actions are recorded with timing and estimated page-observation tokens. Runner
+model-call entries retain provider-reported usage separately:
 
 ```python
 async with Browser() as browser:
@@ -559,7 +561,8 @@ async with Browser() as browser:
     await page.click("Learn more")
     await page.screenshot()
 
-print(browser.trace.total_tokens)   # total tokens used
+print(browser.trace.total_tokens)   # estimated page-observation tokens
+print(browser.trace.model_usage_totals)  # reported provider categories, when measured
 browser.trace.to_jsonl("audit.jsonl")  # machine-readable audit log
 ```
 
@@ -682,12 +685,12 @@ snapshot-size figures live in [Why Grip](#why-grip) with their own method note.
 
 | | Measured | How |
 |---|---|---|
-| Prompt tokens over a 6-turn run, grip vs raw HTML | **17.8x fewer** (4.6x–41.8x per scenario; 16.9x–18.4x across repeat runs) | median of per-scenario ratios, 4 live sites × 6 real turns, tiktoken `cl100k_base`; [`benchmarks/RESULTS_AB.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_AB.md) |
-| — of which compression, per turn | 11.3x (2.9x–22.0x) | grip snapshot vs `outerHTML` of the same DOM state, same run |
+| Estimated prompt tokens in historical constructed transcripts, Grip 0.5.0 vs raw HTML | **16.9x–18.4x fewer** across repeat runs | 4 live sites × 6 scripted turns, no model, tiktoken `cl100k_base`; [`benchmarks/RESULTS_AB.md`](https://github.com/nikolas-sapa/grip-browser/blob/main/benchmarks/RESULTS_AB.md) |
+| — of which compression, per turn | 11.3x (2.9x–20.1x) | grip snapshot vs `outerHTML` of the same DOM state, same run |
 | — of which delta, per turn | 1.0x (1.0x–8.8x) | vs sending a full snapshot every turn; `build_delta` returns `None` on navigation, so most turns send a full snapshot |
-| — of which pruning, cumulative | 1.4x (1.0x–2.2x) | superseded page states dropped from the transcript; independent of the delta |
+| — of which pruning, cumulative | 1.5x (1.0x–1.9x) | superseded page states dropped from the transcript; independent of the delta |
 | Delta saving on same-document turns | 9.1x median (0.5x–175.0x) | the 8 turns of 24 where a delta fired; the 0.5x is the URL-lag defect documented in the results file |
-| Cumulative prompt cost over a run | grows with turns, not turns² | superseded page states are not re-sent |
+| Superseded full page observations | removed from retained history | total provider usage still depends on remaining history and requests |
 | Unit tests | 318 pass | `pytest tests/unit` |
 | gripsearch tests | 33 pass | `pytest` in `gripsearch/` |
 | Integration tests | 74 pass | real Chrome, live network |

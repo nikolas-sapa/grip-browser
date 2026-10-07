@@ -437,18 +437,21 @@ class Runner:
         if name == "snapshot":
             await self._page.snapshot()
             return self._page_payload()
-        if name in {"click", "type", "select"}:
+        if name in {"click", "type", "select", "hover"}:
             try:
                 if name == "click":
                     await self._page.click(args["target"])
                 elif name == "type":
                     await self._page.type(args["target"], args["text"])
-                else:
+                elif name == "select":
                     await self._page.select(args["target"], args["value"])
+                else:
+                    await self._page.hover(args["target"])
             except Exception as exc:
                 # Page method exceptions do not prove that events were absent:
                 # type() can emit input/change then report ELEMENT_STALE, and
-                # custom select() can open its trigger before option resolution.
+                # custom select() can open its trigger before option resolution,
+                # and hover() dispatches pointer events before settling.
                 raise _AmbiguousAction(
                     "Action outcome uncertain; do not repeat action"
                 ) from exc
@@ -459,10 +462,6 @@ class Runner:
                 raise _AmbiguousAction(
                     "Action completed but observation failed; do not repeat action"
                 ) from exc
-        if name == "hover":
-            await self._page.hover(args["target"])
-            await self._page.snapshot()
-            return self._page_payload()
         if name == "wait_for":
             await self._page.wait_for(
                 text=args.get("text"), ref=args.get("ref"),
