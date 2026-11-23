@@ -25,14 +25,23 @@ PAGE = b"""<html><head><title>Widget Docs</title></head><body>
   <footer><p>Copyright 2026 Widget Corp. All rights reserved.</p></footer>
 </body></html>"""
 
+# The h1 sits outside the div that wins the prose-density score — the layout
+# example.com actually serves.
+PAGE_HEADING_SIBLING = b"""<html><head><title>Sibling Heading</title></head><body>
+  <h1>Site Title</h1>
+  <div><p>First real paragraph of prose that is long enough.</p>
+  <p>Second paragraph with enough text to matter here.</p></div>
+</body></html>"""
+
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        page = PAGE_HEADING_SIBLING if self.path == "/sibling" else PAGE
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(PAGE)))
+        self.send_header("Content-Length", str(len(page)))
         self.end_headers()
-        self.wfile.write(PAGE)
+        self.wfile.write(page)
 
     def log_message(self, *args):
         pass
@@ -122,6 +131,19 @@ async def test_citation_is_stable_and_readable(base_url):
         doc = await page.read()
         block = next(b for b in doc.blocks if "Turn it off" in b.text)
         assert block.citation == f"[{block.id}] Widgets › Installation › Troubleshooting"
+
+
+@pytest.mark.asyncio
+async def test_heading_outside_the_winning_container_is_kept(base_url):
+    """A body-level h1 next to the prose div must reach the outline, not be
+    dropped with the losing container."""
+    async with Browser(headless=True, allow_private=True) as browser:
+        page = await browser.open(f"{base_url}/sibling")
+        doc = await page.read()
+        assert "Site Title" in doc.outline()
+        paragraphs = [b for b in doc.blocks if b.kind == "text"]
+        assert len(paragraphs) == 2
+        assert all(b.path == ["Site Title"] for b in paragraphs)
 
 
 @pytest.mark.asyncio

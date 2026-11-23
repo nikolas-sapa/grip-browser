@@ -1003,6 +1003,24 @@ READ_CONTENT_JS = r"""
   }
   best = best || document.body;
 
+  // A heading that sits just outside the winning container still belongs to the
+  // read (a body-level h1 next to the prose div loses the page title otherwise).
+  // Climb while every sibling the parent adds is a heading or chrome, never a
+  // second prose region.
+  while (best.parentElement && best.parentElement !== document.documentElement) {
+    const parent = best.parentElement;
+    if (isChrome(parent)) break;
+    let onlyHeadingsOrChrome = true;
+    for (const child of parent.children) {
+      if (child === best) continue;
+      if (/^h[1-6]$/.test(child.tagName.toLowerCase()) || isChrome(child)) continue;
+      onlyHeadingsOrChrome = false;
+      break;
+    }
+    if (!onlyHeadingsOrChrome) break;
+    best = parent;
+  }
+
   const blocks = [];
   const trail = [];
   const walker = document.createTreeWalker(best, NodeFilter.SHOW_ELEMENT);
